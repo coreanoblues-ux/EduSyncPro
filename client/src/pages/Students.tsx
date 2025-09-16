@@ -414,7 +414,6 @@ export default function Students({ userRole }: StudentsProps) {
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent>
-                            <SelectItem value="">선택 안함</SelectItem>
                             {classes.filter(c => c.isActive !== false).map((classItem) => (
                               <SelectItem key={classItem.id} value={classItem.id}>
                                 {classItem.name} (기본 ₩{classItem.defaultTuition?.toLocaleString()})
@@ -580,10 +579,10 @@ export default function Students({ userRole }: StudentsProps) {
                         </AlertDialogTrigger>
                         <AlertDialogContent>
                           <AlertDialogHeader>
-                            <AlertDialogTitle>학생 휴원</AlertDialogTitle>
+                            <AlertDialogTitle>학생 휴강</AlertDialogTitle>
                             <AlertDialogDescription>
-                              정말로 {student.name} 학생을 휴원 처리하시겠습니까?
-                              휴원된 학생은 재등록을 통해 다시 활성화할 수 있습니다.
+                              정말로 {student.name} 학생을 휴강 처리하시겠습니까?
+                              휴강된 학생은 재수강을 통해 다시 활성화할 수 있습니다.
                             </AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
@@ -594,7 +593,7 @@ export default function Students({ userRole }: StudentsProps) {
                               onClick={() => handleDeactivateStudent(student.id)}
                               data-testid={`button-confirm-deactivate-student-${student.id}`}
                             >
-                              휴원 처리
+                              휴강 처리
                             </AlertDialogAction>
                           </AlertDialogFooter>
                         </AlertDialogContent>
@@ -615,10 +614,10 @@ export default function Students({ userRole }: StudentsProps) {
                         </AlertDialogTrigger>
                         <AlertDialogContent>
                           <AlertDialogHeader>
-                            <AlertDialogTitle>학생 재등록</AlertDialogTitle>
+                            <AlertDialogTitle>학생 재수강</AlertDialogTitle>
                             <AlertDialogDescription>
-                              정말로 {student.name} 학생을 재등록하시겠습니까?
-                              재등록하면 해당 학생이 다시 활성화됩니다.
+                              정말로 {student.name} 학생을 재수강하시겠습니까?
+                              재수강하면 해당 학생이 다시 활성화됩니다.
                             </AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
@@ -629,7 +628,7 @@ export default function Students({ userRole }: StudentsProps) {
                               onClick={() => handleActivateStudent(student.id)}
                               data-testid={`button-confirm-activate-student-${student.id}`}
                             >
-                              재등록
+                              재수강
                             </AlertDialogAction>
                           </AlertDialogFooter>
                         </AlertDialogContent>
@@ -649,9 +648,9 @@ export default function Students({ userRole }: StudentsProps) {
                       </AlertDialogTrigger>
                       <AlertDialogContent>
                         <AlertDialogHeader>
-                          <AlertDialogTitle>학생 완전 삭제</AlertDialogTitle>
+                          <AlertDialogTitle>학생 퇴원</AlertDialogTitle>
                           <AlertDialogDescription>
-                            정말로 {student.name} 학생을 완전히 삭제하시겠습니까?
+                            정말로 {student.name} 학생을 퇴원 처리하시겠습니까?
                             이 작업은 되돌릴 수 없으며, 모든 데이터가 영구적으로 삭제됩니다.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
@@ -664,7 +663,7 @@ export default function Students({ userRole }: StudentsProps) {
                             data-testid={`button-confirm-delete-student-${student.id}`}
                             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                           >
-                            완전 삭제
+                            퇴원
                           </AlertDialogAction>
                         </AlertDialogFooter>
                       </AlertDialogContent>

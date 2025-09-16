@@ -20,28 +20,35 @@ import { Student, Class, InsertEnrollment } from "@shared/schema";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const studentFormSchema = z.object({
+  // 1. 이름 - 필수 필드
   name: z.string().min(1, "학생 이름을 입력해주세요"),
-  school: z.string().optional(),
-  grade: z.string().optional(),
-  gender: z.string().optional(),
-  parentPhone: z.string().optional(),
-  siblingDiscount: z.string().optional(), // 형제할인으로 변경
-  siblingDiscountRate: z.enum(["5", "10"]).optional(), // 자동 할인 적용 선택
-  notes: z.string().optional(),
-  // 반 선택 관련 필드 추가
+  // 2. 반선택 - 선택사항
   classId: z.string().optional(),
+  // 3. 형제할인 - 선택사항
+  siblingDiscount: z.string().optional(),
+  siblingDiscountRate: z.enum(["5", "10"]).optional(), // none 제거하고 undefined 사용
+  // 4. 학년 - 선택사항
+  grade: z.string().optional(),
+  // 5. 등록일 - 반이 선택된 경우 필수
   startDate: z.string().optional(),
+  // 6. 학부모 전화번호 - 선택사항
+  parentPhone: z.string().optional(),
+  // 7. 학교 - 선택사항
+  school: z.string().optional(),
+  // 8. 기타 비고란 - 선택사항
+  notes: z.string().optional(),
+  // 추가 필드들 (반 선택시 자동 처리)
   customTuition: z.number().optional(),
   dueDay: z.number().min(1).max(31).optional(),
 }).refine((data) => {
-  // 반이 선택되었다면 시작일이 필수
+  // 반이 선택되었다면 시작일(등록일)이 필수
   if (data.classId && data.classId.trim() !== "") {
     return data.startDate && data.startDate.trim() !== "";
   }
   return true;
 }, {
-  message: "반을 선택했다면 수강 시작일을 입력해주세요",
-  path: ["startDate"], // 에러를 startDate 필드에 표시
+  message: "반을 선택했다면 등록일을 입력해주세요",
+  path: ["startDate"],
 });
 
 type StudentFormData = z.infer<typeof studentFormSchema>;
@@ -78,7 +85,6 @@ export default function Students({ userRole }: StudentsProps) {
         name: data.name,
         school: data.school,
         grade: data.grade,
-        gender: data.gender,
         parentPhone: data.parentPhone,
         siblingGroup: data.siblingDiscount,
         notes: data.notes,
@@ -93,7 +99,7 @@ export default function Students({ userRole }: StudentsProps) {
         
         // 할인율 적용
         let finalTuition = baseTuition;
-        if (data.siblingDiscountRate && data.siblingDiscountRate !== "") {
+        if (data.siblingDiscountRate) {
           const discountRate = parseInt(data.siblingDiscountRate) / 100;
           finalTuition = Math.round(baseTuition * (1 - discountRate));
         }
@@ -201,15 +207,14 @@ export default function Students({ userRole }: StudentsProps) {
     resolver: zodResolver(studentFormSchema),
     defaultValues: {
       name: "",
-      school: "",
-      grade: "",
-      gender: "",
-      parentPhone: "",
+      classId: "",
       siblingDiscount: "",
       siblingDiscountRate: undefined,
-      notes: "",
-      classId: "",
+      grade: "",
       startDate: "",
+      parentPhone: "",
+      school: "",
+      notes: "",
       customTuition: undefined,
       dueDay: 8,
     },
@@ -280,221 +285,293 @@ export default function Students({ userRole }: StudentsProps) {
             <Form {...addForm}>
               <form onSubmit={addForm.handleSubmit(handleAddStudent)} className="flex flex-col flex-1">
                 <div className="space-y-4 overflow-y-scroll h-[400px] pr-2 dialog-scrollable">
-                {/* 1. 학생 이름 */}
+                {/* 1. 이름 - 필수 필드 */}
                 <FormField
                   control={addForm.control}
                   name="name"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>학생 이름</FormLabel>
+                      <FormLabel className="text-base font-medium">이름 *</FormLabel>
                       <FormControl>
-                        <Input placeholder="학생 이름을 입력하세요" data-testid="input-student-name" {...field} />
+                        <Input 
+                          placeholder="학생 이름을 입력하세요" 
+                          data-testid="input-student-name" 
+                          {...field} 
+                          className="text-base"
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
                 />
 
-                {/* 2. 수강할 반 */}
+                {/* 2. 반선택 - 자동 수강료 통합 */}
                 <FormField
                   control={addForm.control}
                   name="classId"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>수강할 반</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value}>
-                        <FormControl>
-                          <SelectTrigger data-testid="select-class">
-                            <SelectValue placeholder="반을 선택하세요 (선택사항)" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {classes.filter(c => c.isActive !== false).map((classItem) => (
-                            <SelectItem key={classItem.id} value={classItem.id}>
-                              {classItem.name} (기본 ₩{classItem.defaultTuition?.toLocaleString()})
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                
-                {/* 3. 수강 시작일 (반이 선택된 경우만) */}
-                {addForm.watch("classId") && (
-                  <FormField
-                    control={addForm.control}
-                    name="startDate"
-                    render={({ field }) => (
+                  render={({ field }) => {
+                    const selectedClass = classes.find(c => c.id === field.value);
+                    return (
                       <FormItem>
-                        <FormLabel>수강 시작일</FormLabel>
-                        <FormControl>
-                          <Input 
-                            type="date" 
-                            data-testid="input-start-date"
-                            {...field}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                )}
-                
-                {/* 4. 개별 수강료 (반이 선택된 경우만) */}
-                {addForm.watch("classId") && (
-                  <FormField
-                    control={addForm.control}
-                    name="customTuition"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>개별 수강료 (선택사항)</FormLabel>
-                        <FormControl>
-                          <Input 
-                            type="number" 
-                            placeholder="기본 수강료와 다를 경우만 입력"
-                            data-testid="input-custom-tuition"
-                            value={field.value || ""}
-                            onChange={(e) => {
-                              const value = e.target.value;
-                              if (value === "") {
-                                field.onChange(undefined);
-                              } else {
-                                const numValue = parseInt(value);
-                                field.onChange(isNaN(numValue) ? undefined : numValue);
+                        <FormLabel className="text-base font-medium">반선택</FormLabel>
+                        <Select 
+                          onValueChange={(value) => {
+                            field.onChange(value);
+                            // 반 선택시 기본 수강료 자동 설정
+                            if (value) {
+                              const selectedClass = classes.find(c => c.id === value);
+                              if (selectedClass?.defaultTuition) {
+                                addForm.setValue('customTuition', selectedClass.defaultTuition);
                               }
-                            }}
-                          />
-                        </FormControl>
+                            }
+                          }} 
+                          value={field.value || ""}
+                        >
+                          <FormControl>
+                            <SelectTrigger data-testid="select-class" className="text-base">
+                              <SelectValue placeholder="반을 선택하세요 (선택사항)" />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            {classes.filter(c => c.isActive !== false).map((classItem) => (
+                              <SelectItem key={classItem.id} value={classItem.id}>
+                                {classItem.name} (기본 ₩{classItem.defaultTuition?.toLocaleString()})
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        {selectedClass && (
+                          <div className="text-sm text-muted-foreground mt-2">
+                            선택된 반: {selectedClass.name} | 수강료: ₩{selectedClass.defaultTuition?.toLocaleString()}
+                          </div>
+                        )}
                         <FormMessage />
                       </FormItem>
-                    )}
-                  />
-                )}
+                    );
+                  }}
+                />
                 
-                {/* 5. 납입 기준일 (반이 선택된 경우만) */}
-                {addForm.watch("classId") && (
+                {/* 3. 형제할인 */}
+                <div className="space-y-3">
                   <FormField
                     control={addForm.control}
-                    name="dueDay"
+                    name="siblingDiscount"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>납입 기준일</FormLabel>
+                        <FormLabel className="text-base font-medium">형제할인</FormLabel>
                         <FormControl>
                           <Input 
-                            type="number" 
-                            min="1" 
-                            max="31"
-                            placeholder="8" 
-                            data-testid="input-due-day"
-                            value={field.value || ""}
-                            onChange={(e) => {
-                              const value = e.target.value;
-                              if (value === "") {
-                                field.onChange(8);
-                              } else {
-                                const numValue = parseInt(value);
-                                field.onChange(isNaN(numValue) ? 8 : numValue);
-                              }
-                            }}
+                            placeholder="형제할인 그룹명 (예: 김가족)" 
+                            data-testid="input-student-sibling-discount" 
+                            {...field} 
+                            className="text-base"
                           />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
                     )}
                   />
-                )}
+                  
+                  <FormField
+                    control={addForm.control}
+                    name="siblingDiscountRate"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel className="text-sm font-normal text-muted-foreground">할인율 적용</FormLabel>
+                        <Select 
+                          onValueChange={field.onChange}
+                          value={field.value || ""}
+                        >
+                          <FormControl>
+                            <SelectTrigger data-testid="select-sibling-discount-rate" className="text-base">
+                              <SelectValue placeholder="할인율 선택 (선택사항)" />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            <SelectItem value="5">5% 할인</SelectItem>
+                            <SelectItem value="10">10% 할인</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
                 
-                {/* 6. 형제할인 */}
-                <FormField
-                  control={addForm.control}
-                  name="siblingDiscount"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>형제할인</FormLabel>
-                      <FormControl>
-                        <Input placeholder="형제할인 그룹명" data-testid="input-student-sibling-discount" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                
-                {/* 7. 자동 할인 적용 선택 */}
-                <FormField
-                  control={addForm.control}
-                  name="siblingDiscountRate"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>자동 할인 적용</FormLabel>
-                      <Select 
-                        onValueChange={(value) => {
-                          // 빈 문자열을 undefined로 변환하여 스키마와 매칭
-                          field.onChange(value === "" ? undefined : value);
-                        }}
-                        value={field.value || ""}
-                      >
-                        <FormControl>
-                          <SelectTrigger data-testid="select-sibling-discount-rate">
-                            <SelectValue placeholder="할인율 선택" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectItem value="">할인 없음</SelectItem>
-                          <SelectItem value="5">5% 할인</SelectItem>
-                          <SelectItem value="10">10% 할인</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                
-                {/* 8. 학년 */}
+                {/* 4. 학년 */}
                 <FormField
                   control={addForm.control}
                   name="grade"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>학년</FormLabel>
+                      <FormLabel className="text-base font-medium">학년</FormLabel>
                       <FormControl>
-                        <Input placeholder="예: 중1, 고2" data-testid="input-student-grade" {...field} />
+                        <Input 
+                          placeholder="예: 중1, 고2, 초6" 
+                          data-testid="input-student-grade" 
+                          {...field} 
+                          className="text-base"
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
                 />
                 
-                {/* 9. 학교 */}
+                {/* 5. 등록일 */}
+                <FormField
+                  control={addForm.control}
+                  name="startDate"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-base font-medium">등록일 {addForm.watch("classId") && "*"}</FormLabel>
+                      <FormControl>
+                        <Input 
+                          type="date" 
+                          data-testid="input-start-date"
+                          {...field}
+                          className="text-base"
+                        />
+                      </FormControl>
+                      {addForm.watch("classId") && (
+                        <div className="text-xs text-muted-foreground">
+                          반을 선택했으므로 등록일이 필수입니다
+                        </div>
+                      )}
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                
+                {/* 6. 학부모 전화번호 */}
+                <FormField
+                  control={addForm.control}
+                  name="parentPhone"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-base font-medium">학부모 전화번호</FormLabel>
+                      <FormControl>
+                        <Input 
+                          placeholder="010-1234-5678" 
+                          data-testid="input-parent-phone" 
+                          {...field} 
+                          className="text-base"
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                
+                {/* 7. 학교 */}
                 <FormField
                   control={addForm.control}
                   name="school"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>학교</FormLabel>
+                      <FormLabel className="text-base font-medium">학교</FormLabel>
                       <FormControl>
-                        <Input placeholder="학교명을 입력하세요" data-testid="input-student-school" {...field} />
+                        <Input 
+                          placeholder="학교명을 입력하세요" 
+                          data-testid="input-student-school" 
+                          {...field} 
+                          className="text-base"
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
                 />
                 
-                {/* 10. 특이사항 */}
+                {/* 8. 기타 비고란 */}
                 <FormField
                   control={addForm.control}
                   name="notes"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>특이사항</FormLabel>
+                      <FormLabel className="text-base font-medium">기타 비고란</FormLabel>
                       <FormControl>
-                        <Textarea placeholder="특이사항을 입력하세요" data-testid="input-student-notes" {...field} />
+                        <Textarea 
+                          placeholder="특이사항이나 추가 정보를 입력하세요" 
+                          data-testid="input-student-notes" 
+                          {...field} 
+                          className="text-base min-h-[80px]"
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
                 />
+                
+                {/* 추가 설정 (반 선택시에만 표시) */}
+                {addForm.watch("classId") && (
+                  <div className="border-t pt-4 space-y-3">
+                    <h4 className="text-sm font-medium text-muted-foreground">수강 설정</h4>
+                    
+                    <FormField
+                      control={addForm.control}
+                      name="customTuition"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel className="text-sm">개별 수강료 (선택사항)</FormLabel>
+                          <FormControl>
+                            <Input 
+                              type="number" 
+                              placeholder="기본 수강료와 다를 경우만 입력"
+                              data-testid="input-custom-tuition"
+                              value={field.value || ""}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                if (value === "") {
+                                  field.onChange(undefined);
+                                } else {
+                                  const numValue = parseInt(value);
+                                  field.onChange(isNaN(numValue) ? undefined : numValue);
+                                }
+                              }}
+                              className="text-base"
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    
+                    <FormField
+                      control={addForm.control}
+                      name="dueDay"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel className="text-sm">납입 기준일</FormLabel>
+                          <FormControl>
+                            <Input 
+                              type="number" 
+                              min="1" 
+                              max="31"
+                              placeholder="8" 
+                              data-testid="input-due-day"
+                              value={field.value || ""}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                if (value === "") {
+                                  field.onChange(8);
+                                } else {
+                                  const numValue = parseInt(value);
+                                  field.onChange(isNaN(numValue) ? 8 : numValue);
+                                }
+                              }}
+                              className="text-base"
+                            />
+                          </FormControl>
+                          <div className="text-xs text-muted-foreground">
+                            매월 납입 기준일 (기본값: 8일)
+                          </div>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                )}
                 </div>
                 
                 <DialogFooter className="flex-shrink-0">

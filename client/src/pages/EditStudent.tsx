@@ -50,7 +50,7 @@ export default function EditStudent() {
     resolver: zodResolver(editStudentSchema),
     defaultValues: {
       name: student?.name || "",
-      classId: currentEnrollment?.classId || "",
+      classId: currentEnrollment?.classId || "unassigned",
       startDate: currentEnrollment?.startDate || "",
       customTuition: currentEnrollment?.tuition || undefined,
     },
@@ -61,7 +61,7 @@ export default function EditStudent() {
     if (student) {
       form.reset({
         name: student.name || "",
-        classId: currentEnrollment?.classId || "",
+        classId: currentEnrollment?.classId || "unassigned",
         startDate: currentEnrollment?.startDate || "",
         customTuition: currentEnrollment?.tuition || undefined,
       });
@@ -80,7 +80,7 @@ export default function EditStudent() {
       const updatedStudent = await studentResponse.json();
       
       // 2. 수강 정보 업데이트 (반이 선택된 경우)
-      if (data.classId) {
+      if (data.classId && data.classId !== "unassigned") {
         const enrollmentData = {
           studentId: id,
           classId: data.classId,
@@ -192,7 +192,7 @@ export default function EditStudent() {
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value="">반 미배정</SelectItem>
+                        <SelectItem value="unassigned">반 미배정</SelectItem>
                         {Array.isArray(classes) && classes.filter((c: any) => c.isActive !== false).map((classItem: any) => (
                           <SelectItem key={classItem.id} value={classItem.id}>
                             {classItem.name} (기본 ₩{classItem.defaultTuition?.toLocaleString()})
@@ -205,7 +205,7 @@ export default function EditStudent() {
                 )}
               />
 
-              {form.watch("classId") && (
+              {form.watch("classId") && form.watch("classId") !== "unassigned" && (
                 <FormField
                   control={form.control}
                   name="startDate"
@@ -225,7 +225,7 @@ export default function EditStudent() {
                 />
               )}
 
-              {form.watch("classId") && (
+              {form.watch("classId") && form.watch("classId") !== "unassigned" && (
                 <FormField
                   control={form.control}
                   name="customTuition"

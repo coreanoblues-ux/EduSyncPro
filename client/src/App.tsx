@@ -9,6 +9,7 @@ import NotFound from "@/pages/not-found";
 import Teachers from "@/pages/Teachers";
 import Classes from "@/pages/Classes";
 import Students from "@/pages/Students";
+import EditStudent from "@/pages/EditStudent";
 import Payments from "@/pages/Payments";
 import LessonLogs from "@/pages/LessonLogs";
 import Overdues from "@/pages/Overdues";
@@ -44,6 +45,7 @@ function Router({ user, tenant }: { user: User | null; tenant: Tenant | null }) 
       <Route path="/" component={() => <Dashboard userRole={user.role} tenant={tenant} />} />
       <Route path="/teachers" component={() => <Teachers userRole={user.role} />} />
       <Route path="/classes" component={() => <Classes userRole={user.role} />} />
+      <Route path="/students/edit/:id" component={() => <EditStudent />} />
       <Route path="/students" component={() => <Students userRole={user.role} />} />
       <Route path="/payments" component={() => <Payments userRole={user.role} />} />
       <Route path="/logs" component={() => <LessonLogs userRole={user.role} />} />

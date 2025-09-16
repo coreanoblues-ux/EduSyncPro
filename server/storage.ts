@@ -27,7 +27,7 @@ import {
   lessonLogs,
   waiters
 } from "@shared/schema";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, desc, isNull } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { db } from "./db";
 
@@ -46,6 +46,7 @@ export interface IStorage {
   
   // Student methods
   getStudentsByTenant(tenantId: string): Promise<Student[]>;
+  getDashboardStudents(tenantId: string): Promise<any[]>;
   getStudent(id: string): Promise<Student | undefined>;
   createStudent(student: InsertStudent): Promise<Student>;
   updateStudent(id: string, student: Partial<InsertStudent>): Promise<Student>;
@@ -169,6 +170,90 @@ export class DbStorage implements IStorage {
   // Student methods
   async getStudentsByTenant(tenantId: string): Promise<Student[]> {
     return await db.select().from(students).where(eq(students.tenantId, tenantId));
+  }
+
+  async getDashboardStudents(tenantId: string): Promise<any[]> {
+    // 현재 달을 YYYY-MM 형식으로 가져오기
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    
+    // 학생들을 enrollment, class, payment 정보와 함께 조인하고
+    // 미납자 우선, 최신 등록순으로 정렬해서 최대 6명만 가져오기
+    const result = await db
+      .select({
+        id: students.id,
+        tenantId: students.tenantId,
+        name: students.name,
+        school: students.school,
+        grade: students.grade,
+        gender: students.gender,
+        parentPhone: students.parentPhone,
+        siblingGroup: students.siblingGroup,
+        notes: students.notes,
+        isActive: students.isActive,
+        createdAt: students.createdAt,
+        updatedAt: students.updatedAt,
+        // enrollment 정보
+        enrollmentId: enrollments.id,
+        classId: enrollments.classId,
+        tuition: enrollments.tuition,
+        dueDay: enrollments.dueDay,
+        startDate: enrollments.startDate,
+        enrollmentIsActive: enrollments.isActive,
+        // class 정보
+        className: classes.name,
+        classSubject: classes.subject,
+        defaultTuition: classes.defaultTuition,
+        // 이번 달 납부 여부
+        hasCurrentPayment: payments.id
+      })
+      .from(students)
+      .leftJoin(enrollments, and(
+        eq(enrollments.studentId, students.id),
+        eq(enrollments.isActive, true)
+      ))
+      .leftJoin(classes, eq(classes.id, enrollments.classId))
+      .leftJoin(payments, and(
+        eq(payments.enrollmentId, enrollments.id),
+        eq(payments.paymentMonth, currentMonth)
+      ))
+      .where(and(
+        eq(students.tenantId, tenantId),
+        eq(students.isActive, true)
+      ))
+      .orderBy(
+        // 미납자를 우선으로 (hasCurrentPayment가 null인 경우가 먼저)
+        sql`CASE WHEN ${payments.id} IS NULL THEN 0 ELSE 1 END`,
+        // 그 다음은 최신 등록순
+        desc(students.createdAt)
+      )
+      .limit(6);
+
+    // 확장된 학생 객체로 변환하고 중복 제거
+    const studentMap = new Map<string, any>();
+    
+    for (const row of result) {
+      if (!studentMap.has(row.id)) {
+        studentMap.set(row.id, {
+          // 기본 학생 정보
+          id: row.id,
+          name: row.name,
+          school: row.school || "미설정",
+          grade: row.grade || "미설정",
+          parentPhone: row.parentPhone || "미설정",
+          // 반 정보 (수강시작일 없어도 수업배정되면 배정으로 표시)
+          className: row.enrollmentId ? (row.className || "배정") : "미배정",
+          // 등록/납부 정보
+          dueDay: row.dueDay || 8,
+          tuition: row.tuition || row.defaultTuition || 0,
+          paymentStatus: row.hasCurrentPayment ? 'paid' : (row.enrollmentId ? 'overdue' : 'pending'),
+          // 디버깅 정보
+          enrollmentId: row.enrollmentId,
+          hasCurrentPayment: !!row.hasCurrentPayment
+        });
+      }
+    }
+
+    return Array.from(studentMap.values());
   }
 
   async getStudent(id: string): Promise<Student | undefined> {

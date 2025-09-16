@@ -27,9 +27,9 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
   // 승인되지 않은 테넌트는 데이터를 불러오지 않음
   const isApproved = !tenant || tenant.status === 'active' || userRole === 'superadmin';
   
-  // Fetch students data
+  // Fetch students data (for dashboard - 미납자 우선, 최신순, 최대 6명)
   const { data: students = [], isLoading: studentsLoading } = useQuery({
-    queryKey: ['/api/students'],
+    queryKey: ['/api/dashboard/students'],
     enabled: isApproved,
   });
 
@@ -53,7 +53,6 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
 
   // todo: remove mock functionality
   const getDashboardData = () => {
-    const studentsArray = Array.isArray(students) ? students : [];
     const classesArray = Array.isArray(classes) ? classes : [];
     
     const commonData = [
@@ -72,22 +71,15 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
       }
     ];
 
-    // 학원장과 슈퍼관리자만 수납액과 전체 학생 수 볼 수 있음
+    // 학원장과 슈퍼관리자만 전체 학생 수 볼 수 있음
     if (userRole === 'owner' || userRole === 'superadmin') {
       return [
         {
-          title: "이번달 수납액",
-          value: "₩0", // todo: calculate from payments
-          description: "전월 대비",
-          icon: CreditCard,
-          trend: { value: "준비중", isPositive: true }
-        },
-        {
           title: "전체 학생 수",
-          value: `${studentsArray.length}명`,
+          value: `${allStudentsArray.length}명`,
           description: "재원 학생",
           icon: Users,
-          trend: studentsArray.length > 0 ? { value: "+3명", isPositive: true } : undefined
+          trend: allStudentsArray.length > 0 ? { value: "+3명", isPositive: true } : undefined
         },
         ...commonData
       ];
@@ -106,30 +98,15 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
     ];
   };
 
-  // Get student data with real enrollment info
-  const studentsArray = Array.isArray(students) ? students : [];
-  const enrollmentsArray = Array.isArray(enrollments) ? enrollments : [];
-  const classesArray = Array.isArray(classes) ? classes : [];
-  
-  const studentData = studentsArray.map((student: any) => {
-    // Find student's enrollment
-    const enrollment = enrollmentsArray.find((e: any) => e.studentId === student.id && e.isActive);
-    
-    // Find class info if enrollment exists
-    const studentClass = enrollment ? classesArray.find((c: any) => c.id === enrollment.classId) : null;
-    
-    return {
-      id: student.id,
-      name: student.name,
-      grade: student.grade || "미설정",
-      school: student.school || "미설정",
-      className: studentClass ? studentClass.name : "반 미배정",
-      dueDay: enrollment ? enrollment.dueDay : 8,
-      tuition: enrollment ? (enrollment.tuition || studentClass?.defaultTuition || 0) : 0,
-      paymentStatus: 'pending' as const,
-      parentPhone: student.parentPhone || "미설정"
-    };
+  // Fetch all students data for total count (separate from dashboard students)
+  const { data: allStudents = [] } = useQuery({
+    queryKey: ['/api/students'],
+    enabled: isApproved,
   });
+
+  // Dashboard students already include all necessary data (미납자 우선, 최신순, 최대 6명)
+  const studentData = Array.isArray(students) ? students : [];
+  const allStudentsArray = Array.isArray(allStudents) ? allStudents : [];
 
   // Mock classes for now
   const mockClasses = Array.isArray(classes) ? classes : [];

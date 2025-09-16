@@ -450,6 +450,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Dashboard Students Route (미납자 우선, 최신순, 최대 6명)
+  app.get('/api/dashboard/students', authGuard, tenantGuard, async (req, res) => {
+    try {
+      const students = await storage.getDashboardStudents(req.user!.tenantId!);
+      res.json(students);
+    } catch (error) {
+      console.error('Get dashboard students error:', error);
+      res.status(500).json({ error: '대시보드 학생 목록 조회 중 오류가 발생했습니다.' });
+    }
+  });
+
   app.get('/api/students/:id', 
     authGuard, 
     tenantGuard, 

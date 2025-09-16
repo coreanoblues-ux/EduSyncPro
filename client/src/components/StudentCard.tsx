@@ -24,16 +24,16 @@ export default function StudentCard({ student, onEdit, onPayment }: StudentCardP
     switch (status) {
       case 'paid': return 'bg-green-100 text-green-800';
       case 'overdue': return 'bg-red-100 text-red-800';
-      case 'pending': return 'bg-yellow-100 text-yellow-800';
+      case 'pending': return 'bg-red-100 text-red-800';  // 미납은 빨간색으로 통일
       default: return 'bg-gray-100 text-gray-800';
     }
   };
 
   const getStatusText = (status: string) => {
     switch (status) {
-      case 'paid': return '납부완료';
+      case 'paid': return '완납';
       case 'overdue': return '미납';
-      case 'pending': return '대기';
+      case 'pending': return '미납';  // '대기' 대신 '미납'으로 표시
       default: return '확인필요';
     }
   };

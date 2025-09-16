@@ -228,6 +228,29 @@ export default function Payments({ userRole }: PaymentsProps) {
   const teacherData = processTeacherData();
   const currentMonth = new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long' });
 
+  // 총수납액과 총미납액 계산
+  const calculateFinancials = () => {
+    const currentMonthString = new Date().toISOString().slice(0, 7); // YYYY-MM
+    
+    // 총수납액: 현재 달의 모든 payment 금액 합산
+    const totalRevenue = payments
+      .filter(p => p.paymentMonth === currentMonthString)
+      .reduce((sum, p) => sum + (p.amount || 0), 0);
+    
+    // 총미납액: 미납 학생들의 수강료 합산
+    const totalOutstanding = teacherData.reduce((total, teacher) => {
+      return total + teacher.classes.reduce((classTotal, classItem) => {
+        return classTotal + classItem.students
+          .filter(student => !student.isPaid)
+          .reduce((studentTotal, student) => studentTotal + (student.tuition || 0), 0);
+      }, 0);
+    }, 0);
+
+    return { totalRevenue, totalOutstanding };
+  };
+
+  const { totalRevenue, totalOutstanding } = calculateFinancials();
+
   return (
     <div className="space-y-6 p-6" data-testid="payments-page">
       {/* Header */}
@@ -475,7 +498,7 @@ export default function Payments({ userRole }: PaymentsProps) {
               {currentMonth} 수납 요약
             </CardTitle>
           </CardHeader>
-          <CardContent className="grid gap-4 md:grid-cols-3">
+          <CardContent className={`grid gap-4 ${userRole === 'owner' || userRole === 'superadmin' ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
             <div className="text-center">
               <div className="text-2xl font-bold text-primary">
                 {teacherData.reduce((sum: number, t: TeacherWithClasses) => sum + t.classes.length, 0)}개
@@ -493,6 +516,22 @@ export default function Payments({ userRole }: PaymentsProps) {
                 {teacherData.reduce((sum: number, t: TeacherWithClasses) => sum + (t.totalStudents - t.paidStudents), 0)}명
               </div>
               <p className="text-sm text-muted-foreground">미납</p>
+            </div>
+            {/* 총수납액 - 원장만 */}
+            {(userRole === 'owner' || userRole === 'superadmin') && (
+              <div className="text-center">
+                <div className="text-2xl font-bold text-blue-600">
+                  ₩{totalRevenue.toLocaleString()}
+                </div>
+                <p className="text-sm text-muted-foreground">총수납액</p>
+              </div>
+            )}
+            {/* 총미납액 - 원장과 교사 */}
+            <div className="text-center">
+              <div className="text-2xl font-bold text-orange-600">
+                ₩{totalOutstanding.toLocaleString()}
+              </div>
+              <p className="text-sm text-muted-foreground">총미납액</p>
             </div>
           </CardContent>
         </Card>

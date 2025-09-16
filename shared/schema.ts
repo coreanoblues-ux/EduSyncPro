@@ -255,10 +255,10 @@ export const insertWaiterSchema = createInsertSchema(waiters).omit({ id: true, c
 export const updateEnrollmentSchema = z.object({
   studentId: z.string().optional(),
   classId: z.string().optional(),
-  startDate: z.coerce.date().optional(),
+  startDate: z.string().optional(), // YYYY-MM-DD 문자열로 받기
   tuition: z.number().optional(),
   dueDay: z.number().int().min(1).max(31).optional(),
-  endDate: z.coerce.date().optional(),
+  endDate: z.string().optional(), // YYYY-MM-DD 문자열로 받기
   isActive: z.boolean().optional(),
 });
 

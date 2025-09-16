@@ -878,6 +878,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     roleGuard('owner', 'teacher'),
     validateParams(idParamSchema),
     validateBody(updateEnrollmentSchema),
+    (req: Request, res: Response, next: any) => {
+      // 문자열 날짜를 Date 객체로 변환
+      if (req.body.startDate && typeof req.body.startDate === 'string') {
+        req.body.startDate = new Date(req.body.startDate + 'T00:00:00+09:00'); // 한국 시간대
+      }
+      if (req.body.endDate && typeof req.body.endDate === 'string') {
+        req.body.endDate = new Date(req.body.endDate + 'T00:00:00+09:00'); // 한국 시간대
+      }
+      next();
+    },
     async (req: Request, res: Response) => {
       try {
         const enrollment = await storage.getEnrollment ? await storage.getEnrollment(req.params.id) : null;

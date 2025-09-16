@@ -84,17 +84,9 @@ export default function StudentCard({ student, onEdit, onPayment }: StudentCardP
         <div className="flex gap-2 pt-2">
           <Button 
             size="sm" 
-            variant="outline" 
-            onClick={() => onEdit(student.id)}
-            data-testid={`button-edit-${student.id}`}
-          >
-            <Edit className="h-3 w-3 mr-1" />
-            수정
-          </Button>
-          <Button 
-            size="sm" 
             onClick={() => onPayment(student.id, 'current')}
             data-testid={`button-pay-current-${student.id}`}
+            className="flex-1"
           >
             <CreditCard className="h-3 w-3 mr-1" />
             이번달 납부

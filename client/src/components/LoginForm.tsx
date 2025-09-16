@@ -5,7 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { LogIn, Eye, EyeOff, UserPlus, Shield } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { LogIn, Eye, EyeOff, UserPlus, Shield, AlertCircle } from "lucide-react";
 import AcademyLogo from "./AcademyLogo";
 
 interface LoginFormProps {
@@ -26,15 +27,18 @@ export default function LoginForm({ onLogin, onSignup, onAdminLogin }: LoginForm
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [adminPassword, setAdminPassword] = useState("");
   const [adminLoginLoading, setAdminLoginLoading] = useState(false);
+  const [loginError, setLoginError] = useState("");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
+    setLoginError(""); // 이전 오류 메시지 초기화
     
     try {
       await onLogin(formData);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Login failed:', error);
+      setLoginError(error.message || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
     } finally {
       setIsLoading(false);
     }
@@ -142,6 +146,16 @@ export default function LoginForm({ onLogin, onSignup, onAdminLogin }: LoginForm
                 </SelectContent>
               </Select>
             </div>
+
+            {/* 로그인 오류 메시지 */}
+            {loginError && (
+              <Alert variant="destructive" data-testid="alert-login-error">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>
+                  {loginError}
+                </AlertDescription>
+              </Alert>
+            )}
 
             <Button 
               type="submit" 

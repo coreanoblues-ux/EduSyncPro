@@ -765,6 +765,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
     (req: Request, res: Response, next: any) => {
       console.log('Enrollment data received:', JSON.stringify(req.body, null, 2));
       
+      // 날짜 문자열을 Date 객체로 변환
+      if (req.body.startDate) {
+        req.body.startDate = new Date(req.body.startDate);
+      }
+      if (req.body.endDate) {
+        req.body.endDate = new Date(req.body.endDate);
+      }
+      
       const schema = insertEnrollmentSchema.omit({ tenantId: true, isActive: true });
       try {
         req.body = schema.parse(req.body);

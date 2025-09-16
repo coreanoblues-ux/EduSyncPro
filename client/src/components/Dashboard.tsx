@@ -185,6 +185,7 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
         <div className="flex gap-2">
           <Button 
             disabled={!isApproved}
+            onClick={() => setLocation('/students')}
             data-testid="button-add-student"
           >
             <Plus className="h-4 w-4 mr-2" />

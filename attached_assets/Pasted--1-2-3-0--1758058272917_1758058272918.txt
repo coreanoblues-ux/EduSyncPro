@@ -1,0 +1,73 @@
+🎯 목표
+학생 섹션에서 “수정” 클릭 시 터지는 오류를 1) 재현 → 2) 원인 고정 → 3) 패치까지 한 번에 완료한다.
+
+## 0) 즉시 재현 로그 주입(프론트)
+- 학생 수정 폼 제출 핸들러에 다음을 임시로 추가:
+  console.log('[EDIT-SUBMIT] raw form values:', values);
+
+## 1) 라우트/핸들러 존재 확인(백엔드)
+- 전역 검색:
+  rg -n "students" server | head -n 50
+  rg -n "app\.(put|patch)\(|router\.(put|patch)\(" server
+  rg -n "/api/students/:id" server
+- 기대: /api/students/:id (PUT 또는 PATCH) 존재.
+- 없으면 생성: router.put('/api/students/:id', handler)
+
+## 2) Vite/SPA가 API를 가로채는지 확인
+- curl -i -X PUT "$API_ORIGIN/api/students/1" -H "Content-Type: application/json" -d '{}' 
+- 응답 Content-Type이 text/html이면 라우팅 순서 수정( /api 라우트가 캐치올보다 먼저 ). JSON만 나오게 고정.
+
+## 3) Select 빈 값/타입 불일치 제거 (등록/수정 공통)
+- 전역 치환:
+  rg -n "value=\"\"" src server
+  rg -n "value=\{.*\|\| *''\}" src
+- 모두 고치기:
+  • <Select.Item value="">  → 제거(placeholder는 <Select.Value placeholder="…">로 대체)
+  • value={x || ''}        → value={x ?? undefined}
+  • <Select.Item value={option?.id || ''}> → value={String(option.id)}
+  • 수정 폼 진입 시: form.reset({ classId: existing?.classId != null ? String(existing.classId) : undefined, ... })
+
+## 4) 프론트 제출 코드 점검
+- 전역 검색:
+  rg -n "updateStudent|onSubmit|mutate|fetch\\(.*students" src
+- 요청은 반드시 자격증명 포함:
+  fetch(`${API}/api/students/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type':'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(sanitize(values))
+  })
+- sanitize 유틸(빈 문자열→null/숫자 변환):
+  const sanitize = (v) => {
+    const x = { ...v };
+    Object.keys(x).forEach(k => {
+      if (x[k] === '') x[k] = null;
+      if (['classId','tuition','age'].includes(k) && x[k] != null) x[k] = Number(x[k]);
+    });
+    return x;
+  };
+
+## 5) 백엔드 검증/응답 계약(항상 JSON)
+- DTO/Zod/Yup 스키마 확인:
+  rg -n "student.*schema|z\.object|yup\.object" server
+- 실패는 400/409/422 JSON으로:
+  return res.status(422).json({ ok:false, code:'VALIDATION_ERROR', details: errors });
+- 성공은 200 JSON:
+  return res.json({ ok:true, student: updated });
+
+## 6) DB 제약/중복 확인
+- 중복(전화/이메일)로 실패 시 409 반환:
+  if (duplicate) return res.status(409).json({ ok:false, code:'DUPLICATE_KEY', field:'phone' });
+
+## 7) 즉석 E2E 프로브(수정 경로만)
+- curl -i -X PUT "$API_ORIGIN/api/students/1" \
+    -H "Content-Type: application/json" \
+    -d '{"name":"테스트","classId":2}' -b /tmp/cookies.txt
+- 기대: 200 + application/json + { ok:true }
+
+## 8) UI 업데이트
+- 성공 시: 토스트 + React Query invalidate(['students']) 실행.
+- 실패 시: 에러코드별 인라인 표시(예: DUPLICATE_KEY → 해당 필드에 메시지).
+
+## 9) 산출물
+- 변경 파일별 diff, 실패 원인 요약(빈 value / 라우팅 / 검증 중 어느 것인지), curl 결과 캡처.

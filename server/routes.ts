@@ -762,7 +762,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
     authGuard,
     tenantGuard,
     roleGuard('owner', 'teacher'),
-    validateBody(insertEnrollmentSchema.omit({ tenantId: true, isActive: true })),
+    (req: Request, res: Response, next: any) => {
+      console.log('Enrollment data received:', JSON.stringify(req.body, null, 2));
+      
+      const schema = insertEnrollmentSchema.omit({ tenantId: true, isActive: true });
+      try {
+        req.body = schema.parse(req.body);
+        next();
+      } catch (error) {
+        console.log('Enrollment validation error:', error);
+        if (error instanceof z.ZodError) {
+          return res.status(400).json({ 
+            error: "입력 데이터가 올바르지 않습니다.", 
+            details: error.errors 
+          });
+        }
+        return res.status(400).json({ error: "입력 데이터 검증 실패" });
+      }
+    },
     async (req: Request, res: Response) => {
       try {
         const enrollmentData = {

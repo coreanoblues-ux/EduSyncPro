@@ -38,8 +38,8 @@ const editStudentSchema = z.object({
   customTuition: z.number().optional(),
 }).refine((data) => {
   // 반이 선택되었다면 시작일(등록일)이 필수
-  if (data.classId && data.classId.trim() !== "") {
-    return data.startDate && data.startDate.trim() !== "";
+  if (data.classId) {
+    return data.startDate && data.startDate !== "";
   }
   return true;
 }, {
@@ -126,7 +126,7 @@ export default function EditStudent() {
       const updatedStudent = await studentResponse.json();
       
       // 2. 수강 정보 업데이트 (반이 선택된 경우)
-      if (data.classId && data.classId.trim()) {
+      if (data.classId) {
         // 기본 수강료 계산
         const selectedClass = Array.isArray(classes) ? classes.find((c: any) => c.id === data.classId) : null;
         const baseTuition = data.customTuition ?? selectedClass?.defaultTuition ?? 0;

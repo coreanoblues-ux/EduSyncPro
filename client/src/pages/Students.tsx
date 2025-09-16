@@ -55,6 +55,11 @@ export default function Students({ userRole }: StudentsProps) {
     queryKey: ['/api/classes'],
   });
 
+  // Fetch enrollments for editing student enrollment info
+  const { data: enrollments = [] } = useQuery({
+    queryKey: ['/api/enrollments'],
+  });
+
   // Add student mutation
   const addStudentMutation = useMutation({
     mutationFn: async (data: StudentFormData) => {
@@ -109,11 +114,54 @@ export default function Students({ userRole }: StudentsProps) {
   // Edit student mutation
   const editStudentMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string, data: StudentFormData }) => {
-      const response = await apiRequest('PUT', `/api/students/${id}`, data);
-      return await response.json();
+      // 1. 학생 기본 정보 업데이트
+      const studentUpdateData = {
+        name: data.name,
+        school: data.school,
+        grade: data.grade,
+        gender: data.gender,
+        parentPhone: data.parentPhone,
+        siblingGroup: data.siblingGroup,
+        notes: data.notes,
+      };
+      
+      const studentResponse = await apiRequest('PUT', `/api/students/${id}`, studentUpdateData);
+      const updatedStudent = await studentResponse.json();
+      
+      // 2. 수강 정보 업데이트 (반이 선택된 경우)
+      if (data.classId) {
+        const enrollmentsArray = Array.isArray(enrollments) ? enrollments : [];
+        const existingEnrollment = enrollmentsArray.find((e: any) => e.studentId === id);
+        
+        const enrollmentData = {
+          studentId: id,
+          classId: data.classId,
+          startDate: data.startDate,
+          tuition: data.customTuition,
+          dueDay: data.dueDay || 8,
+        };
+        
+        if (existingEnrollment) {
+          // 기존 수강 정보 업데이트
+          await apiRequest('PUT', `/api/enrollments/${existingEnrollment.id}`, enrollmentData);
+        } else {
+          // 새 수강 등록 생성
+          await apiRequest('POST', '/api/enrollments', enrollmentData);
+        }
+      } else {
+        // 반이 선택되지 않은 경우 기존 수강 정보 삭제
+        const enrollmentsArray = Array.isArray(enrollments) ? enrollments : [];
+        const existingEnrollment = enrollmentsArray.find((e: any) => e.studentId === id);
+        if (existingEnrollment) {
+          await apiRequest('DELETE', `/api/enrollments/${existingEnrollment.id}`);
+        }
+      }
+      
+      return updatedStudent;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/students'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/enrollments'] });
       setIsEditDialogOpen(false);
       setEditingStudent(null);
       toast({
@@ -222,6 +270,11 @@ export default function Students({ userRole }: StudentsProps) {
       parentPhone: "",
       siblingGroup: "",
       notes: "",
+      // 수강 정보 필드들 추가
+      classId: "",
+      startDate: "",
+      customTuition: undefined,
+      dueDay: 8,
     },
   });
 
@@ -249,6 +302,11 @@ export default function Students({ userRole }: StudentsProps) {
 
   const openEditDialog = (student: Student) => {
     setEditingStudent(student);
+    
+    // 해당 학생의 수강 정보 찾기
+    const enrollmentsArray = Array.isArray(enrollments) ? enrollments : [];
+    const enrollment = enrollmentsArray.find((e: any) => e.studentId === student.id);
+    
     editForm.reset({
       name: student.name,
       school: student.school || "",
@@ -257,6 +315,11 @@ export default function Students({ userRole }: StudentsProps) {
       parentPhone: student.parentPhone || "",
       siblingGroup: student.siblingGroup || "",
       notes: student.notes || "",
+      // 수강 정보 필드들 추가
+      classId: enrollment?.classId || "",
+      startDate: enrollment?.startDate || "",
+      customTuition: enrollment?.tuition || undefined,
+      dueDay: enrollment?.dueDay || 8,
     });
     setIsEditDialogOpen(true);
   };
@@ -815,6 +878,60 @@ export default function Students({ userRole }: StudentsProps) {
                   </FormItem>
                 )}
               />
+              
+              {/* 수강 정보 섹션 */}
+              <div className="border-t pt-4 mt-4">
+                <div className="mb-3">
+                  <h4 className="text-sm font-medium">수강 정보</h4>
+                  <p className="text-xs text-muted-foreground">학생의 수강할 반과 시작일을 수정할 수 있습니다.</p>
+                </div>
+                
+                <FormField
+                  control={editForm.control}
+                  name="classId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>수강할 반</FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value}>
+                        <FormControl>
+                          <SelectTrigger data-testid="select-edit-class">
+                            <SelectValue placeholder="반을 선택하세요" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="">반 미배정</SelectItem>
+                          {classes.filter((c: any) => c.isActive !== false).map((classItem: any) => (
+                            <SelectItem key={classItem.id} value={classItem.id}>
+                              {classItem.name} (기본 ₩{classItem.defaultTuition?.toLocaleString()})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                
+                {editForm.watch("classId") && (
+                  <FormField
+                    control={editForm.control}
+                    name="startDate"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>수강 시작일</FormLabel>
+                        <FormControl>
+                          <Input 
+                            type="date" 
+                            data-testid="input-edit-start-date"
+                            {...field}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
+              </div>
               </div>
               
               <DialogFooter className="flex-shrink-0">

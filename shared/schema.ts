@@ -246,7 +246,22 @@ export const insertUserSchema = createInsertSchema(users).omit({ id: true, creat
 export const insertTeacherSchema = createInsertSchema(teachers).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertClassSchema = createInsertSchema(classes).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertStudentSchema = createInsertSchema(students).omit({ id: true, createdAt: true, updatedAt: true });
-export const insertEnrollmentSchema = createInsertSchema(enrollments).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertEnrollmentSchema = createInsertSchema(enrollments)
+  .omit({ id: true, createdAt: true, updatedAt: true })
+  .extend({
+    startDate: z.union([z.string(), z.date()]).transform((val) => {
+      if (typeof val === 'string') {
+        return new Date(val);
+      }
+      return val;
+    }),
+    endDate: z.union([z.string(), z.date(), z.null()]).optional().transform((val) => {
+      if (typeof val === 'string') {
+        return new Date(val);
+      }
+      return val;
+    }),
+  });
 export const insertPaymentSchema = createInsertSchema(payments).omit({ id: true, createdAt: true });
 export const insertLessonLogSchema = createInsertSchema(lessonLogs).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertWaiterSchema = createInsertSchema(waiters).omit({ id: true, createdAt: true });

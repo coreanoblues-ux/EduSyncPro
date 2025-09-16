@@ -4,15 +4,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { LogIn, Eye, EyeOff, UserPlus } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { LogIn, Eye, EyeOff, UserPlus, Shield } from "lucide-react";
 import AcademyLogo from "./AcademyLogo";
 
 interface LoginFormProps {
   onLogin: (credentials: { email: string; password: string; role: string }) => void;
   onSignup?: () => void;
+  onAdminLogin?: () => void;
 }
 
-export default function LoginForm({ onLogin, onSignup }: LoginFormProps) {
+export default function LoginForm({ onLogin, onSignup, onAdminLogin }: LoginFormProps) {
   const [formData, setFormData] = useState({
     email: '',
     password: '',
@@ -21,6 +23,9 @@ export default function LoginForm({ onLogin, onSignup }: LoginFormProps) {
   const [showSuperAdmin, setShowSuperAdmin] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [showAdminModal, setShowAdminModal] = useState(false);
+  const [adminPassword, setAdminPassword] = useState("");
+  const [adminLoginLoading, setAdminLoginLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,12 +40,36 @@ export default function LoginForm({ onLogin, onSignup }: LoginFormProps) {
     }
   };
 
+  const handleAdminLogin = async () => {
+    if (adminPassword === "wchung00@") {
+      setAdminLoginLoading(true);
+      try {
+        if (onAdminLogin) {
+          await onAdminLogin();
+        }
+      } catch (error) {
+        console.error('Admin login failed:', error);
+      } finally {
+        setAdminLoginLoading(false);
+        setShowAdminModal(false);
+        setAdminPassword("");
+      }
+    } else {
+      setAdminPassword("");
+      alert("잘못된 관리자 비밀번호입니다.");
+    }
+  };
+
+  const handleSecretClick = () => {
+    setShowAdminModal(true);
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-muted/30 p-4">
       <Card className="w-full max-w-md" data-testid="login-form">
         <CardHeader className="space-y-4 text-center">
           <div className="flex justify-center">
-            <AcademyLogo />
+            <AcademyLogo onSecretClick={handleSecretClick} />
           </div>
           <div>
             <CardTitle className="text-2xl">로그인</CardTitle>
@@ -144,6 +173,53 @@ export default function LoginForm({ onLogin, onSignup }: LoginFormProps) {
           )}
         </CardContent>
       </Card>
+
+      {/* 관리자 로그인 모달 */}
+      <Dialog open={showAdminModal} onOpenChange={setShowAdminModal}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Shield className="h-5 w-5 text-orange-500" />
+              시스템 관리자 인증
+            </DialogTitle>
+            <DialogDescription>
+              관리자 비밀번호를 입력하세요
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="adminPassword">관리자 비밀번호</Label>
+              <Input
+                id="adminPassword"
+                type="password"
+                placeholder="관리자 비밀번호 입력"
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleAdminLogin()}
+                data-testid="input-admin-password"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowAdminModal(false);
+                setAdminPassword("");
+              }}
+            >
+              취소
+            </Button>
+            <Button 
+              onClick={handleAdminLogin}
+              disabled={adminLoginLoading || !adminPassword}
+              data-testid="button-admin-login"
+            >
+              {adminLoginLoading ? "인증 중..." : "관리자 로그인"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

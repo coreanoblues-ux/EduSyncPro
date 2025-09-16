@@ -1,8 +1,9 @@
 interface AcademyLogoProps {
   className?: string;
+  onSecretClick?: () => void;
 }
 
-export default function AcademyLogo({ className = "" }: AcademyLogoProps) {
+export default function AcademyLogo({ className = "", onSecretClick }: AcademyLogoProps) {
   return (
     <div className={`flex items-center gap-2 ${className}`} data-testid="academy-logo">
       {/* Orange accent bars inspired by the original logo */}
@@ -22,7 +23,11 @@ export default function AcademyLogo({ className = "" }: AcademyLogoProps) {
           </span>
         </div>
         <span className="text-xs font-medium text-orange-600 dark:text-orange-400 tracking-wider uppercase">
-          system
+          s<span 
+            className="cursor-pointer hover:text-orange-500 transition-colors"
+            onClick={onSecretClick}
+            data-testid="secret-admin-trigger"
+          >y</span>stem
         </span>
       </div>
     </div>

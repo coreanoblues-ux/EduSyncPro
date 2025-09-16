@@ -90,7 +90,7 @@ export default function EditStudent() {
         siblingDiscountRate: undefined, // 할인율은 계산된 값이므로 초기값 없음
         grade: student.grade || "",
         startDate: currentEnrollment?.startDate || "",
-        dueDay: currentEnrollment?.dueDay || undefined,
+        dueDay: undefined, // 항상 빈 상태로 시작
         parentPhone: student.parentPhone || "",
         school: student.school || "",
         notes: student.notes || "",

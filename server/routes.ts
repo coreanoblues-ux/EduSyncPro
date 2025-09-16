@@ -19,7 +19,8 @@ import {
   insertEnrollmentSchema,
   insertPaymentSchema,
   insertLessonLogSchema,
-  insertWaiterSchema
+  insertWaiterSchema,
+  updateEnrollmentSchema
 } from "@shared/schema";
 import { z } from "zod";
 
@@ -68,6 +69,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         next();
       } catch (error) {
         if (error instanceof z.ZodError) {
+          console.error('🚨 Validation Error:', JSON.stringify(error.errors, null, 2));
           return res.status(400).json({ 
             error: "입력 데이터가 올바르지 않습니다.", 
             details: error.errors 
@@ -875,17 +877,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     tenantGuard,
     roleGuard('owner', 'teacher'),
     validateParams(idParamSchema),
-    (req: Request, res: Response, next: any) => {
-      // 날짜 문자열을 Date 객체로 변환
-      if (req.body.startDate && typeof req.body.startDate === 'string') {
-        req.body.startDate = new Date(req.body.startDate);
-      }
-      if (req.body.endDate && typeof req.body.endDate === 'string') {
-        req.body.endDate = new Date(req.body.endDate);
-      }
-      next();
-    },
-    validateBody(insertEnrollmentSchema.omit({ tenantId: true }).partial()),
+    validateBody(updateEnrollmentSchema),
     async (req: Request, res: Response) => {
       try {
         const enrollment = await storage.getEnrollment ? await storage.getEnrollment(req.params.id) : null;

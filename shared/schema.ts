@@ -251,6 +251,17 @@ export const insertPaymentSchema = createInsertSchema(payments).omit({ id: true,
 export const insertLessonLogSchema = createInsertSchema(lessonLogs).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertWaiterSchema = createInsertSchema(waiters).omit({ id: true, createdAt: true });
 
+// Update schemas
+export const updateEnrollmentSchema = z.object({
+  studentId: z.string().optional(),
+  classId: z.string().optional(),
+  startDate: z.coerce.date().optional(),
+  tuition: z.number().optional(),
+  dueDay: z.number().int().min(1).max(31).optional(),
+  endDate: z.coerce.date().optional(),
+  isActive: z.boolean().optional(),
+});
+
 // Types
 export type Tenant = typeof tenants.$inferSelect;
 export type User = typeof users.$inferSelect;

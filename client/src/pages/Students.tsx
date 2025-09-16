@@ -15,7 +15,8 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Student } from "@shared/schema";
+import { Student, Class, InsertEnrollment } from "@shared/schema";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const studentFormSchema = z.object({
   name: z.string().min(1, "학생 이름을 입력해주세요"),
@@ -25,6 +26,11 @@ const studentFormSchema = z.object({
   parentPhone: z.string().optional(),
   siblingGroup: z.string().optional(),
   notes: z.string().optional(),
+  // 반 선택 관련 필드 추가
+  classId: z.string().optional(),
+  startDate: z.string().optional(),
+  customTuition: z.number().optional(),
+  dueDay: z.number().min(1).max(31).optional(),
 });
 
 type StudentFormData = z.infer<typeof studentFormSchema>;
@@ -44,19 +50,51 @@ export default function Students({ userRole }: StudentsProps) {
     queryKey: ['/api/students'],
   });
 
+  // Fetch classes for selection
+  const { data: classes = [], isLoading: classesLoading } = useQuery<Class[]>({
+    queryKey: ['/api/classes'],
+  });
+
   // Add student mutation
   const addStudentMutation = useMutation({
     mutationFn: async (data: StudentFormData) => {
-      const response = await apiRequest('POST', '/api/students', data);
-      return await response.json();
+      // 학생 생성
+      const studentResponse = await apiRequest('POST', '/api/students', {
+        name: data.name,
+        school: data.school,
+        grade: data.grade,
+        gender: data.gender,
+        parentPhone: data.parentPhone,
+        siblingGroup: data.siblingGroup,
+        notes: data.notes,
+      });
+      const newStudent = await studentResponse.json();
+      
+      // 반이 선택되었다면 수강 등록도 생성
+      if (data.classId && data.startDate) {
+        const enrollmentData: Omit<InsertEnrollment, 'tenantId' | 'isActive'> = {
+          studentId: newStudent.id,
+          classId: data.classId,
+          startDate: new Date(data.startDate),
+          tuition: data.customTuition,
+          dueDay: data.dueDay || 8,
+        };
+        
+        await apiRequest('POST', '/api/enrollments', enrollmentData);
+      }
+      
+      return newStudent;
     },
-    onSuccess: () => {
+    onSuccess: (data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['/api/students'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/enrollments'] });
       setIsAddDialogOpen(false);
       addForm.reset();
+      const createdEnrollment = !!(variables.classId && variables.startDate);
+      const enrollmentMessage = createdEnrollment ? " 및 수강 등록이" : "이";
       toast({
         title: "학생 등록 완료",
-        description: "새 학생이 성공적으로 등록되었습니다.",
+        description: `새 학생${enrollmentMessage} 성공적으로 완료되었습니다.`,
       });
     },
     onError: (error: Error) => {
@@ -124,6 +162,10 @@ export default function Students({ userRole }: StudentsProps) {
       parentPhone: "",
       siblingGroup: "",
       notes: "",
+      classId: "",
+      startDate: "",
+      customTuition: undefined,
+      dueDay: 8,
     },
   });
 
@@ -301,6 +343,105 @@ export default function Students({ userRole }: StudentsProps) {
                     </FormItem>
                   )}
                 />
+                
+                {/* 수강 등록 섹션 */}
+                <div className="border-t pt-4 mt-4">
+                  <div className="mb-3">
+                    <h4 className="text-sm font-medium">수강 등록 (선택사항)</h4>
+                    <p className="text-xs text-muted-foreground">학생 등록과 동시에 반에 수강 등록할 수 있습니다.</p>
+                  </div>
+                  
+                  <FormField
+                    control={addForm.control}
+                    name="classId"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>수강할 반</FormLabel>
+                        <Select onValueChange={field.onChange} value={field.value}>
+                          <FormControl>
+                            <SelectTrigger data-testid="select-class">
+                              <SelectValue placeholder="반을 선택하세요 (선택사항)" />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            <SelectItem value="">선택 안함</SelectItem>
+                            {classes.filter(c => c.isActive !== false).map((classItem) => (
+                              <SelectItem key={classItem.id} value={classItem.id}>
+                                {classItem.name} (기본 ₩{classItem.defaultTuition?.toLocaleString()})
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  
+                  {addForm.watch("classId") && (
+                    <>
+                      <FormField
+                        control={addForm.control}
+                        name="startDate"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>수강 시작일</FormLabel>
+                            <FormControl>
+                              <Input 
+                                type="date" 
+                                data-testid="input-start-date"
+                                {...field}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      
+                      <FormField
+                        control={addForm.control}
+                        name="customTuition"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>개별 수강료 (선택사항)</FormLabel>
+                            <FormControl>
+                              <Input 
+                                type="number" 
+                                placeholder="기본 수강료와 다를 경우만 입력"
+                                data-testid="input-custom-tuition"
+                                {...field}
+                                onChange={(e) => field.onChange(e.target.value ? parseInt(e.target.value) : undefined)}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      
+                      <FormField
+                        control={addForm.control}
+                        name="dueDay"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>납입 기준일</FormLabel>
+                            <FormControl>
+                              <Input 
+                                type="number" 
+                                min="1" 
+                                max="31"
+                                placeholder="8" 
+                                data-testid="input-due-day"
+                                {...field}
+                                onChange={(e) => field.onChange(e.target.value ? parseInt(e.target.value) : 8)}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </>
+                  )}
+                </div>
+                
                 <DialogFooter>
                   <Button 
                     type="submit" 

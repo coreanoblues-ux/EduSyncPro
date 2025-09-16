@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Plus, Edit, Trash2, User, School, Users, Phone, Info } from "lucide-react";
+import { Plus, Edit, Trash2, User, School, Users, Phone, Info, UserMinus, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -138,14 +138,56 @@ export default function Students({ userRole }: StudentsProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/students'] });
       toast({
-        title: "학생 삭제 완료",
-        description: "학생이 성공적으로 삭제되었습니다.",
+        title: "학생 완전 삭제 완료",
+        description: "학생이 데이터베이스에서 완전히 삭제되었습니다.",
       });
     },
     onError: (error: Error) => {
       toast({
         title: "학생 삭제 실패",
         description: error.message || "학생 삭제 중 오류가 발생했습니다.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // 학생 휴원 처리 (비활성화)
+  const deactivateStudentMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest('PATCH', `/api/students/${id}/deactivate`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/students'] });
+      toast({
+        title: "휴원 처리 완료",
+        description: "학생이 휴원 처리되었습니다.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "휴원 처리 실패",
+        description: error.message || "휴원 처리 중 오류가 발생했습니다.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // 학생 재등록 처리 (활성화)
+  const activateStudentMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest('PATCH', `/api/students/${id}/activate`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/students'] });
+      toast({
+        title: "재등록 완료",
+        description: "학생이 성공적으로 재등록되었습니다.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "재등록 실패",
+        description: error.message || "재등록 중 오류가 발생했습니다.",
         variant: "destructive",
       });
     },
@@ -195,6 +237,14 @@ export default function Students({ userRole }: StudentsProps) {
 
   const handleDeleteStudent = (id: string) => {
     deleteStudentMutation.mutate(id);
+  };
+
+  const handleDeactivateStudent = (id: string) => {
+    deactivateStudentMutation.mutate(id);
+  };
+
+  const handleActivateStudent = (id: string) => {
+    activateStudentMutation.mutate(id);
   };
 
   const openEditDialog = (student: Student) => {
@@ -490,6 +540,7 @@ export default function Students({ userRole }: StudentsProps) {
                 </div>
                 {(userRole === 'owner' || userRole === 'teacher') && (
                   <div className="flex items-center gap-1">
+                    {/* 수정 버튼 */}
                     <Button
                       size="icon"
                       variant="ghost"
@@ -498,6 +549,78 @@ export default function Students({ userRole }: StudentsProps) {
                     >
                       <Edit className="h-4 w-4" />
                     </Button>
+                    
+                    {/* 활성 학생에게만 휴원 버튼 표시 */}
+                    {student.isActive && (
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            data-testid={`button-deactivate-student-${student.id}`}
+                          >
+                            <UserMinus className="h-4 w-4 text-orange-500" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>학생 휴원</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              정말로 {student.name} 학생을 휴원 처리하시겠습니까?
+                              휴원된 학생은 재등록을 통해 다시 활성화할 수 있습니다.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel data-testid={`button-cancel-deactivate-student-${student.id}`}>
+                              취소
+                            </AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={() => handleDeactivateStudent(student.id)}
+                              data-testid={`button-confirm-deactivate-student-${student.id}`}
+                            >
+                              휴원 처리
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    )}
+                    
+                    {/* 비활성 학생에게만 재등록 버튼 표시 */}
+                    {!student.isActive && (
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            data-testid={`button-activate-student-${student.id}`}
+                          >
+                            <UserPlus className="h-4 w-4 text-green-500" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>학생 재등록</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              정말로 {student.name} 학생을 재등록하시겠습니까?
+                              재등록하면 해당 학생이 다시 활성화됩니다.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel data-testid={`button-cancel-activate-student-${student.id}`}>
+                              취소
+                            </AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={() => handleActivateStudent(student.id)}
+                              data-testid={`button-confirm-activate-student-${student.id}`}
+                            >
+                              재등록
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    )}
+                    
+                    {/* 완전 삭제 버튼 */}
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
                         <Button
@@ -510,10 +633,10 @@ export default function Students({ userRole }: StudentsProps) {
                       </AlertDialogTrigger>
                       <AlertDialogContent>
                         <AlertDialogHeader>
-                          <AlertDialogTitle>학생 삭제</AlertDialogTitle>
+                          <AlertDialogTitle>학생 완전 삭제</AlertDialogTitle>
                           <AlertDialogDescription>
-                            정말로 {student.name} 학생을 삭제하시겠습니까?
-                            이 작업은 되돌릴 수 없습니다.
+                            정말로 {student.name} 학생을 완전히 삭제하시겠습니까?
+                            이 작업은 되돌릴 수 없으며, 모든 데이터가 영구적으로 삭제됩니다.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
@@ -523,8 +646,9 @@ export default function Students({ userRole }: StudentsProps) {
                           <AlertDialogAction
                             onClick={() => handleDeleteStudent(student.id)}
                             data-testid={`button-confirm-delete-student-${student.id}`}
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                           >
-                            삭제
+                            완전 삭제
                           </AlertDialogAction>
                         </AlertDialogFooter>
                       </AlertDialogContent>

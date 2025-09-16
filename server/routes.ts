@@ -473,10 +473,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
 
         await storage.deleteStudent(req.params.id);
-        res.json({ message: '학생이 삭제되었습니다.' });
+        res.json({ message: '학생이 완전히 삭제되었습니다.' });
       } catch (error) {
         console.error('Delete student error:', error);
         res.status(500).json({ error: '학생 삭제 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
+  // 학생 휴원 처리 (비활성화)
+  app.patch('/api/students/:id/deactivate',
+    authGuard,
+    tenantGuard,
+    roleGuard('owner', 'teacher'),
+    validateParams(idParamSchema),
+    async (req: Request, res: Response) => {
+      try {
+        const student = await storage.getStudent(req.params.id);
+        if (!student) {
+          return res.status(404).json({ error: '학생을 찾을 수 없습니다.' });
+        }
+        
+        if (student.tenantId !== req.user!.tenantId) {
+          return res.status(403).json({ error: '접근 권한이 없습니다.' });
+        }
+
+        await storage.deactivateStudent(req.params.id);
+        res.json({ message: '학생이 휴원 처리되었습니다.' });
+      } catch (error) {
+        console.error('Deactivate student error:', error);
+        res.status(500).json({ error: '학생 휴원 처리 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
+  // 학생 재등록 처리 (활성화)
+  app.patch('/api/students/:id/activate',
+    authGuard,
+    tenantGuard,
+    roleGuard('owner', 'teacher'),
+    validateParams(idParamSchema),
+    async (req: Request, res: Response) => {
+      try {
+        const student = await storage.getStudent(req.params.id);
+        if (!student) {
+          return res.status(404).json({ error: '학생을 찾을 수 없습니다.' });
+        }
+        
+        if (student.tenantId !== req.user!.tenantId) {
+          return res.status(403).json({ error: '접근 권한이 없습니다.' });
+        }
+
+        await storage.activateStudent(req.params.id);
+        res.json({ message: '학생이 재등록되었습니다.' });
+      } catch (error) {
+        console.error('Activate student error:', error);
+        res.status(500).json({ error: '학생 재등록 중 오류가 발생했습니다.' });
       }
     }
   );

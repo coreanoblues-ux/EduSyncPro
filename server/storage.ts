@@ -49,6 +49,8 @@ export interface IStorage {
   createStudent(student: InsertStudent): Promise<Student>;
   updateStudent(id: string, student: Partial<InsertStudent>): Promise<Student>;
   deleteStudent(id: string): Promise<void>;
+  deactivateStudent(id: string): Promise<void>;
+  activateStudent(id: string): Promise<void>;
   
   // Teacher methods
   getTeachersByTenant(tenantId: string): Promise<Teacher[]>;
@@ -176,8 +178,40 @@ export class DbStorage implements IStorage {
   }
 
   async deleteStudent(id: string): Promise<void> {
+    // 안전한 완전 삭제 - 관련 데이터를 먼저 삭제한 후 학생 삭제
+    // 트랜잭션으로 모든 작업을 원자적으로 처리
+    await db.transaction(async (tx) => {
+      // 1. 해당 학생의 수강 등록들을 찾아서 저장
+      const studentEnrollments = await tx.select({ id: enrollments.id })
+        .from(enrollments)
+        .where(eq(enrollments.studentId, id));
+      
+      // 2. 각 수강 등록에 연결된 결제 기록들 삭제
+      for (const enrollment of studentEnrollments) {
+        await tx.delete(payments).where(eq(payments.enrollmentId, enrollment.id));
+      }
+      
+      // 3. 학생의 수강 등록들 삭제
+      await tx.delete(enrollments).where(eq(enrollments.studentId, id));
+      
+      // 4. 마지막으로 학생 삭제
+      await tx.delete(students).where(eq(students.id, id));
+      
+      // 참고: lessonLogs와 waiters는 classId로 연결되어 학생과 직접 관계없으므로 삭제하지 않음
+    });
+  }
+
+  async deactivateStudent(id: string): Promise<void> {
+    // 휴원 처리 - 비활성화
     await db.update(students)
       .set({ isActive: false, updatedAt: new Date() })
+      .where(eq(students.id, id));
+  }
+
+  async activateStudent(id: string): Promise<void> {
+    // 재등록 처리 - 활성화
+    await db.update(students)
+      .set({ isActive: true, updatedAt: new Date() })
       .where(eq(students.id, id));
   }
 

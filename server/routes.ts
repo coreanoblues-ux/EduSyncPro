@@ -879,12 +879,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     validateParams(idParamSchema),
     validateBody(updateEnrollmentSchema),
     (req: Request, res: Response, next: any) => {
-      // 문자열 날짜를 Date 객체로 변환
+      // 문자열 날짜를 유효한 Date 객체로 변환
       if (req.body.startDate && typeof req.body.startDate === 'string') {
-        req.body.startDate = new Date(req.body.startDate + 'T00:00:00+09:00'); // 한국 시간대
+        // YYYY-MM-DD 형태를 안전하게 Date로 변환
+        const dateStr = req.body.startDate;
+        if (dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+          req.body.startDate = new Date(dateStr + 'T00:00:00Z'); // UTC로 통일
+        } else {
+          delete req.body.startDate; // 잘못된 형식이면 제거
+        }
       }
       if (req.body.endDate && typeof req.body.endDate === 'string') {
-        req.body.endDate = new Date(req.body.endDate + 'T00:00:00+09:00'); // 한국 시간대
+        const dateStr = req.body.endDate;
+        if (dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+          req.body.endDate = new Date(dateStr + 'T00:00:00Z'); // UTC로 통일
+        } else {
+          delete req.body.endDate; // 잘못된 형식이면 제거
+        }
       }
       next();
     },

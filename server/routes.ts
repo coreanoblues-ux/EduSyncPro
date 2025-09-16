@@ -90,6 +90,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
     };
   };
 
+  // CRITICAL: Admin login route - MUST be registered FIRST to avoid Vite interference
+  const adminPassword = process.env.ADMIN_PASSWORD || 'wchung00@';
+  
+  app.post('/api/auth/admin-login',
+    validateBody(z.object({
+      password: z.string()
+    })),
+    async (req: Request, res: Response) => {
+      try {
+        const { password } = req.body;
+
+        console.log('🔧 Admin login attempt received');
+
+        if (password !== adminPassword) {
+          return res.status(401).json({ error: '잘못된 관리자 비밀번호입니다.' });
+        }
+
+        // Create admin user token
+        const token = generateToken({
+          id: 'admin',
+          email: 'admin@system.local',
+          name: '시스템 관리자',
+          role: 'superadmin',
+          tenantId: null
+        });
+
+        console.log('🔧 Admin token generated:', token ? 'SUCCESS' : 'FAILED');
+        console.log('🔧 Setting cookie with token length:', token?.length || 0);
+
+        // Set HTTP-only cookie
+        res.cookie('token', token, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'strict',
+          maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+        });
+
+        console.log('🔧 Admin login cookie set successfully');
+
+        res.json({
+          message: '관리자 로그인 성공',
+          user: {
+            id: 'admin',
+            email: 'admin@system.local',
+            name: '시스템 관리자',
+            role: 'superadmin',
+            tenantId: null
+          }
+        });
+      } catch (error) {
+        console.error('❌ Admin login error:', error);
+        res.status(500).json({ error: '서버 오류가 발생했습니다.' });
+      }
+    }
+  );
+
   // Auth Routes
   
   // Sign up - Create new tenant and owner user
@@ -1024,55 +1080,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } catch (error) {
         console.error('Approve tenant error:', error);
         res.status(500).json({ error: '테넌트 승인 중 오류가 발생했습니다.' });
-      }
-    }
-  );
-
-  // Admin login endpoint
-  app.post('/api/auth/admin-login',
-    validateBody(z.object({
-      password: z.string()
-    })),
-    async (req: Request, res: Response) => {
-      try {
-        const { password } = req.body;
-        
-        // Check admin password from environment variable
-        const adminPassword = process.env.ADMIN_PASSWORD || 'wchung00@';
-        
-        if (password !== adminPassword) {
-          return res.status(401).json({ error: '잘못된 관리자 비밀번호입니다.' });
-        }
-
-        // Create admin user token
-        const token = generateToken({
-          id: 'admin',
-          email: 'admin@system.local',
-          name: '시스템 관리자',
-          role: 'superadmin',
-          tenantId: null
-        });
-
-        // Set HTTP-only cookie
-        res.cookie('token', token, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'strict',
-          maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
-        });
-
-        res.json({
-          message: '관리자 로그인 성공',
-          user: {
-            id: 'admin',
-            email: 'admin@system.local',
-            name: '시스템 관리자',
-            role: 'superadmin'
-          }
-        });
-      } catch (error) {
-        console.error('Admin login error:', error);
-        res.status(500).json({ error: '관리자 로그인 중 오류가 발생했습니다.' });
       }
     }
   );

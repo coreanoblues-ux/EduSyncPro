@@ -51,13 +51,30 @@ export const authGuard = async (req: Request, res: Response, next: NextFunction)
   try {
     const token = req.cookies.token || req.headers.authorization?.replace('Bearer ', '');
 
+    console.log('🔒 AuthGuard: token exists:', !!token);
+    console.log('🔒 AuthGuard: token length:', token?.length || 0);
+
     if (!token) {
       return res.status(401).json({ error: '인증 토큰이 필요합니다.' });
     }
 
     const decoded = jwt.verify(token, JWT_SECRET) as AuthUser;
+    console.log('🔒 AuthGuard: decoded user:', { id: decoded.id, role: decoded.role, email: decoded.email });
     
-    // Verify user still exists and is active
+    // Handle superadmin special case - they don't exist in database
+    if (decoded.role === 'superadmin' && decoded.id === 'admin') {
+      console.log('🔒 AuthGuard: Superadmin detected - allowing access');
+      req.user = {
+        id: decoded.id,
+        email: decoded.email,
+        name: decoded.name,
+        role: decoded.role,
+        tenantId: decoded.tenantId,
+      };
+      return next();
+    }
+    
+    // Verify user still exists and is active (for regular users)
     const user = await storage.getUser(decoded.id);
     if (!user || !user.isActive) {
       return res.status(401).json({ error: '유효하지 않은 사용자입니다.' });
@@ -73,6 +90,7 @@ export const authGuard = async (req: Request, res: Response, next: NextFunction)
 
     next();
   } catch (error) {
+    console.error('🔒 AuthGuard error:', error);
     return res.status(401).json({ error: '유효하지 않은 토큰입니다.' });
   }
 };

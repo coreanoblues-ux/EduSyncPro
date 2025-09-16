@@ -556,17 +556,17 @@ export default function Students({ userRole }: StudentsProps) {
                               onChange={(e) => {
                                 const value = e.target.value;
                                 if (value === "") {
-                                  field.onChange(8);
+                                  field.onChange(undefined);
                                 } else {
                                   const numValue = parseInt(value);
-                                  field.onChange(isNaN(numValue) ? 8 : numValue);
+                                  field.onChange(isNaN(numValue) ? undefined : numValue);
                                 }
                               }}
                               className="text-base"
                             />
                           </FormControl>
                           <div className="text-xs text-muted-foreground">
-                            매월 납입 기준일 (기본값: 8일)
+                            매월 납입 기준일 (1-31일)
                           </div>
                           <FormMessage />
                         </FormItem>

@@ -458,8 +458,16 @@ export default function Students({ userRole }: StudentsProps) {
                                 type="number" 
                                 placeholder="기본 수강료와 다를 경우만 입력"
                                 data-testid="input-custom-tuition"
-                                {...field}
-                                onChange={(e) => field.onChange(e.target.value ? parseInt(e.target.value) : undefined)}
+                                value={field.value || ""}
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  if (value === "") {
+                                    field.onChange(undefined);
+                                  } else {
+                                    const numValue = parseInt(value);
+                                    field.onChange(isNaN(numValue) ? undefined : numValue);
+                                  }
+                                }}
                               />
                             </FormControl>
                             <FormMessage />
@@ -480,8 +488,16 @@ export default function Students({ userRole }: StudentsProps) {
                                 max="31"
                                 placeholder="8" 
                                 data-testid="input-due-day"
-                                {...field}
-                                onChange={(e) => field.onChange(e.target.value ? parseInt(e.target.value) : 8)}
+                                value={field.value || ""}
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  if (value === "") {
+                                    field.onChange(8);
+                                  } else {
+                                    const numValue = parseInt(value);
+                                    field.onChange(isNaN(numValue) ? 8 : numValue);
+                                  }
+                                }}
                               />
                             </FormControl>
                             <FormMessage />

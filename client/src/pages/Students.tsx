@@ -71,12 +71,12 @@ export default function Students({ userRole }: StudentsProps) {
       const newStudent = await studentResponse.json();
       
       // 반이 선택되었다면 수강 등록도 생성
-      if (data.classId && data.startDate) {
+      if (data.classId && data.classId.trim() && data.startDate && data.startDate.trim()) {
         const enrollmentData: Omit<InsertEnrollment, 'tenantId' | 'isActive'> = {
           studentId: newStudent.id,
           classId: data.classId,
           startDate: new Date(data.startDate),
-          tuition: data.customTuition,
+          tuition: data.customTuition || null, // undefined를 null로 변환
           dueDay: data.dueDay || 8,
         };
         

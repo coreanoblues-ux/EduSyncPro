@@ -50,14 +50,7 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
     const studentsArray = Array.isArray(students) ? students : [];
     const classesArray = Array.isArray(classes) ? classes : [];
     
-    const baseData = [
-      {
-        title: "전체 학생 수",
-        value: `${studentsArray.length}명`,
-        description: "재원 학생",
-        icon: Users,
-        trend: studentsArray.length > 0 ? { value: "+3명", isPositive: true } : undefined
-      },
+    const commonData = [
       {
         title: "미납자",
         value: `${overdueCount}명`,
@@ -73,7 +66,7 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
       }
     ];
 
-    // 학원장과 슈퍼관리자만 수납액 정보 볼 수 있음
+    // 학원장과 슈퍼관리자만 수납액과 전체 학생 수 볼 수 있음
     if (userRole === 'owner' || userRole === 'superadmin') {
       return [
         {
@@ -83,11 +76,28 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
           icon: CreditCard,
           trend: { value: "준비중", isPositive: true }
         },
-        ...baseData
+        {
+          title: "전체 학생 수",
+          value: `${studentsArray.length}명`,
+          description: "재원 학생",
+          icon: Users,
+          trend: studentsArray.length > 0 ? { value: "+3명", isPositive: true } : undefined
+        },
+        ...commonData
       ];
     }
 
-    return baseData;
+    // 교사용 - 수납액과 전체 학생 수는 제한됨
+    return [
+      {
+        title: "Total Students",
+        value: "Access Restricted",
+        description: "권한이 필요합니다",
+        icon: Users,
+        isRestricted: true
+      },
+      ...commonData
+    ];
   };
 
   // todo: remove mock functionality - Replace with real data when payment system is implemented

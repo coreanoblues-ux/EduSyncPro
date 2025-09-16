@@ -18,7 +18,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Payment, Enrollment, Student, Class } from "@shared/schema";
 
 const paymentFormSchema = z.object({
-  enrollmentId: z.string().min(1, "수강 등록을 선택해주세요"),
+  enrollmentId: z.string().min(1, "학생을 선택해주세요"),
   amount: z.number().min(1, "수납 금액을 입력해주세요"),
   paymentMonth: z.string().min(1, "수납 월을 입력해주세요").regex(/^\d{4}-\d{2}$/, "YYYY-MM 형식으로 입력해주세요"),
   paidDate: z.string().min(1, "납입 일자를 입력해주세요"),
@@ -177,11 +177,11 @@ export default function Payments({ userRole }: PaymentsProps) {
                     name="enrollmentId"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>수강 등록</FormLabel>
+                        <FormLabel>학생</FormLabel>
                         <Select onValueChange={field.onChange} value={field.value}>
                           <FormControl>
                             <SelectTrigger data-testid="select-enrollment">
-                              <SelectValue placeholder="수강 등록을 선택하세요" />
+                              <SelectValue placeholder="학생을 선택하세요" />
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent>

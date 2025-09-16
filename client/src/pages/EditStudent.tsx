@@ -82,7 +82,7 @@ export default function EditStudent() {
       siblingDiscountRate: undefined,
       grade: "",
       startDate: "",
-      dueDay: 8,
+      dueDay: undefined,
       parentPhone: "",
       school: "",
       notes: "",
@@ -100,7 +100,7 @@ export default function EditStudent() {
         siblingDiscountRate: undefined, // 할인율은 계산된 값이므로 초기값 없음
         grade: student.grade || "",
         startDate: currentEnrollment?.startDate || "",
-        dueDay: currentEnrollment?.dueDay || 8,
+        dueDay: currentEnrollment?.dueDay || undefined,
         parentPhone: student.parentPhone || "",
         school: student.school || "",
         notes: student.notes || "",
@@ -143,7 +143,7 @@ export default function EditStudent() {
           classId: data.classId,
           startDate: data.startDate,
           tuition: finalTuition,
-          dueDay: data.dueDay || 8,
+          dueDay: data.dueDay,
         };
         
         if (currentEnrollment) {
@@ -397,7 +397,7 @@ export default function EditStudent() {
                           type="number" 
                           min="1" 
                           max="31"
-                          placeholder="8" 
+                          placeholder="납입 기준일을 입력하세요 (1-31)" 
                           data-testid="input-due-day"
                           value={field.value || ""}
                           onChange={(e) => {

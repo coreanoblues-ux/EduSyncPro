@@ -109,7 +109,7 @@ export default function Students({ userRole }: StudentsProps) {
           classId: data.classId,
           startDate: data.startDate, // 문자열 그대로 보내기
           tuition: finalTuition ?? null, // 할인이 적용된 최종 수강료
-          dueDay: data.dueDay || 8,
+          dueDay: data.dueDay,
         };
         
         await apiRequest('POST', '/api/enrollments', enrollmentData);
@@ -216,7 +216,7 @@ export default function Students({ userRole }: StudentsProps) {
       school: "",
       notes: "",
       customTuition: undefined,
-      dueDay: 8,
+      dueDay: undefined,
     },
   });
 
@@ -550,7 +550,7 @@ export default function Students({ userRole }: StudentsProps) {
                               type="number" 
                               min="1" 
                               max="31"
-                              placeholder="8" 
+                              placeholder="납입 기준일을 입력하세요 (1-31)" 
                               data-testid="input-due-day"
                               value={field.value || ""}
                               onChange={(e) => {

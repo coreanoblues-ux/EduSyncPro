@@ -11,7 +11,7 @@ import AcademyLogo from "./AcademyLogo";
 interface LoginFormProps {
   onLogin: (credentials: { email: string; password: string; role: string }) => void;
   onSignup?: () => void;
-  onAdminLogin?: () => void;
+  onAdminLogin?: (password: string) => Promise<void>;
 }
 
 export default function LoginForm({ onLogin, onSignup, onAdminLogin }: LoginFormProps) {
@@ -41,22 +41,24 @@ export default function LoginForm({ onLogin, onSignup, onAdminLogin }: LoginForm
   };
 
   const handleAdminLogin = async () => {
-    if (adminPassword === "wchung00@") {
-      setAdminLoginLoading(true);
-      try {
-        if (onAdminLogin) {
-          await onAdminLogin();
-        }
-      } catch (error) {
-        console.error('Admin login failed:', error);
-      } finally {
-        setAdminLoginLoading(false);
-        setShowAdminModal(false);
-        setAdminPassword("");
+    if (!adminPassword) {
+      alert("관리자 비밀번호를 입력하세요.");
+      return;
+    }
+
+    setAdminLoginLoading(true);
+    try {
+      if (onAdminLogin) {
+        await onAdminLogin(adminPassword);
       }
-    } else {
+      setShowAdminModal(false);
       setAdminPassword("");
-      alert("잘못된 관리자 비밀번호입니다.");
+    } catch (error: any) {
+      console.error('Admin login failed:', error);
+      alert(error.message || "관리자 로그인에 실패했습니다.");
+      setAdminPassword("");
+    } finally {
+      setAdminLoginLoading(false);
     }
   };
 

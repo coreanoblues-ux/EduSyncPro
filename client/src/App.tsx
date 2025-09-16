@@ -16,6 +16,7 @@ import LoginForm from "@/components/LoginForm";
 import SignupForm from "@/components/SignupForm";
 import Dashboard from "@/components/Dashboard";
 import SuperAdminDashboard from "@/components/SuperAdminDashboard";
+import SystemAdmin from "@/pages/SystemAdmin";
 import AcademySidebar from "@/components/AcademySidebar";
 import ThemeToggle from "@/components/ThemeToggle";
 
@@ -60,6 +61,7 @@ function App() {
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSignupMode, setIsSignupMode] = useState(false);
+  const [isAdminMode, setIsAdminMode] = useState(false);
 
   // Check if user is already logged in
   useEffect(() => {
@@ -183,6 +185,32 @@ function App() {
     }
   };
 
+  const handleAdminLogin = async (password: string) => {
+    try {
+      const response = await fetch('/api/auth/admin-login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({ password })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setUser(data.user);
+        setTenant(null);
+        setIsAdminMode(true);
+      } else {
+        const error = await response.json();
+        throw new Error(error.error || '관리자 로그인에 실패했습니다.');
+      }
+    } catch (error) {
+      console.error('Admin login failed:', error);
+      throw error;
+    }
+  };
+
   const handleLogout = async () => {
     try {
       await fetch('/api/auth/signout', {
@@ -194,6 +222,7 @@ function App() {
     } finally {
       setUser(null);
       setTenant(null);
+      setIsAdminMode(false);
     }
   };
 
@@ -229,8 +258,20 @@ function App() {
             <LoginForm 
               onLogin={handleLogin}
               onSignup={() => setIsSignupMode(true)}
+              onAdminLogin={handleAdminLogin}
             />
           )
+        ) : isAdminMode ? (
+          <div className="relative">
+            <button 
+              onClick={handleLogout}
+              className="absolute top-4 right-4 z-50 bg-black/50 text-white px-4 py-2 rounded-md hover:bg-black/70 transition-colors"
+              data-testid="button-admin-logout"
+            >
+              관리자 로그아웃
+            </button>
+            <SystemAdmin />
+          </div>
         ) : (
           <SidebarProvider style={sidebarStyle as React.CSSProperties}>
             <div className="flex h-screen w-full">

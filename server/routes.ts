@@ -1028,6 +1028,82 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   );
 
+  // Admin login endpoint
+  app.post('/api/auth/admin-login',
+    validateBody(z.object({
+      password: z.string()
+    })),
+    async (req: Request, res: Response) => {
+      try {
+        const { password } = req.body;
+        
+        // Check admin password from environment variable
+        const adminPassword = process.env.ADMIN_PASSWORD || 'wchung00@';
+        
+        if (password !== adminPassword) {
+          return res.status(401).json({ error: '잘못된 관리자 비밀번호입니다.' });
+        }
+
+        // Create admin user token
+        const token = generateToken({
+          id: 'admin',
+          email: 'admin@system.local',
+          name: '시스템 관리자',
+          role: 'superadmin',
+          tenantId: null
+        });
+
+        // Set HTTP-only cookie
+        res.cookie('token', token, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'strict',
+          maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+        });
+
+        res.json({
+          message: '관리자 로그인 성공',
+          user: {
+            id: 'admin',
+            email: 'admin@system.local',
+            name: '시스템 관리자',
+            role: 'superadmin'
+          }
+        });
+      } catch (error) {
+        console.error('Admin login error:', error);
+        res.status(500).json({ error: '관리자 로그인 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
+  // Update tenant status (for both approval and rejection)
+  app.patch('/api/superadmin/tenants/:id/status',
+    authGuard,
+    roleGuard('superadmin'),
+    validateParams(idParamSchema),
+    validateBody(z.object({
+      status: z.enum(['pending', 'active', 'expired', 'suspended'])
+    })),
+    async (req: Request, res: Response) => {
+      try {
+        const tenant = await storage.getTenant(req.params.id);
+        if (!tenant) {
+          return res.status(404).json({ error: '테넌트를 찾을 수 없습니다.' });
+        }
+
+        const updatedTenant = await storage.updateTenantStatus(req.params.id, req.body.status);
+        res.json({
+          message: `테넌트 상태가 ${req.body.status}로 변경되었습니다.`,
+          tenant: updatedTenant
+        });
+      } catch (error) {
+        console.error('Update tenant status error:', error);
+        res.status(500).json({ error: '테넌트 상태 업데이트 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
   const httpServer = createServer(app);
   return httpServer;
 }

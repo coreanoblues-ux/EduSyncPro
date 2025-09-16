@@ -293,15 +293,16 @@ export default function Students({ userRole }: StudentsProps) {
                 학생 추가
               </Button>
             </DialogTrigger>
-          <DialogContent className="max-w-md">
-            <DialogHeader>
+          <DialogContent className="max-w-lg max-h-[85vh] flex flex-col">
+            <DialogHeader className="flex-shrink-0">
               <DialogTitle>새 학생 등록</DialogTitle>
               <DialogDescription>
                 새로운 학생 정보를 입력해주세요.
               </DialogDescription>
             </DialogHeader>
             <Form {...addForm}>
-              <form onSubmit={addForm.handleSubmit(handleAddStudent)} className="space-y-4">
+              <form onSubmit={addForm.handleSubmit(handleAddStudent)} className="flex flex-col flex-1">
+                <div className="space-y-4 overflow-y-auto flex-1 pr-2">
                 <FormField
                   control={addForm.control}
                   name="name"
@@ -506,8 +507,9 @@ export default function Students({ userRole }: StudentsProps) {
                     </>
                   )}
                 </div>
+                </div>
                 
-                <DialogFooter>
+                <DialogFooter className="flex-shrink-0">
                   <Button 
                     type="submit" 
                     disabled={addStudentMutation.isPending}

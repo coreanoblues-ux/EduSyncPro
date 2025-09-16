@@ -280,17 +280,19 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
   };
 
   const handlePayment = (id: string, month: 'current' | 'next') => {
-    const currentDate = new Date();
-    let paymentMonth: string;
+    // 해당 학생이 속한 반 정보 찾기
+    const student = studentData.find((s: any) => s.id === id);
+    if (!student) return;
     
-    if (month === 'current') {
-      paymentMonth = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
-    } else {
-      const nextMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1);
-      paymentMonth = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, '0')}`;
+    // 학생의 반 정보와 함께 수납 섹션으로 이동
+    const searchParams = new URLSearchParams();
+    searchParams.set('studentId', id);
+    searchParams.set('studentName', student.name);
+    if (student.className && student.className !== '미배정') {
+      searchParams.set('className', student.className);
     }
     
-    paymentMutation.mutate({ studentId: id, month: paymentMonth });
+    setLocation(`/payments?${searchParams.toString()}`);
   };
 
   const handleEditSubmit = (data: StudentEditData) => {

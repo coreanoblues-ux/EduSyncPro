@@ -92,7 +92,7 @@ export default function Students({ userRole }: StudentsProps) {
       const newStudent = await studentResponse.json();
       
       // 반이 선택되었다면 수강 등록도 생성
-      if (data.classId && data.classId.trim() && data.startDate && data.startDate.trim()) {
+      if (data.classId && data.startDate && data.startDate.trim()) {
         // 기본 수강료 계산
         const selectedClass = classes.find(c => c.id === data.classId);
         const baseTuition = data.customTuition ?? selectedClass?.defaultTuition ?? 0;
@@ -207,7 +207,7 @@ export default function Students({ userRole }: StudentsProps) {
     resolver: zodResolver(studentFormSchema),
     defaultValues: {
       name: "",
-      classId: "",
+      classId: undefined,
       siblingDiscount: "",
       siblingDiscountRate: undefined,
       grade: "",
@@ -316,16 +316,16 @@ export default function Students({ userRole }: StudentsProps) {
                         <FormLabel className="text-base font-medium">반선택</FormLabel>
                         <Select 
                           onValueChange={(value) => {
-                            field.onChange(value);
+                            field.onChange(value === "none" ? undefined : value);
                             // 반 선택시 기본 수강료 자동 설정
-                            if (value) {
+                            if (value && value !== "none") {
                               const selectedClass = classes.find(c => c.id === value);
                               if (selectedClass?.defaultTuition) {
                                 addForm.setValue('customTuition', selectedClass.defaultTuition);
                               }
                             }
                           }} 
-                          value={field.value || ""}
+                          value={field.value ?? "none"}
                         >
                           <FormControl>
                             <SelectTrigger data-testid="select-class" className="text-base">
@@ -333,6 +333,7 @@ export default function Students({ userRole }: StudentsProps) {
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent>
+                            <SelectItem value="none">반을 선택하지 않음</SelectItem>
                             {classes.filter(c => c.isActive !== false).map((classItem) => (
                               <SelectItem key={classItem.id} value={classItem.id}>
                                 {classItem.name} (기본 ₩{classItem.defaultTuition?.toLocaleString()})
@@ -379,8 +380,8 @@ export default function Students({ userRole }: StudentsProps) {
                       <FormItem>
                         <FormLabel className="text-sm font-normal text-muted-foreground">할인율 적용</FormLabel>
                         <Select 
-                          onValueChange={field.onChange}
-                          value={field.value || ""}
+                          onValueChange={(value) => field.onChange(value === "none" ? undefined : value)}
+                          value={field.value ?? "none"}
                         >
                           <FormControl>
                             <SelectTrigger data-testid="select-sibling-discount-rate" className="text-base">
@@ -388,6 +389,7 @@ export default function Students({ userRole }: StudentsProps) {
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent>
+                            <SelectItem value="none">할인 없음</SelectItem>
                             <SelectItem value="5">5% 할인</SelectItem>
                             <SelectItem value="10">10% 할인</SelectItem>
                           </SelectContent>

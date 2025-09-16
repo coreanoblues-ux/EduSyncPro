@@ -8,16 +8,43 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { ArrowLeft } from "lucide-react";
 
 const editStudentSchema = z.object({
+  // 1. 이름 - 필수 필드
   name: z.string().min(1, "학생 이름을 입력해주세요"),
+  // 2. 반선택 - 선택사항
   classId: z.string().optional(),
+  // 3. 형제할인 - 선택사항
+  siblingDiscount: z.string().optional(),
+  siblingDiscountRate: z.enum(["5", "10"]).optional(),
+  // 4. 학년 - 선택사항
+  grade: z.string().optional(),
+  // 5. 등록일 - 반이 선택된 경우 필수
   startDate: z.string().optional(),
+  // 6. 납입 기준일 - 선택사항
+  dueDay: z.number().min(1).max(31).optional(),
+  // 7. 학부모 전화번호 - 선택사항
+  parentPhone: z.string().optional(),
+  // 8. 학교 - 선택사항
+  school: z.string().optional(),
+  // 9. 기타 비고란 - 선택사항
+  notes: z.string().optional(),
+  // 추가 필드들 (반 선택시 자동 처리)
   customTuition: z.number().optional(),
+}).refine((data) => {
+  // 반이 선택되었다면 시작일(등록일)이 필수
+  if (data.classId && data.classId.trim() !== "") {
+    return data.startDate && data.startDate.trim() !== "";
+  }
+  return true;
+}, {
+  message: "반을 선택했다면 등록일을 입력해주세요",
+  path: ["startDate"],
 });
 
 type EditStudentFormData = z.infer<typeof editStudentSchema>;
@@ -33,7 +60,7 @@ export default function EditStudent() {
   });
 
   // 반 정보 조회
-  const { data: classes } = useQuery({
+  const { data: classes = [] } = useQuery({
     queryKey: ['/api/classes']
   });
 
@@ -49,10 +76,17 @@ export default function EditStudent() {
   const form = useForm<EditStudentFormData>({
     resolver: zodResolver(editStudentSchema),
     defaultValues: {
-      name: student?.name || "",
-      classId: currentEnrollment?.classId || "unassigned",
-      startDate: currentEnrollment?.startDate || "",
-      customTuition: currentEnrollment?.tuition || undefined,
+      name: "",
+      classId: undefined,
+      siblingDiscount: "",
+      siblingDiscountRate: undefined,
+      grade: "",
+      startDate: "",
+      dueDay: 8,
+      parentPhone: "",
+      school: "",
+      notes: "",
+      customTuition: undefined,
     },
   });
 
@@ -61,8 +95,15 @@ export default function EditStudent() {
     if (student) {
       form.reset({
         name: student.name || "",
-        classId: currentEnrollment?.classId || "unassigned",
+        classId: currentEnrollment?.classId || undefined,
+        siblingDiscount: student.siblingGroup || "",
+        siblingDiscountRate: undefined, // 할인율은 계산된 값이므로 초기값 없음
+        grade: student.grade || "",
         startDate: currentEnrollment?.startDate || "",
+        dueDay: currentEnrollment?.dueDay || 8,
+        parentPhone: student.parentPhone || "",
+        school: student.school || "",
+        notes: student.notes || "",
         customTuition: currentEnrollment?.tuition || undefined,
       });
     }
@@ -74,19 +115,35 @@ export default function EditStudent() {
       // 1. 학생 기본 정보 업데이트
       const studentUpdateData = {
         name: data.name,
+        school: data.school,
+        grade: data.grade,
+        parentPhone: data.parentPhone,
+        siblingGroup: data.siblingDiscount,
+        notes: data.notes,
       };
       
       const studentResponse = await apiRequest('PUT', `/api/students/${id}`, studentUpdateData);
       const updatedStudent = await studentResponse.json();
       
       // 2. 수강 정보 업데이트 (반이 선택된 경우)
-      if (data.classId && data.classId !== "unassigned") {
+      if (data.classId && data.classId.trim()) {
+        // 기본 수강료 계산
+        const selectedClass = Array.isArray(classes) ? classes.find((c: any) => c.id === data.classId) : null;
+        const baseTuition = data.customTuition ?? selectedClass?.defaultTuition ?? 0;
+        
+        // 할인율 적용
+        let finalTuition = baseTuition;
+        if (data.siblingDiscountRate) {
+          const discountRate = parseInt(data.siblingDiscountRate) / 100;
+          finalTuition = Math.round(baseTuition * (1 - discountRate));
+        }
+        
         const enrollmentData = {
           studentId: id,
           classId: data.classId,
           startDate: data.startDate,
-          tuition: data.customTuition,
-          dueDay: currentEnrollment?.dueDay || 8,
+          tuition: finalTuition,
+          dueDay: data.dueDay || 8,
         };
         
         if (currentEnrollment) {
@@ -155,7 +212,7 @@ export default function EditStudent() {
         <h1 className="text-2xl font-bold">학생 정보 수정</h1>
       </div>
 
-      <Card className="max-w-md">
+      <Card className="max-w-lg">
         <CardHeader>
           <CardTitle>학생 정보 수정</CardTitle>
           <CardDescription>
@@ -165,86 +222,299 @@ export default function EditStudent() {
         <CardContent>
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+              {/* 1. 이름 - 필수 필드 */}
               <FormField
                 control={form.control}
                 name="name"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>학생 이름</FormLabel>
+                    <FormLabel className="text-base font-medium">이름 *</FormLabel>
                     <FormControl>
-                      <Input placeholder="학생 이름을 입력하세요" data-testid="input-student-name" {...field} />
+                      <Input 
+                        placeholder="학생 이름을 입력하세요" 
+                        data-testid="input-student-name" 
+                        {...field} 
+                        className="text-base"
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
               />
 
+              {/* 2. 반선택 - 자동 수강료 통합 */}
               <FormField
                 control={form.control}
                 name="classId"
+                render={({ field }) => {
+                  const selectedClass = Array.isArray(classes) ? classes.find((c: any) => c.id === field.value) : null;
+                  return (
+                    <FormItem>
+                      <FormLabel className="text-base font-medium">반선택</FormLabel>
+                      <Select 
+                        onValueChange={(value) => {
+                          field.onChange(value === "none" ? undefined : value);
+                          // 반 선택시 기본 수강료 자동 설정
+                          if (value && value !== "none" && Array.isArray(classes)) {
+                            const selectedClass = classes.find((c: any) => c.id === value);
+                            if (selectedClass?.defaultTuition) {
+                              form.setValue('customTuition', selectedClass.defaultTuition);
+                            }
+                          }
+                        }} 
+                        value={field.value ?? "none"}
+                      >
+                        <FormControl>
+                          <SelectTrigger data-testid="select-class" className="text-base">
+                            <SelectValue placeholder="반을 선택하세요 (선택사항)" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="none">반을 선택하지 않음</SelectItem>
+                          {Array.isArray(classes) && classes.filter((c: any) => c.isActive !== false).map((classItem: any) => (
+                            <SelectItem key={classItem.id} value={classItem.id}>
+                              {classItem.name} (기본 ₩{classItem.defaultTuition?.toLocaleString()})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {selectedClass && (
+                        <div className="text-sm text-muted-foreground mt-2">
+                          선택된 반: {selectedClass.name} | 수강료: ₩{selectedClass.defaultTuition?.toLocaleString()}
+                        </div>
+                      )}
+                      <FormMessage />
+                    </FormItem>
+                  );
+                }}
+              />
+              
+              {/* 3. 형제할인 */}
+              <div className="space-y-3">
+                <FormField
+                  control={form.control}
+                  name="siblingDiscount"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-base font-medium">형제할인</FormLabel>
+                      <FormControl>
+                        <Input 
+                          placeholder="형제할인 그룹명 (예: 김가족)" 
+                          data-testid="input-student-sibling-discount" 
+                          {...field} 
+                          className="text-base"
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                
+                <FormField
+                  control={form.control}
+                  name="siblingDiscountRate"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-sm font-normal text-muted-foreground">할인율 적용</FormLabel>
+                      <Select 
+                        onValueChange={(value) => field.onChange(value === "none" ? undefined : value)}
+                        value={field.value ?? "none"}
+                      >
+                        <FormControl>
+                          <SelectTrigger data-testid="select-sibling-discount-rate" className="text-base">
+                            <SelectValue placeholder="할인율 선택 (선택사항)" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="none">할인 없음</SelectItem>
+                          <SelectItem value="5">5% 할인</SelectItem>
+                          <SelectItem value="10">10% 할인</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+              
+              {/* 4. 학년 */}
+              <FormField
+                control={form.control}
+                name="grade"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>수강할 반</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
-                      <FormControl>
-                        <SelectTrigger data-testid="select-class">
-                          <SelectValue placeholder="반을 선택하세요" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        <SelectItem value="unassigned">반 미배정</SelectItem>
-                        {Array.isArray(classes) && classes.filter((c: any) => c.isActive !== false).map((classItem: any) => (
-                          <SelectItem key={classItem.id} value={classItem.id}>
-                            {classItem.name} (기본 ₩{classItem.defaultTuition?.toLocaleString()})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <FormLabel className="text-base font-medium">학년</FormLabel>
+                    <FormControl>
+                      <Input 
+                        placeholder="예: 중1, 고2, 초6" 
+                        data-testid="input-student-grade" 
+                        {...field} 
+                        className="text-base"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              {/* 5. 등록일 */}
+              <FormField
+                control={form.control}
+                name="startDate"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel className="text-base font-medium">
+                      등록일 {form.watch("classId") && "*"}
+                    </FormLabel>
+                    <FormControl>
+                      <Input 
+                        type="date" 
+                        data-testid="input-start-date"
+                        {...field}
+                        className="text-base"
+                      />
+                    </FormControl>
+                    {form.watch("classId") && (
+                      <div className="text-xs text-muted-foreground">
+                        반을 선택했으므로 등록일이 필수입니다
+                      </div>
+                    )}
                     <FormMessage />
                   </FormItem>
                 )}
               />
 
-              {form.watch("classId") && form.watch("classId") !== "unassigned" && (
+              {/* 6. 납입 기준일 */}
+              {form.watch("classId") && (
                 <FormField
                   control={form.control}
-                  name="startDate"
+                  name="dueDay"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>수강 시작일</FormLabel>
+                      <FormLabel className="text-base font-medium">납입 기준일</FormLabel>
                       <FormControl>
                         <Input 
-                          type="date" 
-                          data-testid="input-start-date"
-                          {...field}
+                          type="number" 
+                          min="1" 
+                          max="31"
+                          placeholder="8" 
+                          data-testid="input-due-day"
+                          value={field.value || ""}
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            if (value === "") {
+                              field.onChange(8);
+                            } else {
+                              const numValue = parseInt(value);
+                              field.onChange(isNaN(numValue) ? 8 : numValue);
+                            }
+                          }}
+                          className="text-base"
                         />
                       </FormControl>
+                      <div className="text-xs text-muted-foreground">
+                        매월 납입 기준일 (기본값: 8일)
+                      </div>
                       <FormMessage />
                     </FormItem>
                   )}
                 />
               )}
-
-              {form.watch("classId") && form.watch("classId") !== "unassigned" && (
-                <FormField
-                  control={form.control}
-                  name="customTuition"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>개별 수강료 (선택사항)</FormLabel>
-                      <FormControl>
-                        <Input 
-                          type="number" 
-                          placeholder="개별 수강료를 입력하세요"
-                          data-testid="input-custom-tuition"
-                          value={field.value || ""}
-                          onChange={(e) => field.onChange(e.target.value ? Number(e.target.value) : undefined)}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
+              
+              {/* 7. 학부모 전화번호 */}
+              <FormField
+                control={form.control}
+                name="parentPhone"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel className="text-base font-medium">학부모 전화번호</FormLabel>
+                    <FormControl>
+                      <Input 
+                        placeholder="010-1234-5678" 
+                        data-testid="input-parent-phone" 
+                        {...field} 
+                        className="text-base"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              {/* 8. 학교 */}
+              <FormField
+                control={form.control}
+                name="school"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel className="text-base font-medium">학교</FormLabel>
+                    <FormControl>
+                      <Input 
+                        placeholder="학교명을 입력하세요" 
+                        data-testid="input-student-school" 
+                        {...field} 
+                        className="text-base"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              {/* 9. 기타 비고란 */}
+              <FormField
+                control={form.control}
+                name="notes"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel className="text-base font-medium">기타 비고란</FormLabel>
+                    <FormControl>
+                      <Textarea 
+                        placeholder="특이사항이나 추가 정보를 입력하세요" 
+                        data-testid="input-student-notes" 
+                        {...field} 
+                        className="text-base min-h-[80px]"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              {/* 추가 설정 (반 선택시에만 표시) */}
+              {form.watch("classId") && (
+                <div className="border-t pt-4 space-y-3">
+                  <h4 className="text-sm font-medium text-muted-foreground">수강 설정</h4>
+                  
+                  <FormField
+                    control={form.control}
+                    name="customTuition"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel className="text-sm">개별 수강료 (선택사항)</FormLabel>
+                        <FormControl>
+                          <Input 
+                            type="number" 
+                            placeholder="기본 수강료와 다를 경우만 입력"
+                            data-testid="input-custom-tuition"
+                            value={field.value || ""}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              if (value === "") {
+                                field.onChange(undefined);
+                              } else {
+                                const numValue = parseInt(value);
+                                field.onChange(isNaN(numValue) ? undefined : numValue);
+                              }
+                            }}
+                            className="text-base"
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
               )}
 
               <div className="flex gap-2 pt-4">

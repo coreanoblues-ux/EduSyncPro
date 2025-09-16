@@ -532,14 +532,17 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>수강할 반</FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value}>
+                        <Select 
+                          onValueChange={(value) => field.onChange(value === "none" ? undefined : value)}
+                          value={field.value ?? "none"}
+                        >
                           <FormControl>
                             <SelectTrigger>
                               <SelectValue placeholder="반을 선택하세요" />
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent>
-                            <SelectItem value="">반 미배정</SelectItem>
+                            <SelectItem value="none">반 미배정</SelectItem>
                             {Array.isArray(classes) && classes.filter((c: any) => c.isActive !== false).map((classItem: any) => (
                               <SelectItem key={classItem.id} value={classItem.id}>
                                 {classItem.name} (기본 ₩{classItem.defaultTuition?.toLocaleString()})

@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { Plus, Search } from "lucide-react";
+import { Plus, Search, Settings } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { useLocation } from "wouter";
 import DashboardCard from "./DashboardCard";
 import StudentCard from "./StudentCard";
 import OverdueAlert from "./OverdueAlert";
@@ -16,6 +17,7 @@ interface DashboardProps {
 export default function Dashboard({ userRole }: DashboardProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [showLogForm, setShowLogForm] = useState(false);
+  const [, setLocation] = useLocation();
 
   // Fetch students data
   const { data: students = [], isLoading: studentsLoading } = useQuery({
@@ -138,6 +140,16 @@ export default function Dashboard({ userRole }: DashboardProps) {
             <Plus className="h-4 w-4 mr-2" />
             반 일지 작성
           </Button>
+          {userRole === 'superadmin' && (
+            <Button 
+              variant="secondary"
+              onClick={() => setLocation('/superadmin')}
+              data-testid="button-pending-academies"
+            >
+              <Settings className="h-4 w-4 mr-2" />
+              Pending 학원확인
+            </Button>
+          )}
         </div>
 
         {/* Search */}

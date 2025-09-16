@@ -8,6 +8,7 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import NotFound from "@/pages/not-found";
 import Teachers from "@/pages/Teachers";
 import Classes from "@/pages/Classes";
+import Students from "@/pages/Students";
 import LoginForm from "@/components/LoginForm";
 import SignupForm from "@/components/SignupForm";
 import Dashboard from "@/components/Dashboard";
@@ -39,7 +40,7 @@ function Router({ user, tenant }: { user: User | null; tenant: Tenant | null }) 
       <Route path="/" component={() => <Dashboard userRole={user.role} tenant={tenant} />} />
       <Route path="/teachers" component={() => <Teachers userRole={user.role} />} />
       <Route path="/classes" component={() => <Classes userRole={user.role} />} />
-      <Route path="/students" component={() => <div className="p-6">학생 관리 페이지 (구현 예정)</div>} />
+      <Route path="/students" component={() => <Students userRole={user.role} />} />
       <Route path="/payments" component={() => <div className="p-6">수납 관리 페이지 (구현 예정)</div>} />
       <Route path="/logs" component={() => <div className="p-6">반별 일지 페이지 (구현 예정)</div>} />
       <Route path="/overdues" component={() => <div className="p-6">미납 알림 페이지 (구현 예정)</div>} />

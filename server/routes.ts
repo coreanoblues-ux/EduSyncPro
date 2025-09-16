@@ -105,9 +105,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return res.status(409).json({ error: '이미 등록된 이메일 주소입니다.' });
         }
 
-        // Create tenant
+        // Create tenant with unique account number
+        const accountNumber = `AC${Date.now()}`;
         const tenant = await storage.createTenant({
           name: academyName,
+          accountNumber,
           ownerName,
           ownerPhone,
           status: 'pending'

@@ -1,0 +1,65 @@
+3) 비즈니스 로직(요구사항 상세)
+	•	형제할인 10%: 같은 siblingGroup(예: 동일 보호자 번호)으로 묶인 Enroll이 2명 이상이면 “둘째 이상”부터 tuition * 0.9 적용해 청구 예상액 계산 API에서 반영.
+	•	1:1 수업 맞춤 단가: Enroll.tuition 존재 시 그 값을 우선 사용(반의 기본단가가 있어도 학생별로 override).
+	•	월별 합계: /finance/summary?month=YYYY-MM →
+	•	totalPaid: 해당 월 Payment.amount 합
+	•	totalUnpaid: 해당 월 기준 미납자의 예상 청구액 합(형제할인 적용 후)
+	•	미납자 판단: today >= dueDay이고 해당 월 Payment 없음 → 미납. API: /finance/overdues?month=YYYY-MM
+	•	경고 배너: 교사/오너 로그인 시 overdues가 1명 이상이면 배너 표시
+	•	학생 상세: /students/:id → 기본 정보 + enroll(현재 반, dueDay, tuition) + note(비고) + payment history(최신순)
+	•	반 일지(진도/숙제): /classes/:id/logs GET/POST/PUT. 날짜별 한 건 이상 허용. 목록은 최신순.
+	•	대기자: /classes/:id/waiters GET/POST/DELETE
+	•	테넌트 승인 흐름:
+	•	/auth/signup → Tenant(PENDING) & Owner(OWNER)
+	•	/auth/signin
+	•	/admin/tenants(SUPERADMIN만)에서 상태 변경(Active/Expired/ Suspended) + activeUntil 설정(365일)
+	•	미활성/만료 테넌트는 로그인 가능하나, 주요 기능 API는 403
+	•	권한:
+	•	SUPERADMIN: 모든 테넌트 열람/승인
+	•	OWNER: 자기 테넌트 전체 관리
+	•	TEACHER: 자기 테넌트 중 배정된 반/학생 정보만 조회/기록(최소권한)
+
+4) 백엔드 라우팅(예시)
+	•	Auth: POST /auth/signup, POST /auth/signin, POST /auth/signout, GET /auth/me
+	•	Tenants (superadmin): GET/PUT /admin/tenants, PUT /admin/tenants/:id/activate(activeUntil+365)
+	•	Master Data:
+	•	Teachers: GET/POST/PUT/DELETE /teachers
+	•	Classes:  GET/POST/PUT/DELETE /classes
+	•	Students: GET/POST/PUT/DELETE /students, GET /students/:id
+	•	Enrolls:  POST/PUT /enrolls(등록/수정), POST /enrolls/:id/withdraw
+	•	Payments: POST /payments(month, amount, paidDate), GET /students/:id/payments
+	•	LessonLogs: GET/POST/PUT /classes/:id/logs
+	•	Waiters:    GET/POST/DELETE /classes/:id/waiters
+	•	Finance:
+	•	GET /finance/summary?month=YYYY-MM (totalPaid/totalUnpaid)
+	•	GET /finance/overdues?month=YYYY-MM (미납자 리스트)
+
+모든 엔드포인트는 tenantId 추출(JWT payload + DB) 후 그 범위에서만 동작.
+
+5) 프론트엔드 페이지(와이어)
+	•	/signin, /signup: 간단 폼
+	•	/app: 레이아웃(좌: 과목/교사/반 트리, 우: 패널)
+	•	반 선택 → 학생 테이블(이름/기준일/상태/수강료/관리)
+	•	이름 클릭 → “학생 상세/수정 모달”(비고 메모 + 납부 히스토리 + dueDay/tuition 변경)
+	•	“이번 달 납부”/“다음 달 납부” 버튼 → 바로 기록 + 즉시 리프레시
+	•	상단 카드: 이번달 수납 총액/미납 총액 요약
+	•	우상단: + 학생 추가, + 반 일지 작성(날짜/진도/숙제/메모)
+	•	하단 섹션: 미납자 리스트(기준일 지난 학생)
+	•	반 상세 탭: Lesson Logs 탭, Waiters 탭
+	•	경고 배너: 미납자 존재 시 빨간 배너
+	•	/admin(슈퍼관리자): 테넌트 목록, 상태 토글, 활성기간 설정
+
+6) 형제할인/미납 계산 규칙(구현 힌트)
+	•	siblingGroup 기준 그룹핑 후 둘째 이상에 할인 적용.
+	•	예상 청구액 = Enroll.tuition || Class.defaultTuition → 형제할인 적용.
+	•	미납 = no Payment for month && today >= dueDay.
+	•	dueDay가 없으면 미납판단에서 제외(또는 기본 8일).
+
+7) 보안/구독 상태 체크
+	•	미들웨어:
+	•	authGuard → JWT 검증
+	•	tenantGuard → 사용자 role과 tenant 상태(ACTIVE) 확인
+	•	roleGuard(...roles) → 권한 체크
+	•	테넌트 상태 PENDING/EXPIRED/SUSPENDED → 403 with message
+
+8) 환경변수(.env)

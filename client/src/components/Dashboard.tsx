@@ -45,6 +45,12 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
     enabled: isApproved,
   });
 
+  // Fetch enrollments data
+  const { data: enrollments = [] } = useQuery({
+    queryKey: ['/api/enrollments'],
+    enabled: isApproved,
+  });
+
   // todo: remove mock functionality
   const getDashboardData = () => {
     const studentsArray = Array.isArray(students) ? students : [];
@@ -100,24 +106,35 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
     ];
   };
 
-  // todo: remove mock functionality - Replace with real data when payment system is implemented
+  // Get student data with real enrollment info
   const studentsArray = Array.isArray(students) ? students : [];
-  const mockStudentData = studentsArray.map((student: any) => ({
-    id: student.id,
-    name: student.name,
-    grade: student.grade || "미설정",
-    school: student.school || "미설정",
-    className: "반 미배정", // Will be updated when enrollment system is connected
-    dueDay: 8, // Default value
-    tuition: 150000, // Default value
-    paymentStatus: 'pending' as const,
-    parentPhone: student.parentPhone || "미설정"
-  }));
+  const enrollmentsArray = Array.isArray(enrollments) ? enrollments : [];
+  const classesArray = Array.isArray(classes) ? classes : [];
+  
+  const studentData = studentsArray.map((student: any) => {
+    // Find student's enrollment
+    const enrollment = enrollmentsArray.find((e: any) => e.studentId === student.id && e.isActive);
+    
+    // Find class info if enrollment exists
+    const studentClass = enrollment ? classesArray.find((c: any) => c.id === enrollment.classId) : null;
+    
+    return {
+      id: student.id,
+      name: student.name,
+      grade: student.grade || "미설정",
+      school: student.school || "미설정",
+      className: studentClass ? studentClass.name : "반 미배정",
+      dueDay: enrollment ? enrollment.dueDay : 8,
+      tuition: enrollment ? (enrollment.tuition || studentClass?.defaultTuition || 0) : 0,
+      paymentStatus: 'pending' as const,
+      parentPhone: student.parentPhone || "미설정"
+    };
+  });
 
   // Mock classes for now
   const mockClasses = Array.isArray(classes) ? classes : [];
 
-  const filteredStudents = mockStudentData.filter((student: any) =>
+  const filteredStudents = studentData.filter((student: any) =>
     student.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     student.className.toLowerCase().includes(searchTerm.toLowerCase())
   );

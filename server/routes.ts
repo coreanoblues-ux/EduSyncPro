@@ -859,6 +859,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     authGuard,
     tenantGuard,
     roleGuard('owner', 'teacher'),
+    (req: Request, res: Response, next: any) => {
+      console.log('🔥 Payment data received:', JSON.stringify(req.body, null, 2));
+      // 날짜 문자열을 Date 객체로 변환
+      if (req.body.paidDate && typeof req.body.paidDate === 'string') {
+        req.body.paidDate = new Date(req.body.paidDate);
+        console.log('🔥 Converted paidDate to:', req.body.paidDate, typeof req.body.paidDate);
+      }
+      next();
+    },
     validateBody(insertPaymentSchema.omit({ tenantId: true, createdBy: true })),
     async (req: Request, res: Response) => {
       try {

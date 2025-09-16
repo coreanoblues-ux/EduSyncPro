@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Plus, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -16,26 +17,41 @@ export default function Dashboard({ userRole }: DashboardProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [showLogForm, setShowLogForm] = useState(false);
 
+  // Fetch students data
+  const { data: students = [], isLoading: studentsLoading } = useQuery({
+    queryKey: ['/api/students'],
+  });
+
+  // Fetch teachers data
+  const { data: teachers = [] } = useQuery({
+    queryKey: ['/api/teachers'],
+  });
+
+  // Fetch classes data
+  const { data: classes = [] } = useQuery({
+    queryKey: ['/api/classes'],
+  });
+
   // todo: remove mock functionality
   const getDashboardData = () => {
     const baseData = [
       {
         title: "전체 학생 수",
-        value: "87명",
+        value: `${students.length}명`,
         description: "재원 학생",
         icon: Users,
-        trend: { value: "+3명", isPositive: true }
+        trend: students.length > 0 ? { value: "+3명", isPositive: true } : undefined
       },
       {
         title: "미납자",
-        value: "5명",
+        value: `${overdueCount}명`,
         description: "기준일 경과",
         icon: AlertTriangle,
-        trend: { value: "-2명", isPositive: true }
+        trend: overdueCount === 0 ? { value: "없음", isPositive: true } : undefined
       },
       {
         title: "운영 반",
-        value: "12개",
+        value: `${classes.length}개`,
         description: "활성화된 반",
         icon: BookOpen
       }
@@ -46,10 +62,10 @@ export default function Dashboard({ userRole }: DashboardProps) {
       return [
         {
           title: "이번달 수납액",
-          value: "₩2,450,000",
+          value: "₩0", // todo: calculate from payments
           description: "전월 대비",
           icon: CreditCard,
-          trend: { value: "+12%", isPositive: true }
+          trend: { value: "준비중", isPositive: true }
         },
         ...baseData
       ];
@@ -58,57 +74,25 @@ export default function Dashboard({ userRole }: DashboardProps) {
     return baseData;
   };
 
-  const mockDashboardData = getDashboardData();
+  // todo: remove mock functionality - Replace with real data when payment system is implemented
+  const mockStudentData = students.map((student: any) => ({
+    id: student.id,
+    name: student.name,
+    grade: student.grade || "미설정",
+    school: student.school || "미설정",
+    className: "반 미배정", // Will be updated when enrollment system is connected
+    dueDay: 8, // Default value
+    tuition: 150000, // Default value
+    paymentStatus: 'pending' as const,
+    parentPhone: student.parentPhone || "미설정"
+  }));
 
-  const mockStudents = [
-    {
-      id: "1",
-      name: "김영수",
-      grade: "중2",
-      school: "서울중학교",
-      className: "영어 중급반",
-      dueDay: 8,
-      tuition: 150000,
-      paymentStatus: 'paid' as const,
-      parentPhone: "010-1234-5678"
-    },
-    {
-      id: "2",
-      name: "이민지",
-      grade: "고1",
-      school: "강남고등학교",
-      className: "수학 고급반",
-      dueDay: 15,
-      tuition: 180000,
-      paymentStatus: 'overdue' as const,
-      parentPhone: "010-9876-5432"
-    },
-    {
-      id: "3",
-      name: "박지훈",
-      grade: "중3",
-      school: "중앙중학교",
-      className: "영어 초급반",
-      dueDay: 5,
-      tuition: 120000,
-      paymentStatus: 'pending' as const,
-      parentPhone: "010-5555-1234"
-    }
-  ];
-
-  const mockClasses = [
-    { id: "1", name: "영어 초급반" },
-    { id: "2", name: "영어 중급반" },
-    { id: "3", name: "수학 고급반" },
-    { id: "4", name: "과학 실험반" }
-  ];
-
-  const filteredStudents = mockStudents.filter(student =>
+  const filteredStudents = mockStudentData.filter((student: any) =>
     student.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     student.className.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const overdueCount = mockStudents.filter(s => s.paymentStatus === 'overdue').length;
+  const overdueCount = 0; // Will be calculated when payment system is implemented
 
   const handleStudentEdit = (id: string) => {
     console.log(`Edit student ${id}`);
@@ -134,7 +118,7 @@ export default function Dashboard({ userRole }: DashboardProps) {
 
       {/* Dashboard Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {mockDashboardData.map((card, index) => (
+        {getDashboardData().map((card, index) => (
           <DashboardCard key={index} {...card} />
         ))}
       </div>

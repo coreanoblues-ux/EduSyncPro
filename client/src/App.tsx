@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Switch, Route } from "wouter";
 import { queryClient } from "./lib/queryClient";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
@@ -14,9 +14,17 @@ import ThemeToggle from "@/components/ThemeToggle";
 type UserRole = 'owner' | 'teacher' | 'superadmin';
 
 interface User {
+  id: string;
   email: string;
   role: UserRole;
   name: string;
+}
+
+interface Tenant {
+  id: string;
+  name: string;
+  accountNumber: string;
+  status: 'pending' | 'active' | 'expired' | 'suspended';
 }
 
 function Router({ user }: { user: User | null }) {
@@ -37,23 +45,84 @@ function Router({ user }: { user: User | null }) {
 }
 
 function App() {
-  // todo: remove mock functionality
   const [user, setUser] = useState<User | null>(null);
+  const [tenant, setTenant] = useState<Tenant | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const handleLogin = (credentials: { email: string; password: string; role: string }) => {
-    // Mock login - in real app this would make API call
-    const mockUser: User = {
-      email: credentials.email,
-      role: credentials.role as UserRole,
-      name: credentials.role === 'owner' ? '김원장님' : 
-            credentials.role === 'teacher' ? '이선생님' : '관리자님'
+  // Check if user is already logged in
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const response = await fetch('/api/auth/me', {
+          credentials: 'include'
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          setUser(data.user);
+          setTenant(data.tenant);
+        }
+      } catch (error) {
+        console.error('Auth check failed:', error);
+      } finally {
+        setIsLoading(false);
+      }
     };
-    setUser(mockUser);
+
+    checkAuth();
+  }, []);
+
+  const handleLogin = async (credentials: { email: string; password: string; role: string }) => {
+    try {
+      const response = await fetch('/api/auth/signin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify(credentials),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setUser(data.user);
+        setTenant(data.tenant);
+      } else {
+        const error = await response.json();
+        throw new Error(error.error || '로그인에 실패했습니다.');
+      }
+    } catch (error) {
+      console.error('Login failed:', error);
+      throw error;
+    }
   };
 
-  const handleLogout = () => {
-    setUser(null);
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/signout', {
+        method: 'POST',
+        credentials: 'include'
+      });
+    } catch (error) {
+      console.error('Logout failed:', error);
+    } finally {
+      setUser(null);
+      setTenant(null);
+    }
   };
+
+  if (isLoading) {
+    return (
+      <QueryClientProvider client={queryClient}>
+        <div className="min-h-screen flex items-center justify-center">
+          <div className="text-center">
+            <div className="text-lg font-semibold">시대영재 학원관리</div>
+            <div className="text-sm text-muted-foreground mt-2">로딩 중...</div>
+          </div>
+        </div>
+      </QueryClientProvider>
+    );
+  }
 
   const sidebarStyle = {
     "--sidebar-width": "20rem",
@@ -76,6 +145,11 @@ function App() {
                     <div className="hidden sm:block">
                       <span className="text-sm text-muted-foreground">
                         안녕하세요, <span className="font-medium text-foreground">{user.name}</span>
+                        {tenant && (
+                          <span className="ml-2 text-xs bg-primary/10 text-primary px-2 py-1 rounded">
+                            {tenant.name}
+                          </span>
+                        )}
                       </span>
                     </div>
                   </div>

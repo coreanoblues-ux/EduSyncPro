@@ -28,6 +28,11 @@ const idParamSchema = z.object({
   id: z.string().uuid("유효하지 않은 ID 형식입니다.")
 });
 
+// For tenant IDs that might not be UUID format
+const tenantIdParamSchema = z.object({
+  id: z.string().min(1, "테넌트 ID가 필요합니다.")
+});
+
 const signupSchema = z.object({
   email: z.string().email("유효한 이메일 주소를 입력해주세요."),
   password: z.string().min(6, "비밀번호는 최소 6자 이상이어야 합니다."),
@@ -91,7 +96,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   };
 
   // CRITICAL: Admin login route - MUST be registered FIRST to avoid Vite interference
-  const adminPassword = process.env.ADMIN_PASSWORD || 'wchung00@';
+  const adminPassword = process.env.ADMIN_PASSWORD;
+  if (!adminPassword) {
+    throw new Error('ADMIN_PASSWORD environment variable must be set for security. No default password allowed.');
+  }
   
   app.post('/api/auth/admin-login',
     validateBody(z.object({
@@ -1060,7 +1068,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.put('/api/superadmin/tenants/:id/approve',
     authGuard,
     roleGuard('superadmin'),
-    validateParams(idParamSchema),
+    validateParams(tenantIdParamSchema),
     async (req: Request, res: Response) => {
       try {
         const tenant = await storage.getTenant(req.params.id);
@@ -1088,7 +1096,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.patch('/api/superadmin/tenants/:id/status',
     authGuard,
     roleGuard('superadmin'),
-    validateParams(idParamSchema),
+    validateParams(tenantIdParamSchema),
     validateBody(z.object({
       status: z.enum(['pending', 'active', 'expired', 'suspended'])
     })),
@@ -1115,7 +1123,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.delete('/api/superadmin/tenants/:id',
     authGuard,
     roleGuard('superadmin'),
-    validateParams(idParamSchema),
+    validateParams(tenantIdParamSchema),
     async (req: Request, res: Response) => {
       try {
         const tenant = await storage.getTenant(req.params.id);

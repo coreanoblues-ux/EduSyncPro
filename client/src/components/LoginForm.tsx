@@ -108,7 +108,6 @@ export default function LoginForm({ onLogin, onSignup }: LoginFormProps) {
                 <SelectContent>
                   <SelectItem value="owner">학원장</SelectItem>
                   <SelectItem value="teacher">교사</SelectItem>
-                  <SelectItem value="superadmin">슈퍼관리자</SelectItem>
                 </SelectContent>
               </Select>
             </div>

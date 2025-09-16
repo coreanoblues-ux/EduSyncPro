@@ -136,6 +136,47 @@ function App() {
     }
   };
 
+  const handleTeacherSignup = async (signupData: {
+    academyEmail: string;
+    email: string;
+    password: string;
+    name: string;
+    subject: string;
+    phone?: string;
+  }) => {
+    try {
+      const response = await fetch('/api/auth/signup/teacher', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify(signupData),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        
+        if (data.needsApproval) {
+          // Teacher created but needs academy approval - show message and stay on signup
+          alert(`${data.message}\n로그인하시려면 학원 승인을 기다려주세요.`);
+          setIsSignupMode(false); // Go back to login
+        } else {
+          // Teacher is active, can login immediately
+          setUser(data.user);
+          setTenant(data.tenant);
+          setIsSignupMode(false);
+        }
+      } else {
+        const error = await response.json();
+        throw new Error(error.error || '교사 가입에 실패했습니다.');
+      }
+    } catch (error) {
+      console.error('Teacher signup failed:', error);
+      throw error;
+    }
+  };
+
   const handleLogout = async () => {
     try {
       await fetch('/api/auth/signout', {
@@ -174,7 +215,8 @@ function App() {
         {!user ? (
           isSignupMode ? (
             <SignupForm 
-              onSignup={handleSignup} 
+              onSignup={handleSignup}
+              onTeacherSignup={handleTeacherSignup}
               onBackToLogin={() => setIsSignupMode(false)} 
             />
           ) : (

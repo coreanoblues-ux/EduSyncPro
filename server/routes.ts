@@ -42,6 +42,15 @@ const signinSchema = z.object({
   password: z.string().min(1, "비밀번호를 입력해주세요.")
 });
 
+const teacherSignupSchema = z.object({
+  academyEmail: z.string().email("학원 이메일을 입력해주세요."),
+  email: z.string().email("유효한 이메일 주소를 입력해주세요."),
+  password: z.string().min(6, "비밀번호는 최소 6자 이상이어야 합니다."),
+  name: z.string().min(1, "이름을 입력해주세요."),
+  subject: z.string().min(1, "담당 과목을 입력해주세요."),
+  phone: z.string().optional()
+});
+
 export async function registerRoutes(app: Express): Promise<Server> {
   // Enable cookie parsing
   app.use(cookieParser());
@@ -149,6 +158,115 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } catch (error) {
         console.error('Signup error:', error);
         res.status(500).json({ error: '회원가입 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
+  // Teacher sign up - Join existing academy
+  app.post('/api/auth/signup/teacher',
+    validateBody(teacherSignupSchema),
+    async (req: Request, res: Response) => {
+      try {
+        const { academyEmail, email, password, name, subject, phone } = req.body;
+        
+        // Check if teacher email already exists
+        const existingUser = await storage.getUserByEmail(email);
+        if (existingUser) {
+          return res.status(409).json({ error: '이미 등록된 이메일 주소입니다.' });
+        }
+
+        // Find the academy owner by email to get tenant
+        const ownerUser = await storage.getUserByEmail(academyEmail);
+        if (!ownerUser || ownerUser.role !== 'owner') {
+          return res.status(404).json({ error: '해당 학원을 찾을 수 없습니다.' });
+        }
+
+        if (!ownerUser.tenantId) {
+          return res.status(400).json({ error: '학원 정보가 올바르지 않습니다.' });
+        }
+
+        // Get tenant to check if it exists and is valid
+        const tenant = await storage.getTenant(ownerUser.tenantId);
+        if (!tenant) {
+          return res.status(404).json({ error: '학원을 찾을 수 없습니다.' });
+        }
+
+        // Create teacher user (pending approval like academy owner)
+        const hashedPassword = await hashPassword(password);
+        const isTeacherActive = tenant.status === 'active';
+        const user = await storage.createUser({
+          tenantId: tenant.id,
+          email,
+          password: hashedPassword,
+          name,
+          role: 'teacher',
+          isActive: isTeacherActive // Active only if academy is already approved
+        });
+
+        // Create teacher record
+        const teacher = await storage.createTeacher({
+          tenantId: tenant.id,
+          userId: user.id,
+          name,
+          subject,
+          phone: phone || null,
+          isActive: isTeacherActive
+        });
+
+        // Only issue JWT token if user is active (academy is approved)
+        if (isTeacherActive) {
+          const token = generateToken({
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            role: user.role,
+            tenantId: user.tenantId
+          });
+
+          // Set HTTP-only cookie only for active teachers
+          res.cookie('token', token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict',
+            maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+          });
+        }
+
+        const statusMessage = isTeacherActive 
+          ? '교사 계정이 생성되었습니다.'
+          : '교사 계정이 생성되었습니다. 학원 승인 후 로그인 가능합니다.';
+
+        // Return different response based on activation status
+        const responseData: any = {
+          message: statusMessage,
+          needsApproval: !isTeacherActive,
+          teacher: {
+            id: teacher.id,
+            subject: teacher.subject,
+            phone: teacher.phone
+          }
+        };
+
+        // Only include user and tenant data if teacher is active (logged in)
+        if (isTeacherActive) {
+          responseData.user = {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            role: user.role
+          };
+          responseData.tenant = {
+            id: tenant.id,
+            name: tenant.name,
+            accountNumber: tenant.accountNumber,
+            status: tenant.status
+          };
+        }
+
+        res.status(201).json(responseData);
+      } catch (error) {
+        console.error('Teacher signup error:', error);
+        res.status(500).json({ error: '교사 가입 중 오류가 발생했습니다.' });
       }
     }
   );

@@ -714,15 +714,16 @@ export default function Students({ userRole }: StudentsProps) {
 
       {/* Edit Dialog */}
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
+        <DialogContent className="max-w-md h-[600px] flex flex-col">
+          <DialogHeader className="flex-shrink-0">
             <DialogTitle>학생 정보 수정</DialogTitle>
             <DialogDescription>
               학생 정보를 수정해주세요.
             </DialogDescription>
           </DialogHeader>
           <Form {...editForm}>
-            <form onSubmit={editForm.handleSubmit(handleEditStudent)} className="space-y-4">
+            <form onSubmit={editForm.handleSubmit(handleEditStudent)} className="flex flex-col flex-1">
+              <div className="space-y-4 overflow-y-scroll h-[400px] pr-2 dialog-scrollable">
               <FormField
                 control={editForm.control}
                 name="name"
@@ -814,7 +815,9 @@ export default function Students({ userRole }: StudentsProps) {
                   </FormItem>
                 )}
               />
-              <DialogFooter>
+              </div>
+              
+              <DialogFooter className="flex-shrink-0">
                 <Button 
                   type="submit" 
                   disabled={editStudentMutation.isPending}

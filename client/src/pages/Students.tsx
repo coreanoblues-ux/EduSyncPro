@@ -302,13 +302,7 @@ export default function Students({ userRole }: StudentsProps) {
             </DialogHeader>
             <Form {...addForm}>
               <form onSubmit={addForm.handleSubmit(handleAddStudent)} className="flex flex-col flex-1">
-                <div 
-                  className="space-y-4 overflow-y-scroll flex-1 pr-2" 
-                  style={{
-                    scrollbarWidth: 'thin',
-                    scrollbarColor: '#9ca3af #f3f4f6'
-                  }}
-                >
+                <div className="space-y-4 overflow-y-scroll flex-1 pr-2 dialog-scrollable">
                 <FormField
                   control={addForm.control}
                   name="name"

@@ -26,11 +26,13 @@ export default function LoginForm({ onLogin, onSignup }: LoginFormProps) {
     e.preventDefault();
     setIsLoading(true);
     
-    // Simulate login delay
-    setTimeout(() => {
-      onLogin(formData);
+    try {
+      await onLogin(formData);
+    } catch (error) {
+      console.error('Login failed:', error);
+    } finally {
       setIsLoading(false);
-    }, 1000);
+    }
   };
 
   return (
@@ -106,15 +108,7 @@ export default function LoginForm({ onLogin, onSignup }: LoginFormProps) {
                 <SelectContent>
                   <SelectItem value="owner">학원장</SelectItem>
                   <SelectItem value="teacher">교사</SelectItem>
-                  <div 
-                    className="px-3 py-1 text-center text-muted-foreground text-xs cursor-pointer hover:bg-accent" 
-                    onClick={() => setShowSuperAdmin(!showSuperAdmin)}
-                  >
-                    -------
-                  </div>
-                  {showSuperAdmin && (
-                    <SelectItem value="superadmin">슈퍼관리자</SelectItem>
-                  )}
+                  <SelectItem value="superadmin">슈퍼관리자</SelectItem>
                 </SelectContent>
               </Select>
             </div>

@@ -762,6 +762,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     authGuard,
     tenantGuard,
     roleGuard('owner', 'teacher'),
+    (req: Request, res: Response, next: any) => {
+      // 날짜 문자열을 Date 객체로 변환
+      if (req.body.startDate && typeof req.body.startDate === 'string') {
+        req.body.startDate = new Date(req.body.startDate);
+      }
+      if (req.body.endDate && typeof req.body.endDate === 'string') {
+        req.body.endDate = new Date(req.body.endDate);
+      }
+      next();
+    },
     validateBody(insertEnrollmentSchema.omit({ tenantId: true, isActive: true })),
     async (req: Request, res: Response) => {
       try {

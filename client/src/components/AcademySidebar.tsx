@@ -14,10 +14,10 @@ import AcademyLogo from "./AcademyLogo";
 
 const menuItems = [
   { title: "대시보드", url: "/", icon: Home },
-  { title: "교사 관리", url: "/teachers", icon: GraduationCap },
-  { title: "반 관리", url: "/classes", icon: BookOpen },
-  { title: "학생 관리", url: "/students", icon: Users },
-  { title: "수납 관리", url: "/payments", icon: CreditCard },
+  { title: "교사", url: "/teachers", icon: GraduationCap },
+  { title: "반", url: "/classes", icon: BookOpen },
+  { title: "학생", url: "/students", icon: Users },
+  { title: "수납", url: "/payments", icon: CreditCard },
   { title: "반별 일지", url: "/logs", icon: Calendar },
   { title: "미납 알림", url: "/overdues", icon: Bell },
 ];

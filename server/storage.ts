@@ -42,6 +42,7 @@ export interface IStorage {
   createTenant(tenant: InsertTenant): Promise<Tenant>;
   getAllTenants(): Promise<Tenant[]>;
   updateTenantStatus(id: string, status: 'pending' | 'active' | 'expired' | 'suspended'): Promise<Tenant>;
+  deleteTenant(id: string): Promise<void>;
   
   // Student methods
   getStudentsByTenant(tenantId: string): Promise<Student[]>;
@@ -147,6 +148,22 @@ export class DbStorage implements IStorage {
       .where(eq(tenants.id, id))
       .returning();
     return result[0];
+  }
+
+  async deleteTenant(id: string): Promise<void> {
+    // 테넌트와 관련된 모든 데이터 삭제 (cascade)
+    // 먼저 관련 데이터들을 삭제해야 함
+    await db.delete(lessonLogs).where(eq(lessonLogs.tenantId, id));
+    await db.delete(payments).where(eq(payments.tenantId, id));
+    await db.delete(enrollments).where(eq(enrollments.tenantId, id));
+    await db.delete(waiters).where(eq(waiters.tenantId, id));
+    await db.delete(classes).where(eq(classes.tenantId, id));
+    await db.delete(students).where(eq(students.tenantId, id));
+    await db.delete(teachers).where(eq(teachers.tenantId, id));
+    await db.delete(users).where(eq(users.tenantId, id));
+    
+    // 마지막으로 테넌트 삭제
+    await db.delete(tenants).where(eq(tenants.id, id));
   }
 
   // Student methods

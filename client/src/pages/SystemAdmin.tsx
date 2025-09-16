@@ -15,7 +15,10 @@ import {
   Crown,
   TrendingUp,
   UserCheck,
-  UserX
+  UserX,
+  Trash2,
+  Ban,
+  Play
 } from "lucide-react";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -77,7 +80,9 @@ export default function SystemAdmin() {
       queryClient.invalidateQueries({ queryKey: ['/api/superadmin/tenants'] });
       toast({
         title: "상태 업데이트 완료",
-        description: `${variables.status === 'active' ? '승인' : '거부'}되었습니다.`,
+        description: `${variables.status === 'active' ? '승인' : 
+                      variables.status === 'suspended' ? '비활성화' : 
+                      '상태 변경'}되었습니다.`,
       });
     },
     onError: (error) => {
@@ -89,12 +94,60 @@ export default function SystemAdmin() {
     }
   });
 
+  // 테넌트 삭제 뮤테이션
+  const deleteTenantMutation = useMutation({
+    mutationFn: async (tenantId: string) => {
+      const response = await fetch(`/api/superadmin/tenants/${tenantId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      
+      if (!response.ok) {
+        throw new Error('테넌트 삭제 실패');
+      }
+      
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/superadmin/tenants'] });
+      toast({
+        title: "삭제 완료",
+        description: "학원이 완전히 삭제되었습니다.",
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "삭제 실패",
+        description: "학원 삭제 중 오류가 발생했습니다.",
+        variant: "destructive",
+      });
+    }
+  });
+
   const handleApprove = (tenantId: string) => {
     updateTenantMutation.mutate({ tenantId, status: 'active' });
   };
 
   const handleReject = (tenantId: string) => {
     updateTenantMutation.mutate({ tenantId, status: 'suspended' });
+  };
+
+  const handleSuspend = (tenantId: string) => {
+    if (confirm('정말로 이 학원을 비활성화하시겠습니까?')) {
+      updateTenantMutation.mutate({ tenantId, status: 'suspended' });
+    }
+  };
+
+  const handleActivate = (tenantId: string) => {
+    if (confirm('이 학원을 다시 활성화하시겠습니까?')) {
+      updateTenantMutation.mutate({ tenantId, status: 'active' });
+    }
+  };
+
+  const handleDelete = (tenantId: string, tenantName: string) => {
+    if (confirm(`정말로 "${tenantName}" 학원을 완전히 삭제하시겠습니까?\n\n⚠️ 이 작업은 되돌릴 수 없으며, 모든 학생, 교사, 수업 데이터가 영구히 삭제됩니다.`)) {
+      deleteTenantMutation.mutate(tenantId);
+    }
   };
 
   return (
@@ -249,7 +302,7 @@ export default function SystemAdmin() {
                 {tenants.map((tenant) => (
                   <div 
                     key={tenant.id} 
-                    className="p-3 bg-slate-700/30 rounded-lg border border-slate-600"
+                    className="p-4 bg-slate-700/30 rounded-lg border border-slate-600"
                     data-testid={`tenant-${tenant.id}`}
                   >
                     <div className="flex items-center justify-between">
@@ -258,9 +311,10 @@ export default function SystemAdmin() {
                         <div>
                           <h4 className="font-medium text-white">{tenant.name}</h4>
                           <p className="text-sm text-slate-400">{tenant.ownerName}</p>
+                          <p className="text-xs text-slate-500">{tenant.accountNumber}</p>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-3">
                         <Badge 
                           variant={
                             tenant.status === 'active' ? 'default' :
@@ -280,9 +334,46 @@ export default function SystemAdmin() {
                             '만료'
                           }
                         </Badge>
-                        <span className="text-xs text-slate-400">
-                          {tenant.accountNumber}
-                        </span>
+                        
+                        {/* 관리 버튼들 */}
+                        <div className="flex gap-1">
+                          {tenant.status === 'active' && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleSuspend(tenant.id)}
+                              disabled={updateTenantMutation.isPending}
+                              className="h-8 w-8 p-0 border-orange-600 text-orange-400 hover:bg-orange-600 hover:text-white"
+                              data-testid={`button-suspend-${tenant.id}`}
+                            >
+                              <Ban className="h-3 w-3" />
+                            </Button>
+                          )}
+                          
+                          {(tenant.status === 'suspended' || tenant.status === 'expired') && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleActivate(tenant.id)}
+                              disabled={updateTenantMutation.isPending}
+                              className="h-8 w-8 p-0 border-green-600 text-green-400 hover:bg-green-600 hover:text-white"
+                              data-testid={`button-activate-${tenant.id}`}
+                            >
+                              <Play className="h-3 w-3" />
+                            </Button>
+                          )}
+                          
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleDelete(tenant.id, tenant.name)}
+                            disabled={deleteTenantMutation.isPending}
+                            className="h-8 w-8 p-0 border-red-600 text-red-400 hover:bg-red-600 hover:text-white"
+                            data-testid={`button-delete-${tenant.id}`}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   </div>

@@ -1111,6 +1111,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   );
 
+  // Delete tenant (완전 삭제)
+  app.delete('/api/superadmin/tenants/:id',
+    authGuard,
+    roleGuard('superadmin'),
+    validateParams(idParamSchema),
+    async (req: Request, res: Response) => {
+      try {
+        const tenant = await storage.getTenant(req.params.id);
+        if (!tenant) {
+          return res.status(404).json({ error: '테넌트를 찾을 수 없습니다.' });
+        }
+
+        // 테넌트 완전 삭제
+        await storage.deleteTenant(req.params.id);
+        res.json({
+          message: '테넌트가 완전히 삭제되었습니다.',
+          tenantId: req.params.id
+        });
+      } catch (error) {
+        console.error('Delete tenant error:', error);
+        res.status(500).json({ error: '테넌트 삭제 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
   const httpServer = createServer(app);
   return httpServer;
 }

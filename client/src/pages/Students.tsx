@@ -293,7 +293,7 @@ export default function Students({ userRole }: StudentsProps) {
                 학생 추가
               </Button>
             </DialogTrigger>
-          <DialogContent className="max-w-lg max-h-[85vh] flex flex-col">
+          <DialogContent className="max-w-lg h-[600px] flex flex-col">
             <DialogHeader className="flex-shrink-0">
               <DialogTitle>새 학생 등록</DialogTitle>
               <DialogDescription>
@@ -302,7 +302,7 @@ export default function Students({ userRole }: StudentsProps) {
             </DialogHeader>
             <Form {...addForm}>
               <form onSubmit={addForm.handleSubmit(handleAddStudent)} className="flex flex-col flex-1">
-                <div className="space-y-4 overflow-y-scroll flex-1 pr-2 dialog-scrollable">
+                <div className="space-y-4 overflow-y-scroll h-[400px] pr-2 dialog-scrollable">
                 <FormField
                   control={addForm.control}
                   name="name"

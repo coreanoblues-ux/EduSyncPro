@@ -331,23 +331,34 @@
 .dialog-scrollable {
   /* Firefox */
   scrollbar-width: thin;
-  scrollbar-color: rgba(156, 163, 175, 0.8) rgba(243, 244, 246, 0.5);
+  scrollbar-color: rgba(156, 163, 175, 1) rgba(243, 244, 246, 1);
+  
+  /* Force scrollbar to always be visible */
+  overflow-y: scroll !important;
 }
 
 .dialog-scrollable::-webkit-scrollbar {
-  width: 8px;
+  width: 12px !important;
+  display: block !important;
 }
 
 .dialog-scrollable::-webkit-scrollbar-track {
-  background: rgba(243, 244, 246, 0.5);
-  border-radius: 4px;
+  background: rgba(243, 244, 246, 1) !important;
+  border-radius: 6px !important;
+  border: 1px solid rgba(229, 231, 235, 1) !important;
 }
 
 .dialog-scrollable::-webkit-scrollbar-thumb {
-  background: rgba(156, 163, 175, 0.8);
-  border-radius: 4px;
+  background: rgba(156, 163, 175, 1) !important;
+  border-radius: 6px !important;
+  border: 1px solid rgba(107, 114, 128, 0.3) !important;
+  min-height: 20px !important;
 }
 
 .dialog-scrollable::-webkit-scrollbar-thumb:hover {
-  background: rgba(107, 114, 128, 0.9);
+  background: rgba(107, 114, 128, 1) !important;
+}
+
+.dialog-scrollable::-webkit-scrollbar-corner {
+  background: rgba(243, 244, 246, 1) !important;
 }

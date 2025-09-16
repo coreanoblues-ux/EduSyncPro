@@ -6,6 +6,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import NotFound from "@/pages/not-found";
+import Teachers from "@/pages/Teachers";
 import LoginForm from "@/components/LoginForm";
 import SignupForm from "@/components/SignupForm";
 import Dashboard from "@/components/Dashboard";
@@ -35,7 +36,7 @@ function Router({ user, tenant }: { user: User | null; tenant: Tenant | null }) 
   return (
     <Switch>
       <Route path="/" component={() => <Dashboard userRole={user.role} tenant={tenant} />} />
-      <Route path="/teachers" component={() => <div className="p-6">교사 관리 페이지 (구현 예정)</div>} />
+      <Route path="/teachers" component={() => <Teachers userRole={user.role} />} />
       <Route path="/classes" component={() => <div className="p-6">반 관리 페이지 (구현 예정)</div>} />
       <Route path="/students" component={() => <div className="p-6">학생 관리 페이지 (구현 예정)</div>} />
       <Route path="/payments" component={() => <div className="p-6">수납 관리 페이지 (구현 예정)</div>} />

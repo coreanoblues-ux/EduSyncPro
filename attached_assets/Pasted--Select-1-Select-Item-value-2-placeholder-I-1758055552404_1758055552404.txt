@@ -1,0 +1,68 @@
+🎯 목적
+학생 등록/수정 화면의 모든 <Select> 컴포넌트에서
+1) <Select.Item>에 절대 빈 value("")가 들어가지 않게 하고
+2) placeholder는 Item이 아니라 <Select.Value placeholder="..."> 로만 표시
+3) 초기값/수정값을 문자열로 정확히 바인딩 (undefined 허용, "" 금지)
+
+🧭 1) 문제 지점 찾기
+- 코드 전역 검색:
+  rg -n "<Select\.Item" src server | cat
+  rg -n "value=\"\"" src server | cat
+  rg -n "value=\{.*\|\| ''\}" src server | cat
+  rg -n "onValueChange" src | cat
+
+🔧 2) 공통 수정 규칙
+- 모든 <Select.Item>은 value에 “빈 문자열 금지”. 값은 문자열로 강제 변환:
+  <Select.Item value={String(option.id)}> ... </Select.Item>
+- falsy 방지: map 전에 필터
+  options.filter(o => o?.id != null && String(o.id).length > 0)
+- placeholder는 이렇게:
+  <Select.Trigger> <Select.Value placeholder="반을 선택하세요" /> </Select.Trigger>
+  (❌ placeholder를 위해 <Select.Item value=""> 쓰지 말 것)
+
+- 로딩 중에는 Item 렌더 금지:
+  {options.length > 0 && options.map(...)}  // length 0이면 비우기
+
+🧩 3) 등록/수정 폼 바인딩(react-hook-form 기준)
+- Controller 사용 예시(반 선택):
+  <Controller
+    control={form.control}
+    name="classId"
+    render={({ field }) => (
+      <Select
+        value={field.value ?? undefined}           // "" 금지, undefined 허용
+        onValueChange={(v) => field.onChange(v)}   // v는 string
+      >
+        <Select.Trigger>
+          <Select.Value placeholder="반을 선택하세요" />
+        </Select.Trigger>
+        <Select.Content>
+          {classes.map(c => (
+            <Select.Item key={c.id} value={String(c.id)}>
+              {c.name}
+            </Select.Item>
+          ))}
+        </Select.Content>
+      </Select>
+    )}
+  />
+- 수정 화면(기존값 존재 시):
+  form.reset({ classId: existing?.classId ? String(existing.classId) : undefined });
+
+- 제출 시 숫자 필요하면 변환:
+  const payload = { ...values, classId: Number(values.classId) };
+
+🧹 4) 안티패턴 제거
+- 다음 패턴 전부 치환:
+  value={option?.id || ''}   →  value={String(option.id)}
+  value=""                    →  (삭제) placeholder로 대체
+  value={''}                  →  undefined로 대체(컨트롤 값)
+
+🧪 5) 빠른 테스트
+- “학생 등록”에서 반/학년/담임 등 Select를 모두 한 번씩 열어 선택 → 오류 오버레이가 떠지 않음.
+- “학생 수정”으로 이동해 기존 선택값이 정상 표시되는지 확인.
+- 폼 초기 진입/옵션 로딩 중에도 오류가 발생하지 않는지 확인.
+
+🛡 6) 필요 시 오버레이 임시 비활성화(근본 해결 후 켜두기 권장)
+- vite.config.js:
+  server: { hmr: { overlay: false } }

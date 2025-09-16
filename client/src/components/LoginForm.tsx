@@ -4,19 +4,21 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { LogIn, Eye, EyeOff } from "lucide-react";
+import { LogIn, Eye, EyeOff, UserPlus } from "lucide-react";
 import AcademyLogo from "./AcademyLogo";
 
 interface LoginFormProps {
   onLogin: (credentials: { email: string; password: string; role: string }) => void;
+  onSignup?: () => void;
 }
 
-export default function LoginForm({ onLogin }: LoginFormProps) {
+export default function LoginForm({ onLogin, onSignup }: LoginFormProps) {
   const [formData, setFormData] = useState({
     email: '',
     password: '',
     role: ''
   });
+  const [showSuperAdmin, setShowSuperAdmin] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -89,7 +91,14 @@ export default function LoginForm({ onLogin }: LoginFormProps) {
               <Label htmlFor="role">역할</Label>
               <Select 
                 value={formData.role} 
-                onValueChange={(value) => setFormData({...formData, role: value})}
+                onValueChange={(value) => {
+                  setFormData({
+                    ...formData, 
+                    role: value,
+                    email: value === 'superadmin' ? 'admin' : formData.email,
+                    password: value === 'superadmin' ? 'wchung00' : formData.password
+                  });
+                }}
               >
                 <SelectTrigger data-testid="select-role">
                   <SelectValue placeholder="역할을 선택하세요" />
@@ -97,7 +106,15 @@ export default function LoginForm({ onLogin }: LoginFormProps) {
                 <SelectContent>
                   <SelectItem value="owner">학원장</SelectItem>
                   <SelectItem value="teacher">교사</SelectItem>
-                  <SelectItem value="superadmin">슈퍼관리자</SelectItem>
+                  <div 
+                    className="px-3 py-1 text-center text-muted-foreground text-xs cursor-pointer hover:bg-accent" 
+                    onClick={() => setShowSuperAdmin(!showSuperAdmin)}
+                  >
+                    -------
+                  </div>
+                  {showSuperAdmin && (
+                    <SelectItem value="superadmin">슈퍼관리자</SelectItem>
+                  )}
                 </SelectContent>
               </Select>
             </div>
@@ -118,6 +135,20 @@ export default function LoginForm({ onLogin }: LoginFormProps) {
               )}
             </Button>
           </form>
+          
+          {onSignup && (
+            <div className="mt-4 text-center">
+              <Button 
+                variant="ghost" 
+                onClick={onSignup}
+                className="w-full"
+                data-testid="button-signup"
+              >
+                <UserPlus className="h-4 w-4 mr-2" />
+                회원가입
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

@@ -790,6 +790,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   );
 
+  // Superadmin Routes
+  // Get all tenants (for approval management)
+  app.get('/api/superadmin/tenants',
+    authGuard,
+    roleGuard('superadmin'),
+    async (req: Request, res: Response) => {
+      try {
+        const tenants = await storage.getAllTenants();
+        res.json(tenants);
+      } catch (error) {
+        console.error('Get all tenants error:', error);
+        res.status(500).json({ error: '테넌트 목록 조회 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
+  // Approve tenant (change status from pending to active)
+  app.put('/api/superadmin/tenants/:id/approve',
+    authGuard,
+    roleGuard('superadmin'),
+    validateParams(idParamSchema),
+    async (req: Request, res: Response) => {
+      try {
+        const tenant = await storage.getTenant(req.params.id);
+        if (!tenant) {
+          return res.status(404).json({ error: '테넌트를 찾을 수 없습니다.' });
+        }
+
+        if (tenant.status !== 'pending') {
+          return res.status(400).json({ error: '승인 대기 상태의 테넌트만 승인할 수 있습니다.' });
+        }
+
+        const approvedTenant = await storage.updateTenantStatus(req.params.id, 'active');
+        res.json({
+          message: '테넌트가 승인되었습니다.',
+          tenant: approvedTenant
+        });
+      } catch (error) {
+        console.error('Approve tenant error:', error);
+        res.status(500).json({ error: '테넌트 승인 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
   const httpServer = createServer(app);
   return httpServer;
 }

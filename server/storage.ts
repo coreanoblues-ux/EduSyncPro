@@ -1,5 +1,3 @@
-import { drizzle } from "drizzle-orm/neon-serverless";
-import { neon, NeonQueryFunction } from "@neondatabase/serverless";
 import { 
   type User, 
   type InsertUser,
@@ -31,11 +29,7 @@ import {
 } from "@shared/schema";
 import { eq, and, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
-
-// Database connection
-const connectionString = process.env.DATABASE_URL!;
-const client: NeonQueryFunction<false, false> = neon(connectionString);
-const db = drizzle(client);
+import { db } from "./db";
 
 export interface IStorage {
   // User methods
@@ -46,6 +40,8 @@ export interface IStorage {
   // Tenant methods
   getTenant(id: string): Promise<Tenant | undefined>;
   createTenant(tenant: InsertTenant): Promise<Tenant>;
+  getAllTenants(): Promise<Tenant[]>;
+  updateTenantStatus(id: string, status: 'pending' | 'active' | 'expired' | 'suspended'): Promise<Tenant>;
   
   // Student methods
   getStudentsByTenant(tenantId: string): Promise<Student[]>;
@@ -131,6 +127,23 @@ export class DbStorage implements IStorage {
       createdAt: new Date(),
       updatedAt: new Date()
     }).returning();
+    return result[0];
+  }
+
+  async getAllTenants(): Promise<Tenant[]> {
+    const result = await db.select().from(tenants);
+    return result;
+  }
+
+  async updateTenantStatus(id: string, status: 'pending' | 'active' | 'expired' | 'suspended'): Promise<Tenant> {
+    const result = await db.update(tenants)
+      .set({ 
+        status, 
+        updatedAt: new Date(),
+        activeUntil: status === 'active' ? sql`NOW() + INTERVAL '1 year'` : null
+      })
+      .where(eq(tenants.id, id))
+      .returning();
     return result[0];
   }
 

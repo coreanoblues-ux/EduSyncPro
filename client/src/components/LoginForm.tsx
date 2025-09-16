@@ -95,7 +95,7 @@ export default function LoginForm({ onLogin, onSignup }: LoginFormProps) {
                   setFormData({
                     ...formData, 
                     role: value,
-                    email: value === 'superadmin' ? 'admin' : formData.email,
+                    email: value === 'superadmin' ? 'admin@system.local' : formData.email,
                     password: value === 'superadmin' ? 'wchung00' : formData.password
                   });
                 }}

@@ -7,7 +7,9 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import NotFound from "@/pages/not-found";
 import LoginForm from "@/components/LoginForm";
+import SignupForm from "@/components/SignupForm";
 import Dashboard from "@/components/Dashboard";
+import SuperAdminDashboard from "@/components/SuperAdminDashboard";
 import AcademySidebar from "@/components/AcademySidebar";
 import ThemeToggle from "@/components/ThemeToggle";
 
@@ -39,6 +41,9 @@ function Router({ user }: { user: User | null }) {
       <Route path="/payments" component={() => <div className="p-6">수납 관리 페이지 (구현 예정)</div>} />
       <Route path="/logs" component={() => <div className="p-6">반별 일지 페이지 (구현 예정)</div>} />
       <Route path="/overdues" component={() => <div className="p-6">미납 알림 페이지 (구현 예정)</div>} />
+      {user.role === 'superadmin' && (
+        <Route path="/superadmin" component={() => <SuperAdminDashboard />} />
+      )}
       <Route component={NotFound} />
     </Switch>
   );
@@ -48,6 +53,7 @@ function App() {
   const [user, setUser] = useState<User | null>(null);
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSignupMode, setIsSignupMode] = useState(false);
 
   // Check if user is already logged in
   useEffect(() => {
@@ -97,6 +103,39 @@ function App() {
     }
   };
 
+  const handleSignup = async (signupData: {
+    email: string;
+    password: string;
+    name: string;
+    academyName: string;
+    ownerName: string;
+    ownerPhone: string;
+  }) => {
+    try {
+      const response = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify(signupData),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setUser(data.user);
+        setTenant(data.tenant);
+        setIsSignupMode(false);
+      } else {
+        const error = await response.json();
+        throw new Error(error.error || '회원가입에 실패했습니다.');
+      }
+    } catch (error) {
+      console.error('Signup failed:', error);
+      throw error;
+    }
+  };
+
   const handleLogout = async () => {
     try {
       await fetch('/api/auth/signout', {
@@ -133,7 +172,17 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         {!user ? (
-          <LoginForm onLogin={handleLogin} />
+          isSignupMode ? (
+            <SignupForm 
+              onSignup={handleSignup} 
+              onBackToLogin={() => setIsSignupMode(false)} 
+            />
+          ) : (
+            <LoginForm 
+              onLogin={handleLogin}
+              onSignup={() => setIsSignupMode(true)}
+            />
+          )
         ) : (
           <SidebarProvider style={sidebarStyle as React.CSSProperties}>
             <div className="flex h-screen w-full">

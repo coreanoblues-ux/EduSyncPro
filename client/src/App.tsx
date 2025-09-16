@@ -29,12 +29,12 @@ interface Tenant {
   status: 'pending' | 'active' | 'expired' | 'suspended';
 }
 
-function Router({ user }: { user: User | null }) {
+function Router({ user, tenant }: { user: User | null; tenant: Tenant | null }) {
   if (!user) return null;
   
   return (
     <Switch>
-      <Route path="/" component={() => <Dashboard userRole={user.role} />} />
+      <Route path="/" component={() => <Dashboard userRole={user.role} tenant={tenant} />} />
       <Route path="/teachers" component={() => <div className="p-6">교사 관리 페이지 (구현 예정)</div>} />
       <Route path="/classes" component={() => <div className="p-6">반 관리 페이지 (구현 예정)</div>} />
       <Route path="/students" component={() => <div className="p-6">학생 관리 페이지 (구현 예정)</div>} />
@@ -214,7 +214,7 @@ function App() {
                   </div>
                 </header>
                 <main className="flex-1 overflow-auto bg-muted/30">
-                  <Router user={user} />
+                  <Router user={user} tenant={tenant} />
                 </main>
               </div>
             </div>

@@ -631,6 +631,7 @@ export default function Students({ userRole }: StudentsProps) {
           </DialogContent>
           </Dialog>
         )}
+        </div>
         
         {userRole === 'superadmin' && (
           <div className="text-sm text-muted-foreground bg-muted/50 px-3 py-2 rounded-lg flex items-center gap-2">

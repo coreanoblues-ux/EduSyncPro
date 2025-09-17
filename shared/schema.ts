@@ -248,7 +248,9 @@ export const insertClassSchema = createInsertSchema(classes).omit({ id: true, cr
 export const insertStudentSchema = createInsertSchema(students).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertEnrollmentSchema = createInsertSchema(enrollments).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertPaymentSchema = createInsertSchema(payments).omit({ id: true, createdAt: true });
-export const insertLessonLogSchema = createInsertSchema(lessonLogs).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertLessonLogSchema = createInsertSchema(lessonLogs).omit({ id: true, createdAt: true, updatedAt: true }).extend({
+  date: z.coerce.date(), // 문자열을 자동으로 Date 객체로 변환
+});
 export const insertWaiterSchema = createInsertSchema(waiters).omit({ id: true, createdAt: true });
 
 // Update schemas

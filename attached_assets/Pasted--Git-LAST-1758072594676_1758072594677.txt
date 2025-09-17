@@ -1,0 +1,109 @@
+제목: 앱을 “검색 기능 추가 직전” 커밋으로 롤백 요청
+
+요청 내용(복붙)
+
+배포/런타임을 검색 기능 추가 직전 커밋으로 롤백해 주세요.
+
+Git이 보이는 경우:
+
+# <LAST_GOOD_COMMIT>에 직전 정상 커밋 해시 넣기
+git reset --hard <LAST_GOOD_COMMIT>
+git push -f origin HEAD
+
+
+Git을 못 쓰는 경우: Replit “Rewind/History”에서 검색기능 추가 직전 시점으로 전체 복원 후 재시작.
+
+롤백 후 헬스체크:
+
+학생관리 페이지 진입/저장/수정 전부 동작 확인
+
+콘솔/서버 로그에 에러 없는지 확인
+
+이후 아래 안전한 검색 추가 절차를 적용해 주세요.
+
+기존 코드에는 단 2곳만 추가합니다:
+
+백엔드: GET /students/quick-search 새 엔드포인트 하나
+
+프런트: 상단 검색창 컴포넌트 하나 (토글 가능)
+
+1) 크래시 없는 “최소 안전 검색” 추가
+1-1. 백엔드(Express/Prisma) — 새 엔드포인트만 추가
+
+DB 스키마 변경 없음. 인덱스가 없어도 동작하며, 있으면 더 빨라집니다.
+
+// src/routes/students.ts (혹은 서버 라우트 파일)
+import { z } from "zod";
+
+app.get("/students/quick-search", async (req, res) => {
+  try {
+    const schema = z.object({
+      q: z.string().trim().default(""),
+      limit: z.coerce.number().int().min(1).max(50).default(20),
+      cursor: z.string().optional()
+    });
+    const { q, limit, cursor } = schema.parse(req.query);
+
+    // 전처리
+    const qLike = q.replace(/\s+/g, " ").toLowerCase(); // 이름/학교
+    const qDigits = q.replace(/\D/g, "");               // 전화 검색용 (숫자만)
+
+    // where 조건: q 비어있으면 전체에서 페이지네이션
+    const where: any = q
+      ? {
+          OR: [
+            { name: { contains: qLike, mode: "insensitive" } },
+            { schoolName: { contains: qLike, mode: "insensitive" } },
+            (isFinite(+q) ? { gradeLevel: Number(q) } : undefined),
+            (qDigits ? { phoneDigits: { contains: qDigits } } : undefined)
+          ].filter(Boolean)
+        }
+      : {};
+
+    const results = await prisma.student.findMany({
+      where,
+      take: limit,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      orderBy: { id: "asc" },
+      select: {
+        id: true, name: true, schoolName: true, gradeLevel: true,
+        phoneMasked: true  // 없다면 phone만 선택하거나 제외
+      }
+    });
+
+    const nextCursor = results.length === limit ? results[results.length - 1].id : null;
+    res.json({ items: results, nextCursor });
+  } catch (err) {
+    // 절대 크래시하지 않도록 방어
+    console.error("[quick-search] error:", err);
+    res.status(200).json({ items: [], nextCursor: null }); // 실패해도 빈 결과 반환
+  }
+});
+
+
+선택 인덱스(있으면 성능 업)
+Postgres/MySQL 공통 개념
+
+CREATE INDEX idx_students_name_lower ON students (LOWER(name));
+CREATE INDEX idx_students_school_lower ON students (LOWER(school_name));
+CREATE INDEX idx_students_grade ON students (grade_level);
+CREATE INDEX idx_students_phonedigits ON students (phone_digits);
+
+
+검증용 cURL
+
+curl "http://localhost:3000/students/quick-search?q=김&limit=20"
+curl "http://localhost:3000/students/quick-search?q=0101234&limit=20"
+curl "http://localhost:3000/students/quick-search?q=2&limit=20"  # 2학년
+
+1-2. 프런트(React) — “안전 모드” 검색창 1개만
+
+네트워크 실패/취소/타임아웃에서도 크래시 없이 그냥 빈 결과만 보여줍니다.
+
+// components/StudentSearchBox.tsx
+import { useEffect, useRef, useState } from "react";
+
+export default function StudentSearchBox({ onPick }: { onPick: (id: string) => void }) {
+  const [q, setQ] = useState("");
+  const [items, setItems] = useState<any[]>([]);
+  const

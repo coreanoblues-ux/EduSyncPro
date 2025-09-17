@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Plus, Search, Settings } from "lucide-react";
@@ -77,6 +77,12 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
   // Fetch enrollments data
   const { data: enrollments = [] } = useQuery({
     queryKey: ['/api/enrollments'],
+    enabled: isApproved,
+  });
+
+  // Fetch payments data for overdue calculation
+  const { data: payments = [] } = useQuery({
+    queryKey: ['/api/payments'],
     enabled: isApproved,
   });
 
@@ -238,7 +244,64 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
     student.className.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const overdueCount = 0; // Will be calculated when payment system is implemented
+  // 실제 미납자 수 계산
+  const overdueCount = useMemo(() => {
+    // 필요한 데이터가 모두 있는지 확인
+    const enrollmentsArray = Array.isArray(enrollments) ? enrollments : [];
+    const allStudentsArray = Array.isArray(allStudents) ? allStudents : [];
+    const classesArray = Array.isArray(classes) ? classes : [];
+    const paymentsArray = Array.isArray(payments) ? payments : [];
+
+    if (!enrollmentsArray.length || !allStudentsArray.length || !classesArray.length) {
+      return 0;
+    }
+
+    const currentDate = new Date();
+    let overdueStudents = 0;
+
+    // 각 활성 수강에 대해 미납 체크
+    enrollmentsArray
+      .filter((enrollment: any) => enrollment.isActive)
+      .forEach((enrollment: any) => {
+        const student = allStudentsArray.find((s: any) => s.id === enrollment.studentId);
+        const classItem = classesArray.find((c: any) => c.id === enrollment.classId);
+        
+        if (!student || !classItem) return;
+
+        const startDate = new Date(enrollment.startDate);
+        const dueDay = enrollment.dueDay || 8;
+        
+        // 수강 시작일부터 현재까지 각 월을 체크
+        let checkDate = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
+        
+        let hasOverdue = false;
+        while (checkDate <= currentDate && !hasOverdue) {
+          const checkYear = checkDate.getFullYear();
+          const checkMonth = checkDate.getMonth() + 1;
+          const paymentMonth = `${checkYear}-${checkMonth.toString().padStart(2, '0')}`;
+          
+          // 해당 월의 납입 기한 확인
+          const dueDate = new Date(checkYear, checkMonth - 1, dueDay);
+          if (currentDate > dueDate) {
+            // 해당 월 납부 기록이 있는지 확인
+            const hasPayment = paymentsArray.some((payment: any) => 
+              payment.enrollmentId === enrollment.id && 
+              payment.paymentMonth === paymentMonth
+            );
+            
+            if (!hasPayment) {
+              hasOverdue = true;
+              overdueStudents++;
+            }
+          }
+          
+          // 다음 월로 이동
+          checkDate.setMonth(checkDate.getMonth() + 1);
+        }
+      });
+
+    return overdueStudents;
+  }, [enrollments, allStudents, classes, payments]);
 
   // 편집 폼
   const editForm = useForm<StudentEditData>({
@@ -302,7 +365,7 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
   };
 
   const handleViewOverdues = () => {
-    console.log('View overdues clicked');
+    setLocation('/overdues');
   };
 
   const handleLogSubmit = (log: any) => {

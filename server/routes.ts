@@ -1001,6 +1001,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     authGuard,
     tenantGuard,
     roleGuard('owner', 'teacher'),
+    (req: Request, res: Response, next: any) => {
+      // 날짜 문자열을 Date 객체로 변환
+      if (req.body.date && typeof req.body.date === 'string') {
+        req.body.date = new Date(req.body.date);
+      }
+      next();
+    },
     validateBody(insertLessonLogSchema.omit({ tenantId: true, createdBy: true })),
     async (req: Request, res: Response) => {
       try {

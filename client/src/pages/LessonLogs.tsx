@@ -56,7 +56,7 @@ export default function LessonLogs({ userRole }: LessonLogsProps) {
     mutationFn: async (data: LessonLogFormData) => {
       const payload = {
         ...data,
-        date: new Date(data.date).toISOString(),
+        date: new Date(data.date),
       };
       const response = await apiRequest('POST', '/api/lesson-logs', payload);
       return await response.json();

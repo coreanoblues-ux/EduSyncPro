@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Plus, Edit, Trash2, User, School, Users, Phone, Info, UserMinus, UserPlus } from "lucide-react";
+import { Plus, Edit, Trash2, User, School, Users, Phone, Info, UserMinus, UserPlus, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -59,6 +59,7 @@ interface StudentsProps {
 
 export default function Students({ userRole }: StudentsProps) {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
   const [, setLocation] = useLocation();
   const { toast } = useToast();
 
@@ -76,6 +77,45 @@ export default function Students({ userRole }: StudentsProps) {
   const { data: enrollments = [] } = useQuery({
     queryKey: ['/api/enrollments'],
   });
+
+  // Fetch teachers for search functionality
+  const { data: teachers = [] } = useQuery({
+    queryKey: ['/api/teachers'],
+  });
+
+  // 향상된 검색 기능: 학생명, 반명, 선생님 이름으로 검색
+  const filteredStudents = useMemo(() => {
+    if (!searchTerm.trim()) return students;
+
+    const searchLower = searchTerm.toLowerCase();
+    const enrollmentsArray = Array.isArray(enrollments) ? enrollments : [];
+    const classesArray = Array.isArray(classes) ? classes : [];
+    const teachersArray = Array.isArray(teachers) ? teachers : [];
+
+    return students.filter((student: any) => {
+      // 1. 학생명으로 검색
+      if (student.name.toLowerCase().includes(searchLower)) return true;
+      
+      // 2. 학생의 수강 정보를 찾기
+      const studentEnrollment = enrollmentsArray.find((e: any) => e.studentId === student.id && e.isActive);
+      if (studentEnrollment) {
+        // 3. 반명으로 검색
+        const studentClass = classesArray.find((c: any) => c.id === studentEnrollment.classId);
+        if (studentClass) {
+          // 반명으로 검색
+          if (studentClass.name.toLowerCase().includes(searchLower)) return true;
+          
+          // 4. 선생님 이름으로 검색
+          if (studentClass.teacherId) {
+            const teacher = teachersArray.find((t: any) => t.id === studentClass.teacherId);
+            if (teacher && teacher.name.toLowerCase().includes(searchLower)) return true;
+          }
+        }
+      }
+      
+      return false;
+    });
+  }, [searchTerm, students, enrollments, classes, teachers]);
 
   // Add student mutation
   const addStudentMutation = useMutation({
@@ -259,16 +299,17 @@ export default function Students({ userRole }: StudentsProps) {
   return (
     <div className="space-y-6 p-6" data-testid="students-page">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">학생 관리</h1>
-          <p className="text-muted-foreground">
-            학생 {students.length}명이 등록되어 있습니다
-          </p>
-        </div>
-        
-        {(userRole === 'owner' || userRole === 'teacher') && (
-          <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold">학생 관리</h1>
+            <p className="text-muted-foreground">
+              학생 {students.length}명이 등록되어 있습니다
+            </p>
+          </div>
+          
+          {(userRole === 'owner' || userRole === 'teacher') && (
+            <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
             <DialogTrigger asChild>
               <Button data-testid="button-add-student">
                 <Plus className="h-4 w-4 mr-2" />
@@ -597,10 +638,29 @@ export default function Students({ userRole }: StudentsProps) {
             <span>학생 등록/수정/삭제는 학원장과 교사만 가능합니다</span>
           </div>
         )}
+        
+        {/* Search Input */}
+        <div className="relative w-full sm:w-80">
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="학생명, 반명, 선생님 이름으로 검색..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="pl-10"
+            data-testid="input-search-students"
+          />
+        </div>
       </div>
 
       {/* Students Grid */}
-      {students.length === 0 ? (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-semibold">학생 목록</h2>
+          <div className="text-sm text-muted-foreground">
+            {searchTerm ? `${filteredStudents.length}명 (검색 결과)` : `총 ${students.length}명`}
+          </div>
+        </div>
+        {filteredStudents.length === 0 ? (
         <div className="text-center py-12 border-2 border-dashed border-muted-foreground/25 rounded-lg">
           <User className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
           <div className="text-lg font-medium">등록된 학생이 없습니다</div>
@@ -608,7 +668,7 @@ export default function Students({ userRole }: StudentsProps) {
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {students.map((student) => (
+          {filteredStudents.map((student) => (
             <Card key={student.id} className="hover-elevate" data-testid={`student-card-${student.id}`}>
               <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-2">
                 <div className="flex items-center gap-2">
@@ -778,7 +838,7 @@ export default function Students({ userRole }: StudentsProps) {
           ))}
         </div>
       )}
-
+      </div>
     </div>
   );
 }

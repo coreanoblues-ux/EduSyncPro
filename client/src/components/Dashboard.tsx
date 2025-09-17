@@ -239,10 +239,38 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
   // Mock classes for now
   const mockClasses = Array.isArray(classes) ? classes : [];
 
-  const filteredStudents = studentData.filter((student: any) =>
-    student.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    student.className.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // 향상된 검색 기능: 학생명, 반명, 선생님 이름으로 검색
+  const filteredStudents = useMemo(() => {
+    if (!searchTerm.trim()) return studentData;
+
+    const searchLower = searchTerm.toLowerCase();
+    const enrollmentsArray = Array.isArray(enrollments) ? enrollments : [];
+    const classesArray = Array.isArray(classes) ? classes : [];
+    const teachersArray = Array.isArray(teachers) ? teachers : [];
+
+    return studentData.filter((student: any) => {
+      // 1. 학생명으로 검색
+      if (student.name.toLowerCase().includes(searchLower)) return true;
+      
+      // 2. 반명으로 검색
+      if (student.className && student.className.toLowerCase().includes(searchLower)) return true;
+      
+      // 3. 선생님 이름으로 검색
+      // 학생의 수강 정보를 찾기
+      const studentEnrollment = enrollmentsArray.find((e: any) => e.studentId === student.id && e.isActive);
+      if (studentEnrollment) {
+        // 수강하는 반 정보 찾기
+        const studentClass = classesArray.find((c: any) => c.id === studentEnrollment.classId);
+        if (studentClass && studentClass.teacherId) {
+          // 담당 선생님 정보 찾기
+          const teacher = teachersArray.find((t: any) => t.id === studentClass.teacherId);
+          if (teacher && teacher.name.toLowerCase().includes(searchLower)) return true;
+        }
+      }
+      
+      return false;
+    });
+  }, [searchTerm, studentData, enrollments, classes, teachers]);
 
   // 실제 미납자 수 계산
   const overdueCount = useMemo(() => {
@@ -448,7 +476,7 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
         <div className="relative w-full sm:w-80">
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="학생명 또는 반명으로 검색..."
+            placeholder="학생명, 반명, 선생님 이름으로 검색..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="pl-10"

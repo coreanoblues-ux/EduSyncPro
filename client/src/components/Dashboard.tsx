@@ -454,7 +454,7 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
           <Button 
             variant="outline"
             disabled={!isApproved}
-            onClick={() => setShowLogForm(!showLogForm)}
+            onClick={() => setLocation('/logs')}
             data-testid="button-add-log"
           >
             <Plus className="h-4 w-4 mr-2" />

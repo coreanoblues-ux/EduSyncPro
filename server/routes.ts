@@ -1033,6 +1033,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   );
 
+  app.delete('/api/lesson-logs/:id',
+    authGuard,
+    tenantGuard,
+    roleGuard('owner', 'teacher'),
+    validateParams(idParamSchema),
+    async (req: Request, res: Response) => {
+      try {
+        await storage.deleteLessonLog(req.params.id);
+        res.json({ message: '수업 일지가 삭제되었습니다.' });
+      } catch (error) {
+        console.error('Delete lesson log error:', error);
+        res.status(500).json({ error: '수업 일지 삭제 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
   // Waiter Routes
   app.get('/api/waiters', authGuard, tenantGuard, async (req, res) => {
     try {

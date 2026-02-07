@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Plus, BookOpen, Calendar, FileText, GraduationCap, User, Info, Pencil } from "lucide-react";
+import { Plus, BookOpen, Calendar, FileText, GraduationCap, User, Info, Pencil, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -74,6 +75,26 @@ export default function LessonLogs({ userRole }: LessonLogsProps) {
       toast({
         title: "수업 일지 등록 실패",
         description: error.message || "수업 일지 등록 중 오류가 발생했습니다.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const deleteLessonLogMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest('DELETE', `/api/lesson-logs/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/lesson-logs'] });
+      toast({
+        title: "수업 일지 삭제 완료",
+        description: "수업 일지가 삭제되었습니다.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "수업 일지 삭제 실패",
+        description: error.message || "수업 일지 삭제 중 오류가 발생했습니다.",
         variant: "destructive",
       });
     },
@@ -338,6 +359,38 @@ export default function LessonLogs({ userRole }: LessonLogsProps) {
                     </span>
                   </div>
                 </div>
+                {(userRole === 'owner' || userRole === 'teacher') && (
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="text-destructive"
+                        data-testid={`button-delete-lesson-log-${log.id}`}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>수업 일지 삭제</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          {getClassName(log.classId)}의 {formatDate(log.date)} 수업 일지를 삭제하시겠습니까? 삭제 후 복구할 수 없습니다.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>취소</AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={() => deleteLessonLogMutation.mutate(log.id)}
+                          className="bg-destructive text-destructive-foreground"
+                          data-testid={`button-confirm-delete-${log.id}`}
+                        >
+                          삭제
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                )}
               </CardHeader>
               <CardContent className="space-y-3">
                 {log.progress && (

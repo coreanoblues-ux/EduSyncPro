@@ -85,6 +85,7 @@ export interface IStorage {
   getLessonLogsByTenant(tenantId: string): Promise<LessonLog[]>;
   getLessonLogsByClass(classId: string): Promise<LessonLog[]>;
   createLessonLog(lessonLog: InsertLessonLog): Promise<LessonLog>;
+  deleteLessonLog(id: string): Promise<void>;
   
   // Waiter methods
   getWaitersByTenant(tenantId: string): Promise<Waiter[]>;
@@ -467,6 +468,10 @@ export class DbStorage implements IStorage {
       updatedAt: new Date()
     }).returning();
     return result[0];
+  }
+
+  async deleteLessonLog(id: string): Promise<void> {
+    await db.delete(lessonLogs).where(eq(lessonLogs.id, id));
   }
 
   // Waiter methods

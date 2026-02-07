@@ -349,9 +349,14 @@ export class DbStorage implements IStorage {
   }
 
   async deleteTeacher(id: string): Promise<void> {
-    await db.update(teachers)
-      .set({ isActive: false, updatedAt: new Date() })
-      .where(eq(teachers.id, id));
+    const teacher = await this.getTeacher(id);
+    if (teacher && !teacher.isActive) {
+      await db.delete(teachers).where(eq(teachers.id, id));
+    } else {
+      await db.update(teachers)
+        .set({ isActive: false, updatedAt: new Date() })
+        .where(eq(teachers.id, id));
+    }
   }
 
   // Class methods

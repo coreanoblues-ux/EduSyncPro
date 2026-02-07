@@ -710,8 +710,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return res.status(403).json({ error: '접근 권한이 없습니다.' });
         }
 
+        const isAlreadyInactive = !teacher.isActive;
         await storage.deleteTeacher(req.params.id);
-        res.json({ message: '교사가 삭제되었습니다.' });
+        res.json({ 
+          message: isAlreadyInactive ? '교사가 완전히 삭제되었습니다.' : '교사가 비활성화되었습니다.',
+          permanentlyDeleted: isAlreadyInactive 
+        });
       } catch (error) {
         console.error('Delete teacher error:', error);
         res.status(500).json({ error: '교사 삭제 중 오류가 발생했습니다.' });

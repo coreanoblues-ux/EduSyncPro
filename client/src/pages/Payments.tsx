@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, User, BookOpen, CheckCircle, XCircle, CreditCard, Calendar } from "lucide-react";
+import { ChevronDown, ChevronRight, User, BookOpen, CheckCircle, XCircle, CreditCard, Calendar, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -23,6 +23,8 @@ interface StudentWithPaymentStatus {
   latestPayment?: Payment;
   isPaid: boolean;
   tuition: number;
+  unpaidMonths: string[];
+  paidMonths: string[];
 }
 
 interface ClassWithStudents {
@@ -41,6 +43,29 @@ interface TeacherWithClasses {
   paidStudents: number;
 }
 
+function getMonthsBetween(startDate: Date | string, endDate: Date | string | null | undefined, now: Date): string[] {
+  const start = new Date(startDate);
+  const capDate = endDate ? new Date(endDate) : now;
+  const finalEnd = capDate < now ? capDate : now;
+
+  const months: string[] = [];
+  const current = new Date(start.getFullYear(), start.getMonth(), 1);
+  const end = new Date(finalEnd.getFullYear(), finalEnd.getMonth(), 1);
+
+  while (current <= end) {
+    const yyyy = current.getFullYear();
+    const mm = String(current.getMonth() + 1).padStart(2, '0');
+    months.push(`${yyyy}-${mm}`);
+    current.setMonth(current.getMonth() + 1);
+  }
+  return months;
+}
+
+function formatMonthLabel(month: string): string {
+  const [year, m] = month.split('-');
+  return `${year}.${m}`;
+}
+
 export default function Payments({ userRole }: PaymentsProps) {
   const [expandedTeachers, setExpandedTeachers] = useState<Set<string>>(new Set());
   const [expandedClasses, setExpandedClasses] = useState<Set<string>>(new Set());
@@ -48,13 +73,13 @@ export default function Payments({ userRole }: PaymentsProps) {
     isOpen: boolean;
     student?: StudentWithPaymentStatus;
     enrollment?: Enrollment;
+    paymentMonth?: string;
   }>({ isOpen: false });
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
   
   const { toast } = useToast();
 
-  // Fetch all required data
   const { data: teachers = [], isLoading: teachersLoading } = useQuery<Teacher[]>({
     queryKey: ['/api/teachers'],
   });
@@ -75,16 +100,12 @@ export default function Payments({ userRole }: PaymentsProps) {
     queryKey: ['/api/payments'],
   });
 
-  // Payment mutation
   const addPaymentMutation = useMutation({
-    mutationFn: async (data: { enrollmentId: string; amount: number; paidDate: string }) => {
-      const currentDate = new Date();
-      const paymentMonth = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
-      
+    mutationFn: async (data: { enrollmentId: string; amount: number; paidDate: string; paymentMonth: string }) => {
       const payload = {
         enrollmentId: data.enrollmentId,
         amount: data.amount,
-        paymentMonth: paymentMonth,
+        paymentMonth: data.paymentMonth,
         paidDate: new Date(data.paidDate).toISOString(),
         notes: "간편 납부",
       };
@@ -110,12 +131,11 @@ export default function Payments({ userRole }: PaymentsProps) {
     },
   });
 
-  // Process data to create teacher-class-student hierarchy
   const processTeacherData = (): TeacherWithClasses[] => {
     const teachersWithClasses: TeacherWithClasses[] = [];
-    const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
+    const now = new Date();
+    const currentMonthStr = now.toISOString().slice(0, 7);
     
-    // Group classes by teacher
     teachers.forEach(teacher => {
       const teacherClasses = classes.filter(c => c.teacherId === teacher.id);
       const classesWithStudents: ClassWithStudents[] = [];
@@ -125,21 +145,31 @@ export default function Payments({ userRole }: PaymentsProps) {
         
         const studentsWithStatus: StudentWithPaymentStatus[] = classEnrollments.map(enrollment => {
           const student = students.find(s => s.id === enrollment.studentId);
-          const latestPayment = payments.find(p => 
-            p.enrollmentId === enrollment.id && 
-            p.paymentMonth === currentMonth
-          );
-          
+          const tuition = enrollment.tuition || classItem.defaultTuition || 0;
+
+          const allMonths = getMonthsBetween(enrollment.startDate, enrollment.endDate, now);
+
+          const enrollmentPayments = payments.filter(p => p.enrollmentId === enrollment.id);
+          const paidMonthSet = new Set(enrollmentPayments.map(p => p.paymentMonth));
+
+          const paidMonths = allMonths.filter(m => paidMonthSet.has(m));
+          const unpaidMonths = allMonths.filter(m => !paidMonthSet.has(m));
+
+          const currentMonthPaid = paidMonthSet.has(currentMonthStr);
+          const latestPayment = enrollmentPayments.find(p => p.paymentMonth === currentMonthStr);
+
           return {
             id: student?.id || '',
             name: student?.name || '알 수 없음',
             grade: student?.grade,
             enrollment,
             latestPayment,
-            isPaid: !!latestPayment,
-            tuition: enrollment.tuition || classItem.defaultTuition || 0,
+            isPaid: currentMonthPaid,
+            tuition,
+            unpaidMonths,
+            paidMonths,
           };
-        }).filter(s => s.id); // Filter out students without valid IDs
+        }).filter(s => s.id);
         
         if (studentsWithStatus.length > 0) {
           classesWithStudents.push({
@@ -189,22 +219,25 @@ export default function Payments({ userRole }: PaymentsProps) {
     setExpandedClasses(newExpanded);
   };
 
-  const handlePaymentClick = (student: StudentWithPaymentStatus) => {
+  const handlePaymentClick = (student: StudentWithPaymentStatus, month: string) => {
     setPaymentAmount(student.tuition.toString());
+    setPaymentDate(new Date().toISOString().slice(0, 10));
     setPaymentDialog({
       isOpen: true,
       student,
       enrollment: student.enrollment,
+      paymentMonth: month,
     });
   };
 
   const handlePaymentSubmit = () => {
-    if (!paymentDialog.enrollment || !paymentAmount) return;
+    if (!paymentDialog.enrollment || !paymentAmount || !paymentDialog.paymentMonth) return;
     
     addPaymentMutation.mutate({
       enrollmentId: paymentDialog.enrollment.id,
       amount: parseInt(paymentAmount),
       paidDate: paymentDate,
+      paymentMonth: paymentDialog.paymentMonth,
     });
   };
 
@@ -228,32 +261,34 @@ export default function Payments({ userRole }: PaymentsProps) {
   const teacherData = processTeacherData();
   const currentMonth = new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long' });
 
-  // 총수납액과 총미납액 계산
   const calculateFinancials = () => {
-    const currentMonthString = new Date().toISOString().slice(0, 7); // YYYY-MM
+    const currentMonthString = new Date().toISOString().slice(0, 7);
     
-    // 총수납액: 현재 달의 모든 payment 금액 합산
     const totalRevenue = payments
       .filter(p => p.paymentMonth === currentMonthString)
       .reduce((sum, p) => sum + (p.amount || 0), 0);
     
-    // 총미납액: 미납 학생들의 수강료 합산
     const totalOutstanding = teacherData.reduce((total, teacher) => {
       return total + teacher.classes.reduce((classTotal, classItem) => {
-        return classTotal + classItem.students
-          .filter(student => !student.isPaid)
-          .reduce((studentTotal, student) => studentTotal + (student.tuition || 0), 0);
+        return classTotal + classItem.students.reduce((studentTotal, student) => {
+          return studentTotal + (student.unpaidMonths.length * student.tuition);
+        }, 0);
       }, 0);
     }, 0);
 
-    return { totalRevenue, totalOutstanding };
+    const totalUnpaidStudents = teacherData.reduce((total, teacher) => {
+      return total + teacher.classes.reduce((classTotal, classItem) => {
+        return classTotal + classItem.students.filter(s => s.unpaidMonths.length > 0).length;
+      }, 0);
+    }, 0);
+
+    return { totalRevenue, totalOutstanding, totalUnpaidStudents };
   };
 
-  const { totalRevenue, totalOutstanding } = calculateFinancials();
+  const { totalRevenue, totalOutstanding, totalUnpaidStudents } = calculateFinancials();
 
   return (
     <div className="space-y-6 p-6" data-testid="payments-page">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">수납 관리</h1>
@@ -263,7 +298,6 @@ export default function Payments({ userRole }: PaymentsProps) {
         </div>
       </div>
 
-      {/* Teacher-Class-Student hierarchy layout */}
       {teacherData.length === 0 ? (
         <div className="text-center py-12 border-2 border-dashed border-muted-foreground/25 rounded-lg">
           <User className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
@@ -277,7 +311,6 @@ export default function Payments({ userRole }: PaymentsProps) {
             
             return (
               <Card key={teacher.id} className="overflow-hidden">
-                {/* Teacher Header */}
                 <CardHeader 
                   className="hover-elevate cursor-pointer bg-primary/5"
                   onClick={() => handleTeacherToggle(teacher.id)}
@@ -317,7 +350,6 @@ export default function Payments({ userRole }: PaymentsProps) {
                   </div>
                 </CardHeader>
 
-                {/* Teacher's Classes */}
                 {isTeacherExpanded && (
                   <CardContent className="pt-0 space-y-3">
                     {teacher.classes.map((classItem: ClassWithStudents) => {
@@ -327,7 +359,6 @@ export default function Payments({ userRole }: PaymentsProps) {
                       
                       return (
                         <div key={classItem.id} className="border rounded-md overflow-hidden">
-                          {/* Class Header */}
                           <div 
                             className="flex items-center justify-between p-3 cursor-pointer hover-elevate bg-muted/50"
                             onClick={() => handleClassToggle(classItem.id)}
@@ -364,63 +395,88 @@ export default function Payments({ userRole }: PaymentsProps) {
                             </div>
                           </div>
 
-                          {/* Students */}
                           {isExpanded && (
                             <div className="p-2 space-y-2">
                               {classItem.students.map((student: StudentWithPaymentStatus) => (
                                 <div 
                                   key={student.id}
-                                  className="flex items-center justify-between p-3 bg-background rounded-lg hover-elevate"
+                                  className="p-3 bg-background rounded-lg"
                                   data-testid={`student-row-${student.id}`}
                                 >
-                                  <div className="flex items-center gap-3">
-                                    <div className="flex items-center gap-2">
-                                      {student.isPaid ? (
-                                        <CheckCircle className="h-5 w-5 text-green-600" />
-                                      ) : (
-                                        <XCircle className="h-5 w-5 text-red-600" />
-                                      )}
-                                      <span className="font-medium">{student.name}</span>
-                                      {student.grade && (
-                                        <Badge variant="outline" className="text-xs">
-                                          {student.grade}
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-3">
+                                      <div className="flex items-center gap-2">
+                                        {student.unpaidMonths.length === 0 ? (
+                                          <CheckCircle className="h-5 w-5 text-green-600" />
+                                        ) : (
+                                          <XCircle className="h-5 w-5 text-red-600" />
+                                        )}
+                                        <span className="font-medium">{student.name}</span>
+                                        {student.grade && (
+                                          <Badge variant="outline" className="text-xs">
+                                            {student.grade}
+                                          </Badge>
+                                        )}
+                                      </div>
+                                    </div>
+                                    
+                                    <div className="flex items-center gap-3">
+                                      <div className="text-right">
+                                        <div className="font-medium">{formatAmount(student.tuition)}/월</div>
+                                        {student.unpaidMonths.length > 0 ? (
+                                          <div className="flex items-center gap-1 text-xs text-red-600">
+                                            <AlertTriangle className="h-3 w-3" />
+                                            {student.unpaidMonths.length}개월 미납
+                                          </div>
+                                        ) : (
+                                          <div className="text-xs text-green-600">전월 납부완료</div>
+                                        )}
+                                      </div>
+                                      {student.unpaidMonths.length === 0 && (
+                                        <Badge variant="default" className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
+                                          납부완료
                                         </Badge>
                                       )}
                                     </div>
                                   </div>
-                                  
-                                  <div className="flex items-center gap-3">
-                                    <div className="text-right">
-                                      <div className="font-medium">{formatAmount(student.tuition)}</div>
-                                      {student.isPaid && student.latestPayment ? (
-                                        <div className="text-xs text-green-600">
-                                          {new Date(student.latestPayment.paidDate).toLocaleDateString()} 납부
-                                        </div>
-                                      ) : (
-                                        <div className="text-xs text-red-600">미납</div>
-                                      )}
+
+                                  {student.unpaidMonths.length > 0 && (
+                                    <div className="mt-3 flex flex-wrap gap-2">
+                                      {student.unpaidMonths.map((month) => {
+                                        const now = new Date();
+                                        const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+                                        const isCurrentMonth = month === currentMonthStr;
+                                        const canPay = userRole === 'owner' || userRole === 'teacher';
+
+                                        return (
+                                          <div
+                                            key={month}
+                                            className="flex items-center gap-2 border rounded-md px-3 py-1.5 bg-muted/30"
+                                          >
+                                            <span className={`text-sm font-medium ${isCurrentMonth ? 'text-foreground' : 'text-red-600 dark:text-red-400'}`}>
+                                              {formatMonthLabel(month)}
+                                            </span>
+                                            {!isCurrentMonth && (
+                                              <Badge variant="destructive" className="text-xs px-1.5 py-0">
+                                                미납
+                                              </Badge>
+                                            )}
+                                            {canPay && (
+                                              <Button
+                                                size="sm"
+                                                variant={isCurrentMonth ? "default" : "destructive"}
+                                                onClick={() => handlePaymentClick(student, month)}
+                                                data-testid={`payment-button-${student.id}-${month}`}
+                                              >
+                                                <CreditCard className="h-3.5 w-3.5 mr-1" />
+                                                납부하기
+                                              </Button>
+                                            )}
+                                          </div>
+                                        );
+                                      })}
                                     </div>
-                                    
-                                    {!student.isPaid && (userRole === 'owner' || userRole === 'teacher') ? (
-                                      <Button 
-                                        size="sm"
-                                        onClick={() => handlePaymentClick(student)}
-                                        data-testid={`payment-button-${student.id}`}
-                                        variant="default"
-                                      >
-                                        <CreditCard className="h-4 w-4 mr-1" />
-                                        납부하기
-                                      </Button>
-                                    ) : student.isPaid ? (
-                                      <Badge variant="default" className="bg-green-100 text-green-800">
-                                        납부완료
-                                      </Badge>
-                                    ) : (
-                                      <Badge variant="secondary">
-                                        미납
-                                      </Badge>
-                                    )}
-                                  </div>
+                                  )}
                                 </div>
                               ))}
                             </div>
@@ -436,17 +492,24 @@ export default function Payments({ userRole }: PaymentsProps) {
         </div>
       )}
 
-      {/* Payment Dialog */}
       <Dialog open={paymentDialog.isOpen} onOpenChange={(open) => setPaymentDialog({ isOpen: open })}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>수납 등록</DialogTitle>
             <DialogDescription>
-              {paymentDialog.student?.name} 학생의 {currentMonth} 수납을 등록합니다.
+              {paymentDialog.student?.name} 학생의 {paymentDialog.paymentMonth ? formatMonthLabel(paymentDialog.paymentMonth) : ''} 수납을 등록합니다.
             </DialogDescription>
           </DialogHeader>
           
           <div className="space-y-4">
+            <div>
+              <Label>납부 대상 월</Label>
+              <div className="mt-1">
+                <Badge variant="secondary" className="text-sm px-3 py-1">
+                  {paymentDialog.paymentMonth ? formatMonthLabel(paymentDialog.paymentMonth) : ''}
+                </Badge>
+              </div>
+            </div>
             <div>
               <Label htmlFor="amount">수납 금액</Label>
               <Input
@@ -489,7 +552,6 @@ export default function Payments({ userRole }: PaymentsProps) {
         </DialogContent>
       </Dialog>
 
-      {/* Summary */}
       {teacherData.length > 0 && (
         <Card>
           <CardHeader>
@@ -509,15 +571,14 @@ export default function Payments({ userRole }: PaymentsProps) {
               <div className="text-2xl font-bold text-green-600">
                 {teacherData.reduce((sum: number, t: TeacherWithClasses) => sum + t.paidStudents, 0)}명
               </div>
-              <p className="text-sm text-muted-foreground">납부 완료</p>
+              <p className="text-sm text-muted-foreground">전월 납부완료</p>
             </div>
             <div className="text-center">
               <div className="text-2xl font-bold text-red-600">
-                {teacherData.reduce((sum: number, t: TeacherWithClasses) => sum + (t.totalStudents - t.paidStudents), 0)}명
+                {totalUnpaidStudents}명
               </div>
-              <p className="text-sm text-muted-foreground">미납</p>
+              <p className="text-sm text-muted-foreground">미납 학생</p>
             </div>
-            {/* 총수납액 - 원장만 */}
             {(userRole === 'owner' || userRole === 'superadmin') && (
               <div className="text-center">
                 <div className="text-2xl font-bold text-blue-600">
@@ -526,7 +587,6 @@ export default function Payments({ userRole }: PaymentsProps) {
                 <p className="text-sm text-muted-foreground">총수납액</p>
               </div>
             )}
-            {/* 총미납액 - 원장과 교사 */}
             <div className="text-center">
               <div className="text-2xl font-bold text-orange-600">
                 ₩{totalOutstanding.toLocaleString()}

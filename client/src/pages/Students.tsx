@@ -375,7 +375,7 @@ export default function Students({ userRole }: StudentsProps) {
                           </FormControl>
                           <SelectContent>
                             <SelectItem value="none">반을 선택하지 않음</SelectItem>
-                            {classes.filter(c => c.isActive !== false).map((classItem) => (
+                            {classes.filter(c => c.isActive !== false).sort((a, b) => a.name.localeCompare(b.name, 'ko')).map((classItem) => (
                               <SelectItem key={classItem.id} value={classItem.id}>
                                 {classItem.name} (기본 ₩{classItem.defaultTuition?.toLocaleString()})
                               </SelectItem>

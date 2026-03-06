@@ -57,9 +57,11 @@ export interface IStorage {
   // Teacher methods
   getTeachersByTenant(tenantId: string): Promise<Teacher[]>;
   getTeacher(id: string): Promise<Teacher | undefined>;
+  getTeacherByUserId(userId: string): Promise<Teacher | undefined>;
   createTeacher(teacher: InsertTeacher): Promise<Teacher>;
   updateTeacher(id: string, teacher: Partial<InsertTeacher>): Promise<Teacher>;
   deleteTeacher(id: string): Promise<void>;
+  deleteUser(id: string): Promise<void>;
   
   // Class methods
   getClassesByTenant(tenantId: string): Promise<Class[]>;
@@ -329,6 +331,15 @@ export class DbStorage implements IStorage {
   async getTeacher(id: string): Promise<Teacher | undefined> {
     const result = await db.select().from(teachers).where(eq(teachers.id, id)).limit(1);
     return result[0];
+  }
+
+  async getTeacherByUserId(userId: string): Promise<Teacher | undefined> {
+    const result = await db.select().from(teachers).where(eq(teachers.userId, userId)).limit(1);
+    return result[0];
+  }
+
+  async deleteUser(id: string): Promise<void> {
+    await db.delete(users).where(eq(users.id, id));
   }
 
   async createTeacher(insertTeacher: InsertTeacher): Promise<Teacher> {

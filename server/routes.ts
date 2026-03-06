@@ -238,9 +238,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const { academyEmail, email, password, name, subject, phone } = req.body;
         
         // Check if teacher email already exists
-        const existingUser = await storage.getUserByEmail(email);
+        let existingUser = await storage.getUserByEmail(email);
         if (existingUser) {
-          return res.status(409).json({ error: '이미 등록된 이메일 주소입니다.' });
+          // Check if this user has a teacher record — if so, truly already registered
+          const existingTeacher = await storage.getTeacherByUserId(existingUser.id);
+          if (existingTeacher) {
+            return res.status(409).json({ error: '이미 등록된 이메일 주소입니다.' });
+          }
+          // Orphaned user from a failed previous attempt — clean up and retry
+          await storage.deleteUser(existingUser.id);
+          existingUser = undefined;
         }
 
         // Find the academy owner by email to get tenant
@@ -271,15 +278,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
           isActive: isTeacherActive // Active only if academy is already approved
         });
 
-        // Create teacher record
-        const teacher = await storage.createTeacher({
-          tenantId: tenant.id,
-          userId: user.id,
-          name,
-          subject,
-          phone: phone || null,
-          isActive: isTeacherActive
-        });
+        // Create teacher record — if this fails, clean up the user we just created
+        let teacher;
+        try {
+          teacher = await storage.createTeacher({
+            tenantId: tenant.id,
+            userId: user.id,
+            name,
+            subject,
+            phone: phone || null,
+            isActive: isTeacherActive
+          });
+        } catch (teacherError) {
+          // Rollback: delete the user we just created
+          await storage.deleteUser(user.id);
+          throw teacherError;
+        }
 
         // Only issue JWT token if user is active (academy is approved)
         if (isTeacherActive) {

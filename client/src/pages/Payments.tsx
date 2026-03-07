@@ -171,17 +171,15 @@ export default function Payments({ userRole }: PaymentsProps) {
           };
         }).filter(s => s.id);
         
-        if (studentsWithStatus.length > 0) {
-          classesWithStudents.push({
-            id: classItem.id,
-            name: classItem.name,
-            students: studentsWithStatus,
-            schedule: classItem.schedule,
-          });
-        }
+        classesWithStudents.push({
+          id: classItem.id,
+          name: classItem.name,
+          students: studentsWithStatus,
+          schedule: classItem.schedule,
+        });
       });
       
-      if (classesWithStudents.length > 0) {
+      if (teacherClasses.length > 0) {
         const totalStudents = classesWithStudents.reduce((sum, c) => sum + c.students.length, 0);
         const paidStudents = classesWithStudents.reduce((sum, c) => sum + c.students.filter(s => s.isPaid).length, 0);
         
@@ -397,6 +395,11 @@ export default function Payments({ userRole }: PaymentsProps) {
 
                           {isExpanded && (
                             <div className="p-2 space-y-2">
+                              {classItem.students.length === 0 && (
+                                <div className="py-4 text-center text-sm text-muted-foreground">
+                                  등록된 수강생이 없습니다
+                                </div>
+                              )}
                               {classItem.students.map((student: StudentWithPaymentStatus) => (
                                 <div 
                                   key={student.id}

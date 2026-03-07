@@ -400,9 +400,16 @@ export class DbStorage implements IStorage {
   }
 
   async deleteClass(id: string): Promise<void> {
-    await db.update(classes)
-      .set({ isActive: false, updatedAt: new Date() })
-      .where(eq(classes.id, id));
+    const classItem = await this.getClass(id);
+    if (classItem && !classItem.isActive) {
+      // Already inactive → hard delete
+      await db.delete(classes).where(eq(classes.id, id));
+    } else {
+      // Active → soft delete (deactivate)
+      await db.update(classes)
+        .set({ isActive: false, updatedAt: new Date() })
+        .where(eq(classes.id, id));
+    }
   }
 
   // Enrollment methods

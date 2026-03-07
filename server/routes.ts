@@ -835,8 +835,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return res.status(403).json({ error: '접근 권한이 없습니다.' });
         }
 
+        const wasInactive = !classItem.isActive;
         await storage.deleteClass(req.params.id);
-        res.json({ message: '반이 삭제되었습니다.' });
+        res.json({ 
+          message: wasInactive ? '반이 완전히 삭제되었습니다.' : '반이 비활성 처리되었습니다.',
+          hardDeleted: wasInactive
+        });
       } catch (error) {
         console.error('Delete class error:', error);
         res.status(500).json({ error: '반 삭제 중 오류가 발생했습니다.' });

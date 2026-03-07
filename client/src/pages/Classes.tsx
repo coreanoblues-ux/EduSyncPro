@@ -99,13 +99,14 @@ export default function Classes({ userRole }: ClassesProps) {
   // Delete class mutation
   const deleteClassMutation = useMutation({
     mutationFn: async (id: string) => {
-      await apiRequest('DELETE', `/api/classes/${id}`);
+      const response = await apiRequest('DELETE', `/api/classes/${id}`);
+      return await response.json();
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['/api/classes'] });
       toast({
-        title: "반 삭제 완료",
-        description: "반이 성공적으로 삭제되었습니다.",
+        title: data.hardDeleted ? "반 완전 삭제 완료" : "반 비활성 처리 완료",
+        description: data.message,
       });
     },
     onError: (error: Error) => {

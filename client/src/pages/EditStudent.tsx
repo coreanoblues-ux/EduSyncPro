@@ -262,7 +262,13 @@ export default function EditStudent() {
                           </FormControl>
                           <SelectContent>
                             <SelectItem value="none">반을 선택하지 않음</SelectItem>
-                            {Array.isArray(classes) && classes.filter((c: any) => c.isActive !== false).map((classItem: any) => (
+                            {Array.isArray(classes) && classes
+                              .filter((c: any) => c.isActive !== false)
+                              .sort((a: any, b: any) => {
+                                const norm = (s: string) => s.replace(/[\[\]\s]/g, '');
+                                return norm(a.name).localeCompare(norm(b.name), 'ko');
+                              })
+                              .map((classItem: any) => (
                               <SelectItem key={classItem.id} value={classItem.id}>
                                 {classItem.name} (기본 ₩{classItem.defaultTuition?.toLocaleString()})
                               </SelectItem>

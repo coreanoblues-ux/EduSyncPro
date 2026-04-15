@@ -1,6 +1,30 @@
 # EduSyncPro — Railway 배포 가이드
 
-> 이 파일은 마이그레이션 완료 후 삭제해도 됩니다.
+---
+
+## 🔴 현재 실패 원인 및 수정 사항 (2026-04-16 업데이트)
+
+### 문제 요약
+Railway 배포 시 `NeonDbError: fetch failed / getaddrinfo ENOTFOUND api.railway.internal` 발생
+
+### 원인 3가지 (모두 수정 완료)
+
+| # | 원인 | 수정 내용 |
+|---|------|-----------|
+| 1 | `railway.toml`에 빌드 명령 누락 | `npm install` → `npm ci && npm run build` 로 변경 |
+| 2 | `dist/index.js`가 구버전(Neon 드라이버 사용) | 최신 소스로 재빌드 완료 (`pg.Pool` 사용) |
+| 3 | Railway `DATABASE_URL`이 내부 주소 | **아래 STEP 0을 반드시 수행해야 함** |
+
+### ⚠️ 반드시 해야 할 1가지 작업 (코드로 해결 불가)
+
+**Railway 대시보드에서 `DATABASE_URL` 값을 Neon 주소로 교체해야 합니다.**
+
+```
+현재 (잘못된 값): postgresql://...@api.railway.internal/...
+올바른 값:        postgresql://user:pass@ep-xxxx.us-east-1.aws.neon.tech/dbname?sslmode=require
+```
+
+→ [아래 STEP 0 참고](#step-0--railway-database_url-수정-긴급)
 
 ---
 
@@ -15,6 +39,33 @@
 
 > ✅ Port(`process.env.PORT`), Host(`0.0.0.0`), Build/Start 명령어는 이미 완벽히 설정되어 있었음.  
 > ✅ DB는 NeonDB(외부 PostgreSQL)라 데이터 마이그레이션 불필요.
+
+---
+
+## STEP 0 — Railway DATABASE_URL 수정 (긴급)
+
+Railway가 잘못된 DB 주소를 바라보고 있습니다. 아래 순서로 수정하세요.
+
+**1. Neon 주소 확인**
+```
+https://console.neon.tech → 프로젝트 선택
+→ Connection Details → Connection string 복사
+(postgresql://user:pass@ep-xxxx.us-east-1.aws.neon.tech/neondb?sslmode=require 형태)
+```
+
+**2. Railway에서 값 교체**
+```
+https://railway.app → 프로젝트 → EduSyncPro 서비스
+→ Variables 탭 → DATABASE_URL 행의 ✏️ 클릭
+→ 위에서 복사한 Neon 주소 붙여넣기 → Save
+→ 자동 재배포 시작 (약 2~3분 대기)
+```
+
+**3. 재배포 후 로그 확인**
+```
+Railway → Deployments → 최신 배포 클릭 → Logs 탭
+"serving on port 8080" 이후 에러 없으면 성공
+```
 
 ---
 

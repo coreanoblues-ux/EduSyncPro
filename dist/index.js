@@ -311,9 +311,20 @@ if (!process.env.DATABASE_URL) {
     "DATABASE_URL must be set. Did you forget to provision a database?"
   );
 }
-var pool = new pg.Pool({
+var { Pool } = pg;
+var pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false
+  ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
+  // 연결 안정성 설정
+  max: 10,
+  // 최대 연결 수
+  idleTimeoutMillis: 3e4,
+  // 30초 idle 후 연결 종료
+  connectionTimeoutMillis: 1e4
+  // 10초 연결 타임아웃
+});
+pool.on("error", (err) => {
+  console.error("DB pool error:", err.message);
 });
 var db = drizzle(pool, { schema: schema_exports });
 

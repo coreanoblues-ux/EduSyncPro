@@ -4,3 +4,26 @@ dist
 server/public
 vite.config.ts.*
 *.tar.gz
+
+# 환경변수 (절대 커밋 금지)
+.env
+.env.local
+.env.*.local
+
+# 쿠키/세션 파일
+cookies.txt
+cookies_secure.txt
+cookies_test.txt
+
+# Replit 전용 파일
+.replit
+replit.nix
+.upm/
+.cache/
+
+# 로그
+*.log
+npm-debug.log*
+
+# 빌드 캐시
+.vite/

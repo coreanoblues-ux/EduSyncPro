@@ -307,13 +307,13 @@ import { randomUUID } from "crypto";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 if (!process.env.DATABASE_URL) {
-  throw new Error(
-    "DATABASE_URL must be set. Did you forget to provision a database?"
+  console.error(
+    "\u274C DATABASE_URL is not set! DB queries will fail. Set DATABASE_URL in Railway \u2192 Variables."
   );
 }
 var { Pool } = pg;
 var pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: process.env.DATABASE_URL || "postgres://localhost/placeholder_will_fail",
   ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
   // 연결 안정성 설정
   max: 10,
@@ -324,9 +324,15 @@ var pool = new Pool({
   // 10초 연결 타임아웃
 });
 pool.on("error", (err) => {
-  console.error("DB pool error:", err.message);
+  console.error("\u274C DB pool unexpected error (connection will be retried):", err.message);
 });
 var db = drizzle(pool, { schema: schema_exports });
+if (process.env.DATABASE_URL) {
+  pool.query("SELECT 1").then(() => console.log("\u2705 Database connection verified")).catch((err) => {
+    console.error("\u274C Database connection test FAILED:", err.message);
+    console.error("   \u2192 Check DATABASE_URL in Railway Variables and ensure the DB allows Railway connections.");
+  });
+}
 
 // server/storage.ts
 var DbStorage = class {
@@ -649,7 +655,10 @@ var storage = new DbStorage();
 // server/middleware/auth.ts
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
-var JWT_SECRET = process.env.JWT_SECRET || "your-super-secret-jwt-key-for-academy";
+var JWT_SECRET = process.env.JWT_SECRET || "INSECURE_DEFAULT_CHANGE_IN_RAILWAY_VARIABLES";
+if (!process.env.JWT_SECRET) {
+  console.warn("\u26A0\uFE0F  JWT_SECRET not set! Using insecure default \u2014 set JWT_SECRET in Railway Variables NOW!");
+}
 var generateToken = (user) => {
   return jwt.sign(
     {
@@ -671,16 +680,21 @@ var verifyPassword = async (password, hashedPassword) => {
 };
 var authGuard = async (req, res, next) => {
   try {
-    const token = req.cookies.token || req.headers.authorization?.replace("Bearer ", "");
-    console.log("\u{1F512} AuthGuard: token exists:", !!token);
-    console.log("\u{1F512} AuthGuard: token length:", token?.length || 0);
+    const token = req.cookies?.token || req.headers.authorization?.replace("Bearer ", "");
     if (!token) {
+      console.log("\u{1F512} AuthGuard: no token found (cookies:", Object.keys(req.cookies || {}), ")");
       return res.status(401).json({ error: "\uC778\uC99D \uD1A0\uD070\uC774 \uD544\uC694\uD569\uB2C8\uB2E4." });
     }
-    const decoded = jwt.verify(token, JWT_SECRET);
-    console.log("\u{1F512} AuthGuard: decoded user:", { id: decoded.id, role: decoded.role, email: decoded.email });
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (jwtErr) {
+      console.warn("\u{1F512} AuthGuard: JWT verify failed:", jwtErr.message);
+      return res.status(401).json({ error: "\uC720\uD6A8\uD558\uC9C0 \uC54A\uC740 \uD1A0\uD070\uC785\uB2C8\uB2E4." });
+    }
+    console.log("\u{1F512} AuthGuard: user", { id: decoded.id, role: decoded.role, email: decoded.email });
     if (decoded.role === "superadmin" && decoded.id === "admin") {
-      console.log("\u{1F512} AuthGuard: Superadmin detected - allowing access");
+      console.log("\u{1F512} AuthGuard: Superadmin \u2014 bypassing DB check");
       req.user = {
         id: decoded.id,
         email: decoded.email,
@@ -691,8 +705,13 @@ var authGuard = async (req, res, next) => {
       return next();
     }
     const user = await storage.getUser(decoded.id);
-    if (!user || !user.isActive) {
-      return res.status(401).json({ error: "\uC720\uD6A8\uD558\uC9C0 \uC54A\uC740 \uC0AC\uC6A9\uC790\uC785\uB2C8\uB2E4." });
+    if (!user) {
+      console.warn(`\u{1F512} AuthGuard: user ${decoded.id} not found in DB`);
+      return res.status(401).json({ error: "\uC0AC\uC6A9\uC790\uB97C \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4." });
+    }
+    if (!user.isActive) {
+      console.warn(`\u{1F512} AuthGuard: user ${decoded.id} is inactive`);
+      return res.status(401).json({ error: "\uBE44\uD65C\uC131\uD654\uB41C \uACC4\uC815\uC785\uB2C8\uB2E4." });
     }
     req.user = {
       id: user.id,
@@ -703,8 +722,8 @@ var authGuard = async (req, res, next) => {
     };
     next();
   } catch (error) {
-    console.error("\u{1F512} AuthGuard error:", error);
-    return res.status(401).json({ error: "\uC720\uD6A8\uD558\uC9C0 \uC54A\uC740 \uD1A0\uD070\uC785\uB2C8\uB2E4." });
+    console.error("\u{1F512} AuthGuard unexpected error:", error);
+    return res.status(500).json({ error: "\uC778\uC99D \uCC98\uB9AC \uC911 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4." });
   }
 };
 var tenantGuard = (req, res, next) => {
@@ -794,9 +813,16 @@ async function registerRoutes(app2) {
       }
     };
   };
+  const cookieOptions = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1e3
+    // 7 days
+  };
   const adminPassword = process.env.ADMIN_PASSWORD;
   if (!adminPassword) {
-    throw new Error("ADMIN_PASSWORD environment variable must be set for security. No default password allowed.");
+    console.warn("\u26A0\uFE0F  ADMIN_PASSWORD is not set \u2014 admin login is disabled. Set it in Railway Variables!");
   }
   app2.post(
     "/api/auth/admin-login",
@@ -807,7 +833,13 @@ async function registerRoutes(app2) {
       try {
         const { password } = req.body;
         console.log("\u{1F527} Admin login attempt received");
+        console.log("\u{1F527} ADMIN_PASSWORD configured:", !!adminPassword);
+        if (!adminPassword) {
+          console.error("\u274C Admin login failed: ADMIN_PASSWORD env var is not set");
+          return res.status(503).json({ error: "ADMIN_PASSWORD \uD658\uACBD\uBCC0\uC218\uAC00 \uC124\uC815\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4. Railway Variables\uC5D0\uC11C \uC124\uC815\uD574\uC8FC\uC138\uC694." });
+        }
         if (password !== adminPassword) {
+          console.warn("\u26A0\uFE0F  Admin login: wrong password attempt");
           return res.status(401).json({ error: "\uC798\uBABB\uB41C \uAD00\uB9AC\uC790 \uBE44\uBC00\uBC88\uD638\uC785\uB2C8\uB2E4." });
         }
         const token = generateToken({
@@ -819,13 +851,7 @@ async function registerRoutes(app2) {
         });
         console.log("\u{1F527} Admin token generated:", token ? "SUCCESS" : "FAILED");
         console.log("\u{1F527} Setting cookie with token length:", token?.length || 0);
-        res.cookie("token", token, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: "strict",
-          maxAge: 7 * 24 * 60 * 60 * 1e3
-          // 7 days
-        });
+        res.cookie("token", token, cookieOptions);
         console.log("\u{1F527} Admin login cookie set successfully");
         res.json({
           message: "\uAD00\uB9AC\uC790 \uB85C\uADF8\uC778 \uC131\uACF5",
@@ -877,13 +903,7 @@ async function registerRoutes(app2) {
           role: user.role,
           tenantId: user.tenantId
         });
-        res.cookie("token", token, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: "strict",
-          maxAge: 7 * 24 * 60 * 60 * 1e3
-          // 7 days
-        });
+        res.cookie("token", token, cookieOptions);
         res.status(201).json({
           message: "\uD68C\uC6D0\uAC00\uC785\uC774 \uC644\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uC2B9\uC778 \uCC98\uB9AC\uB97C \uC704\uD574 \uAD00\uB9AC\uC790\uC5D0\uAC8C \uBB38\uC758\uD574\uC8FC\uC138\uC694.",
           user: {
@@ -964,13 +984,7 @@ async function registerRoutes(app2) {
             role: user.role,
             tenantId: user.tenantId
           });
-          res.cookie("token", token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: "strict",
-            maxAge: 7 * 24 * 60 * 60 * 1e3
-            // 7 days
-          });
+          res.cookie("token", token, cookieOptions);
         }
         const statusMessage = isTeacherActive ? "\uAD50\uC0AC \uACC4\uC815\uC774 \uC0DD\uC131\uB418\uC5C8\uC2B5\uB2C8\uB2E4." : "\uAD50\uC0AC \uACC4\uC815\uC774 \uC0DD\uC131\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uD559\uC6D0 \uC2B9\uC778 \uD6C4 \uB85C\uADF8\uC778 \uAC00\uB2A5\uD569\uB2C8\uB2E4.";
         const responseData = {
@@ -1009,15 +1023,19 @@ async function registerRoutes(app2) {
     async (req, res) => {
       try {
         const { email, password } = req.body;
+        console.log(`\u{1F510} Signin attempt: ${email}`);
         const user = await storage.getUserByEmail(email);
         if (!user) {
+          console.warn(`\u26A0\uFE0F  Signin failed: user not found for ${email}`);
           return res.status(401).json({ error: "\uC774\uBA54\uC77C \uB610\uB294 \uBE44\uBC00\uBC88\uD638\uAC00 \uC62C\uBC14\uB974\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4." });
         }
         const isValidPassword = await verifyPassword(password, user.password);
         if (!isValidPassword) {
+          console.warn(`\u26A0\uFE0F  Signin failed: wrong password for ${email}`);
           return res.status(401).json({ error: "\uC774\uBA54\uC77C \uB610\uB294 \uBE44\uBC00\uBC88\uD638\uAC00 \uC62C\uBC14\uB974\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4." });
         }
         if (!user.isActive) {
+          console.warn(`\u26A0\uFE0F  Signin failed: account inactive for ${email}`);
           return res.status(403).json({ error: "\uBE44\uD65C\uC131\uD654\uB41C \uACC4\uC815\uC785\uB2C8\uB2E4." });
         }
         const token = generateToken({
@@ -1027,13 +1045,8 @@ async function registerRoutes(app2) {
           role: user.role,
           tenantId: user.tenantId
         });
-        res.cookie("token", token, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: "strict",
-          maxAge: 7 * 24 * 60 * 60 * 1e3
-          // 7 days
-        });
+        res.cookie("token", token, cookieOptions);
+        console.log(`\u2705 User signin success: ${user.email} (role=${user.role})`);
         let tenant = null;
         if (user.tenantId) {
           tenant = await storage.getTenant(user.tenantId);
@@ -1795,26 +1808,30 @@ async function registerRoutes(app2) {
 import express from "express";
 import fs from "fs";
 import path2 from "path";
+import { fileURLToPath as fileURLToPath2 } from "url";
 import { createServer as createViteServer, createLogger } from "vite";
 
 // vite.config.ts
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
+import { fileURLToPath } from "url";
+var __filename = fileURLToPath(import.meta.url);
+var __dirname = path.dirname(__filename);
 var vite_config_default = defineConfig({
   plugins: [
     react()
   ],
   resolve: {
     alias: {
-      "@": path.resolve(import.meta.dirname, "client", "src"),
-      "@shared": path.resolve(import.meta.dirname, "shared"),
-      "@assets": path.resolve(import.meta.dirname, "attached_assets")
+      "@": path.resolve(__dirname, "client", "src"),
+      "@shared": path.resolve(__dirname, "shared"),
+      "@assets": path.resolve(__dirname, "attached_assets")
     }
   },
-  root: path.resolve(import.meta.dirname, "client"),
+  root: path.resolve(__dirname, "client"),
   build: {
-    outDir: path.resolve(import.meta.dirname, "dist/public"),
+    outDir: path.resolve(__dirname, "dist/public"),
     emptyOutDir: true
   },
   server: {
@@ -1827,6 +1844,8 @@ var vite_config_default = defineConfig({
 
 // server/vite.ts
 import { nanoid } from "nanoid";
+var __filename2 = fileURLToPath2(import.meta.url);
+var __dirname2 = path2.dirname(__filename2);
 var viteLogger = createLogger();
 function log(message, source = "express") {
   const formattedTime = (/* @__PURE__ */ new Date()).toLocaleTimeString("en-US", {
@@ -1861,7 +1880,7 @@ async function setupVite(app2, server) {
     const url = req.originalUrl;
     try {
       const clientTemplate = path2.resolve(
-        import.meta.dirname,
+        __dirname2,
         "..",
         "client",
         "index.html"
@@ -1880,7 +1899,7 @@ async function setupVite(app2, server) {
   });
 }
 function serveStatic(app2) {
-  const distPath = path2.resolve(import.meta.dirname, "public");
+  const distPath = path2.resolve(__dirname2, "public");
   if (!fs.existsSync(distPath)) {
     throw new Error(
       `Could not find the build directory: ${distPath}, make sure to build the client first`
@@ -1894,6 +1913,7 @@ function serveStatic(app2) {
 
 // server/index.ts
 var app = express2();
+app.set("trust proxy", 1);
 app.use(express2.json());
 app.use(express2.urlencoded({ extended: false }));
 app.use((req, res, next) => {
@@ -1925,15 +1945,30 @@ app.use((req, res, next) => {
   app.use((err, _req, res, _next) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
-    res.status(status).json({ message });
-    throw err;
+    console.error(`\u274C Unhandled error [${status}]:`, err);
+    if (!res.headersSent) {
+      res.status(status).json({ message });
+    }
   });
   if (app.get("env") === "development") {
     await setupVite(app, server);
   } else {
     serveStatic(app);
   }
-  const port = parseInt(process.env.PORT || "5000", 10);
+  if (!process.env.JWT_SECRET) {
+    console.warn("\u26A0\uFE0F  JWT_SECRET not set \u2014 using insecure default. Set it in Railway Variables!");
+  }
+  if (!process.env.ADMIN_PASSWORD) {
+    console.warn("\u26A0\uFE0F  ADMIN_PASSWORD not set \u2014 admin login will be disabled.");
+  }
+  if (!process.env.DATABASE_URL) {
+    console.warn("\u26A0\uFE0F  DATABASE_URL not set \u2014 database operations will fail.");
+  }
+  console.log(`\u{1F680} NODE_ENV=${process.env.NODE_ENV || "development"}`);
+  console.log(`\u{1F511} JWT_SECRET set: ${!!process.env.JWT_SECRET}`);
+  console.log(`\u{1F511} ADMIN_PASSWORD set: ${!!process.env.ADMIN_PASSWORD}`);
+  console.log(`\u{1F5C4}\uFE0F  DATABASE_URL set: ${!!process.env.DATABASE_URL}`);
+  const port = parseInt(process.env.PORT || "3000", 10);
   server.listen({
     port,
     host: "0.0.0.0",

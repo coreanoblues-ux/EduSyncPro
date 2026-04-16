@@ -752,6 +752,7 @@ var roleGuard = (...allowedRoles) => {
 
 // server/routes.ts
 import { z as z2 } from "zod";
+import { eq as eq2 } from "drizzle-orm";
 var idParamSchema = z2.object({
   id: z2.string().uuid("\uC720\uD6A8\uD558\uC9C0 \uC54A\uC740 ID \uD615\uC2DD\uC785\uB2C8\uB2E4.")
 });
@@ -1797,6 +1798,37 @@ async function registerRoutes(app2) {
       } catch (error) {
         console.error("Delete tenant error:", error);
         res.status(500).json({ error: "\uD14C\uB10C\uD2B8 \uC0AD\uC81C \uC911 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4." });
+      }
+    }
+  );
+  app2.patch(
+    "/api/superadmin/users/fix-account",
+    authGuard,
+    roleGuard("superadmin"),
+    validateBody(z2.object({
+      tenantId: z2.string(),
+      newEmail: z2.string().email(),
+      newPassword: z2.string().min(6),
+      newName: z2.string().optional()
+    })),
+    async (req, res) => {
+      try {
+        const { tenantId, newEmail, newPassword, newName } = req.body;
+        const hashedPassword = await hashPassword(newPassword);
+        const result = await db.update(users).set({
+          email: newEmail,
+          password: hashedPassword,
+          isActive: true,
+          ...newName ? { name: newName } : {}
+        }).where(eq2(users.tenantId, tenantId)).returning({ id: users.id, email: users.email, name: users.name, role: users.role, isActive: users.isActive });
+        if (result.length === 0) {
+          return res.status(404).json({ error: "\uD574\uB2F9 \uD14C\uB10C\uD2B8\uC758 \uC0AC\uC6A9\uC790\uB97C \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4." });
+        }
+        console.log(`\u2705 fix-account: tenantId=${tenantId}, updated ${result.length} user(s)`);
+        res.json({ message: "\uC0AC\uC6A9\uC790 \uACC4\uC815\uC774 \uC218\uC815\uB418\uC5C8\uC2B5\uB2C8\uB2E4.", users: result });
+      } catch (error) {
+        console.error("fix-account error:", error);
+        res.status(500).json({ error: "\uACC4\uC815 \uC218\uC815 \uC911 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4." });
       }
     }
   );

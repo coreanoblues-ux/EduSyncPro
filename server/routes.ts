@@ -23,6 +23,9 @@ import {
   updateEnrollmentSchema
 } from "@shared/schema";
 import { z } from "zod";
+import { db } from "./db";
+import { users } from "@shared/schema";
+import { eq } from "drizzle-orm";
 
 // Define common schemas for validation
 const idParamSchema = z.object({
@@ -1227,6 +1230,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } catch (error) {
         console.error('Delete tenant error:', error);
         res.status(500).json({ error: '테넌트 삭제 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
+  // ─── Superadmin: 사용자 이메일/비밀번호 직접 수정 (임시 관리용) ──────────
+  app.patch('/api/superadmin/users/fix-account',
+    authGuard,
+    roleGuard('superadmin'),
+    validateBody(z.object({
+      tenantId: z.string(),
+      newEmail: z.string().email(),
+      newPassword: z.string().min(6),
+      newName: z.string().optional(),
+    })),
+    async (req: Request, res: Response) => {
+      try {
+        const { tenantId, newEmail, newPassword, newName } = req.body;
+        const hashedPassword = await hashPassword(newPassword);
+        // tenantId로 해당 테넌트의 owner 사용자를 찾아 업데이트
+        const result = await db
+          .update(users)
+          .set({
+            email: newEmail,
+            password: hashedPassword,
+            isActive: true,
+            ...(newName ? { name: newName } : {}),
+          })
+          .where(eq(users.tenantId, tenantId))
+          .returning({ id: users.id, email: users.email, name: users.name, role: users.role, isActive: users.isActive });
+        if (result.length === 0) {
+          return res.status(404).json({ error: '해당 테넌트의 사용자를 찾을 수 없습니다.' });
+        }
+        console.log(`✅ fix-account: tenantId=${tenantId}, updated ${result.length} user(s)`);
+        res.json({ message: '사용자 계정이 수정되었습니다.', users: result });
+      } catch (error) {
+        console.error('fix-account error:', error);
+        res.status(500).json({ error: '계정 수정 중 오류가 발생했습니다.' });
       }
     }
   );

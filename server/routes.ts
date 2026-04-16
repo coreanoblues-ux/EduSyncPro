@@ -1271,6 +1271,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   );
 
+  // ─── Superadmin: 이메일로 비밀번호 리셋 (임시 관리용) ──────────────────────
+  app.patch('/api/superadmin/users/reset-password',
+    authGuard,
+    roleGuard('superadmin'),
+    validateBody(z.object({
+      email: z.string().email(),
+      newPassword: z.string().min(6),
+    })),
+    async (req: Request, res: Response) => {
+      try {
+        const { email, newPassword } = req.body;
+        const hashedPassword = await hashPassword(newPassword);
+        const result = await db
+          .update(users)
+          .set({
+            password: hashedPassword,
+            isActive: true,
+          })
+          .where(eq(users.email, email))
+          .returning({ id: users.id, email: users.email, name: users.name, role: users.role, tenantId: users.tenantId, isActive: users.isActive });
+        if (result.length === 0) {
+          return res.status(404).json({ error: '해당 이메일의 사용자를 찾을 수 없습니다.' });
+        }
+        console.log(`✅ reset-password: email=${email}, updated ${result.length} user(s)`);
+        res.json({ message: '비밀번호가 수정되었습니다.', users: result });
+      } catch (error) {
+        console.error('reset-password error:', error);
+        res.status(500).json({ error: '비밀번호 수정 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
   const httpServer = createServer(app);
   return httpServer;
 }

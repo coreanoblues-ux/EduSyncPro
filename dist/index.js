@@ -1832,6 +1832,33 @@ async function registerRoutes(app2) {
       }
     }
   );
+  app2.patch(
+    "/api/superadmin/users/reset-password",
+    authGuard,
+    roleGuard("superadmin"),
+    validateBody(z2.object({
+      email: z2.string().email(),
+      newPassword: z2.string().min(6)
+    })),
+    async (req, res) => {
+      try {
+        const { email, newPassword } = req.body;
+        const hashedPassword = await hashPassword(newPassword);
+        const result = await db.update(users).set({
+          password: hashedPassword,
+          isActive: true
+        }).where(eq2(users.email, email)).returning({ id: users.id, email: users.email, name: users.name, role: users.role, tenantId: users.tenantId, isActive: users.isActive });
+        if (result.length === 0) {
+          return res.status(404).json({ error: "\uD574\uB2F9 \uC774\uBA54\uC77C\uC758 \uC0AC\uC6A9\uC790\uB97C \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4." });
+        }
+        console.log(`\u2705 reset-password: email=${email}, updated ${result.length} user(s)`);
+        res.json({ message: "\uBE44\uBC00\uBC88\uD638\uAC00 \uC218\uC815\uB418\uC5C8\uC2B5\uB2C8\uB2E4.", users: result });
+      } catch (error) {
+        console.error("reset-password error:", error);
+        res.status(500).json({ error: "\uBE44\uBC00\uBC88\uD638 \uC218\uC815 \uC911 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4." });
+      }
+    }
+  );
   const httpServer = createServer(app2);
   return httpServer;
 }

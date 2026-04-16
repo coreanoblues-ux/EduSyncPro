@@ -126,14 +126,13 @@ export default function LoginForm({ onLogin, onSignup, onAdminLogin }: LoginForm
 
             <div className="space-y-2">
               <Label htmlFor="role">역할</Label>
-              <Select 
-                value={formData.role} 
+              <Select
+                value={formData.role}
                 onValueChange={(value) => {
+                  // ⚠ Never auto-fill credentials from the frontend
                   setFormData({
-                    ...formData, 
-                    role: value,
-                    email: value === 'superadmin' ? 'admin@system.local' : formData.email,
-                    password: value === 'superadmin' ? 'wchung00' : formData.password
+                    ...formData,
+                    role: value
                   });
                 }}
               >

@@ -3,7 +3,13 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { storage } from '../storage';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-for-academy';
+// ─── JWT Secret ────────────────────────────────────────────────────────────
+// Using a hardcoded fallback is insecure but prevents a crash when the env var
+// is missing.  A loud warning is logged so the problem is obvious in Railway logs.
+const JWT_SECRET = process.env.JWT_SECRET || 'INSECURE_DEFAULT_CHANGE_IN_RAILWAY_VARIABLES';
+if (!process.env.JWT_SECRET) {
+  console.warn('⚠️  JWT_SECRET not set! Using insecure default — set JWT_SECRET in Railway Variables NOW!');
+}
 
 export interface AuthUser {
   id: string;
@@ -49,21 +55,26 @@ export const verifyPassword = async (password: string, hashedPassword: string): 
 // JWT verification middleware
 export const authGuard = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const token = req.cookies.token || req.headers.authorization?.replace('Bearer ', '');
-
-    console.log('🔒 AuthGuard: token exists:', !!token);
-    console.log('🔒 AuthGuard: token length:', token?.length || 0);
+    const token = req.cookies?.token || req.headers.authorization?.replace('Bearer ', '');
 
     if (!token) {
+      console.log('🔒 AuthGuard: no token found (cookies:', Object.keys(req.cookies || {}), ')');
       return res.status(401).json({ error: '인증 토큰이 필요합니다.' });
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET) as AuthUser;
-    console.log('🔒 AuthGuard: decoded user:', { id: decoded.id, role: decoded.role, email: decoded.email });
-    
+    let decoded: AuthUser;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET) as AuthUser;
+    } catch (jwtErr: any) {
+      console.warn('🔒 AuthGuard: JWT verify failed:', jwtErr.message);
+      return res.status(401).json({ error: '유효하지 않은 토큰입니다.' });
+    }
+
+    console.log('🔒 AuthGuard: user', { id: decoded.id, role: decoded.role, email: decoded.email });
+
     // Handle superadmin special case - they don't exist in database
     if (decoded.role === 'superadmin' && decoded.id === 'admin') {
-      console.log('🔒 AuthGuard: Superadmin detected - allowing access');
+      console.log('🔒 AuthGuard: Superadmin — bypassing DB check');
       req.user = {
         id: decoded.id,
         email: decoded.email,
@@ -73,11 +84,16 @@ export const authGuard = async (req: Request, res: Response, next: NextFunction)
       };
       return next();
     }
-    
+
     // Verify user still exists and is active (for regular users)
     const user = await storage.getUser(decoded.id);
-    if (!user || !user.isActive) {
-      return res.status(401).json({ error: '유효하지 않은 사용자입니다.' });
+    if (!user) {
+      console.warn(`🔒 AuthGuard: user ${decoded.id} not found in DB`);
+      return res.status(401).json({ error: '사용자를 찾을 수 없습니다.' });
+    }
+    if (!user.isActive) {
+      console.warn(`🔒 AuthGuard: user ${decoded.id} is inactive`);
+      return res.status(401).json({ error: '비활성화된 계정입니다.' });
     }
 
     req.user = {
@@ -90,8 +106,8 @@ export const authGuard = async (req: Request, res: Response, next: NextFunction)
 
     next();
   } catch (error) {
-    console.error('🔒 AuthGuard error:', error);
-    return res.status(401).json({ error: '유효하지 않은 토큰입니다.' });
+    console.error('🔒 AuthGuard unexpected error:', error);
+    return res.status(500).json({ error: '인증 처리 중 오류가 발생했습니다.' });
   }
 };
 

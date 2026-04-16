@@ -97,10 +97,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     };
   };
 
+  // ─── Cookie helper — shared across ALL login endpoints ─────────────────
+  // sameSite: 'lax'  → allows cookies after top-level navigations / link clicks
+  //                     (Railway reverse-proxy + HTTPS works correctly with lax)
+  // secure: true in production because Railway serves HTTPS (trust proxy is set)
+  const cookieOptions = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax' as const,
+    maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+  };
+
   // CRITICAL: Admin login route - MUST be registered FIRST to avoid Vite interference
   const adminPassword = process.env.ADMIN_PASSWORD;
   if (!adminPassword) {
-    throw new Error('ADMIN_PASSWORD environment variable must be set for security. No default password allowed.');
+    // ⚠ Warn but do NOT crash — missing env var disables admin login, it does NOT
+    //   take down the entire app.  The user will see a clear 503 on the admin route.
+    console.warn('⚠️  ADMIN_PASSWORD is not set — admin login is disabled. Set it in Railway Variables!');
   }
   
   app.post('/api/auth/admin-login',
@@ -112,8 +125,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const { password } = req.body;
 
         console.log('🔧 Admin login attempt received');
+        console.log('🔧 ADMIN_PASSWORD configured:', !!adminPassword);
+
+        // If env var was never set, return a clear error (don't crash)
+        if (!adminPassword) {
+          console.error('❌ Admin login failed: ADMIN_PASSWORD env var is not set');
+          return res.status(503).json({ error: 'ADMIN_PASSWORD 환경변수가 설정되지 않았습니다. Railway Variables에서 설정해주세요.' });
+        }
 
         if (password !== adminPassword) {
+          console.warn('⚠️  Admin login: wrong password attempt');
           return res.status(401).json({ error: '잘못된 관리자 비밀번호입니다.' });
         }
 
@@ -129,13 +150,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log('🔧 Admin token generated:', token ? 'SUCCESS' : 'FAILED');
         console.log('🔧 Setting cookie with token length:', token?.length || 0);
 
-        // Set HTTP-only cookie
-        res.cookie('token', token, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'strict',
-          maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
-        });
+        // Set HTTP-only cookie (using shared cookieOptions with sameSite: 'lax')
+        res.cookie('token', token, cookieOptions);
 
         console.log('🔧 Admin login cookie set successfully');
 
@@ -200,13 +216,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           tenantId: user.tenantId
         });
 
-        // Set HTTP-only cookie
-        res.cookie('token', token, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'strict',
-          maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
-        });
+        // Set HTTP-only cookie (sameSite: 'lax' for Railway compatibility)
+        res.cookie('token', token, cookieOptions);
 
         res.status(201).json({
           message: '회원가입이 완료되었습니다. 승인 처리를 위해 관리자에게 문의해주세요.',
@@ -305,13 +316,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             tenantId: user.tenantId
           });
 
-          // Set HTTP-only cookie only for active teachers
-          res.cookie('token', token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict',
-            maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
-          });
+          // Set HTTP-only cookie only for active teachers (sameSite: 'lax')
+          res.cookie('token', token, cookieOptions);
         }
 
         const statusMessage = isTeacherActive 
@@ -359,21 +365,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
     async (req: Request, res: Response) => {
       try {
         const { email, password } = req.body;
-        
+
+        console.log(`🔐 Signin attempt: ${email}`);
+
         // Find user
         const user = await storage.getUserByEmail(email);
         if (!user) {
+          console.warn(`⚠️  Signin failed: user not found for ${email}`);
           return res.status(401).json({ error: '이메일 또는 비밀번호가 올바르지 않습니다.' });
         }
 
         // Verify password
         const isValidPassword = await verifyPassword(password, user.password);
         if (!isValidPassword) {
+          console.warn(`⚠️  Signin failed: wrong password for ${email}`);
           return res.status(401).json({ error: '이메일 또는 비밀번호가 올바르지 않습니다.' });
         }
 
         // Check if user is active
         if (!user.isActive) {
+          console.warn(`⚠️  Signin failed: account inactive for ${email}`);
           return res.status(403).json({ error: '비활성화된 계정입니다.' });
         }
 
@@ -385,13 +396,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           tenantId: user.tenantId
         });
 
-        // Set HTTP-only cookie
-        res.cookie('token', token, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'strict',
-          maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
-        });
+        // Set HTTP-only cookie (sameSite: 'lax' for Railway compatibility)
+        res.cookie('token', token, cookieOptions);
+
+        console.log(`✅ User signin success: ${user.email} (role=${user.role})`);
 
         // Get tenant info if exists
         let tenant = null;

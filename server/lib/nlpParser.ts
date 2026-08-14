@@ -33,6 +33,10 @@ import {
   extractMaxStudents,
   extractPersonAction,
   extractSubject,
+  extractCommandName,
+  extractTeacherName,
+  extractClassNameFromText,
+  looksLikeInquiry,
   type PersonTarget,
   type PersonAction,
 } from "./nlpNormalize";
@@ -714,9 +718,14 @@ function resolveType(ai: RawAiResult, sourceText: string, corrections: string[])
 /**
  * 반 작업 문장인지 최종 판정한다.
  *
- * AI와 코드가 **둘 다** 반 작업이라고 해야 통과시킨다. AI만 믿으면 "강단우
- * 국어반 추가" 같은 학생 등록이 반 생성으로 새고, 코드만 믿으면 "수강료 변경
- * 문의 왔어요" 같은 상담이 반 수정으로 샌다.
+ * 판정 근거는 원문이다. 예전에는 AI가 class_action을 채워야만 통과시켰는데,
+ * 모델이 그 칸을 비우면 "중등심화반 신설"이 조용히 상담이나 판단 불가로
+ * 흘러가 반 관리가 통째로 먹통이 됐다. 원장이 직접 친 지시가 그날 모델
+ * 컨디션에 좌우돼서는 안 된다.
+ *
+ * 대신 원래 AI가 막아주던 두 가지 오인식은 원문만으로 계속 막는다.
+ *  - "강단우 국어반 추가" 같은 학생 등록 → extractClassAction이 null을 준다
+ *  - "수강료 변경 문의 왔어요" 같은 상담 → looksLikeInquiry가 걸러낸다
  *
  * 생성/수정이 엇갈리면 원문 쪽을 따른다. 없는 반을 하나 더 만드는 실수가
  * 있는 반을 고치는 실수보다 되돌리기 번거롭다.
@@ -729,11 +738,13 @@ function resolveClassAction(
   const fromText = extractClassAction(sourceText);
   if (!fromText) return null;
 
+  // 남의 말을 옮긴 문장은 지시가 아니다. 문의 한 통에 반 수강료가 바뀌면 안 된다.
+  if (looksLikeInquiry(sourceText)) return null;
+
   const fromAi =
     ai.class_action === "생성" ? "create" : ai.class_action === "수정" ? "update" : null;
-  if (!fromAi) return null;
 
-  if (fromAi !== fromText) {
+  if (fromAi && fromAi !== fromText) {
     corrections.push(
       `반 작업을 원문 기준 "${fromText === "create" ? "생성" : "수정"}"으로 정정했습니다.`
     );
@@ -771,7 +782,12 @@ export function arbitrate(
   if (person) {
     const rawName = person.target === "teacher" ? ai.teacher_name : ai.student_name;
     // 이름은 부분만 적어도 서버가 후보를 찾아 준다. cleanStudentName의 2자 하한만 지킨다.
-    const name = cleanStudentName(rawName) ?? cleanStudentName(ai.student_name);
+    // AI가 이름 칸을 비우면 명령어 바로 뒤 낱말을 이름으로 쓴다. 이름이 비면
+    // 대상을 못 고르고, 대상을 못 고르면 저장 버튼이 막혀 아무것도 못 한다.
+    const name =
+      cleanStudentName(rawName) ??
+      cleanStudentName(ai.student_name) ??
+      extractCommandName(sourceText);
 
     return {
       sourceText,
@@ -798,7 +814,9 @@ export function arbitrate(
   // 뒤쪽 분기까지 흘러가면 "판단 불가"로 되물어지고 만다.
   const classAction = resolveClassAction(ai, sourceText, corrections);
   if (classAction) {
-    const teacherName = ai.teacher_name?.trim().replace(/\s*(선생님|쌤|T)$/, "") || null;
+    // AI가 칸을 비워도 화면은 채워져야 한다. 빈 폼이 뜨면 결국 손으로 다시 친다.
+    const teacherName =
+      ai.teacher_name?.trim().replace(/\s*(선생님|쌤|T)$/, "") || extractTeacherName(sourceText);
     const days = ai.schedule_days?.length ? ai.schedule_days : null;
     const time = extractClassTime(sourceText) ?? ai.class_time?.trim() ?? null;
     const schedule = [days?.join(""), time].filter(Boolean).join(" ") || null;
@@ -814,8 +832,8 @@ export function arbitrate(
           teacherName,
           level: ai.class_level?.trim() || null,
         },
-        name: ai.class_name?.trim() || null,
-        subject: ai.subject?.trim() || null,
+        name: ai.class_name?.trim() || extractClassNameFromText(sourceText),
+        subject: ai.subject?.trim() || extractSubject(sourceText),
         schedule,
         teacherName,
         defaultTuition: resolveTuition(ai, sourceText),

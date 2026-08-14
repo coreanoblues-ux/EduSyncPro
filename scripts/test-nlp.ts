@@ -423,6 +423,54 @@ const cases: Case[] = [
     why: "과목이 비면 수정 화면에서 다시 타이핑해야 한다",
   },
   {
+    label: "AI가 빈손이어도 반 신설은 통과한다",
+    text: "중등심화반 신설 화목 19:00-21:00 김하늘 선생님 수학 35만원",
+    ai: {}, // 모델이 class_action을 통째로 빠뜨린 상황
+    expect: (r) =>
+      r.draft.category === "class" &&
+      r.draft.action === "create" &&
+      r.draft.name === "중등심화반" &&
+      r.draft.teacherName === "김하늘" &&
+      r.draft.subject === "수학" &&
+      r.draft.defaultTuition === 350000,
+    why: "원장이 직접 친 지시가 그날 모델 컨디션에 좌우되면 안 된다",
+  },
+  {
+    label: "AI가 빈손이어도 반 수정은 통과한다",
+    text: "초등A반 수강료 30만으로 변경",
+    ai: {},
+    expect: (r) =>
+      r.draft.category === "class" && r.draft.action === "update" && r.draft.name === "초등A반",
+    why: "반 관리가 AI 응답 없이도 동작해야 한다",
+  },
+  {
+    label: "문의를 옮긴 문장은 반을 바꾸지 않는다",
+    text: "수강료 변경 문의 왔어요",
+    ai: {},
+    expect: (r) => r.draft.category !== "class",
+    why: "문의 전화 한 통에 실제 반 수강료가 바뀌면 매출이 어긋난다",
+  },
+  {
+    label: "AI가 이름을 비워도 명령어 뒤 낱말로 채운다",
+    text: "학생 수정 김민준 학교 숭의중으로",
+    ai: { person_action: "학생수정" }, // 이름 칸이 빈 응답
+    expect: (r) => r.draft.category === "person" && r.draft.name === "김민준",
+    why: "이름이 비면 대상을 못 골라 저장 버튼이 끝까지 막힌다",
+  },
+  {
+    label: "AI가 빈손이어도 교사 추가는 이름·과목이 찬다",
+    text: "교사 추가 박지훈 수학 010-1111-2222",
+    ai: {},
+    expect: (r) =>
+      r.draft.category === "person" &&
+      r.draft.target === "teacher" &&
+      r.draft.action === "create" &&
+      r.draft.name === "박지훈" &&
+      r.draft.subject === "수학" &&
+      r.draft.phone === "010-1111-2222",
+    why: "빈 폼이 뜨면 결국 손으로 다시 치게 되어 AI 입력의 의미가 없다",
+  },
+  {
     label: "'학생 추가'는 수정 분기로 가지 않는다",
     text: "강단우 3학년 국어반 등록 010-1234-5678",
     ai: { enroll: true, student_name: "강단우", grade: "3학년", class_level: "국어반", parent_phone: "010-1234-5678" },

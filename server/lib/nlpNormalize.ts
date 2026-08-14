@@ -570,6 +570,52 @@ export function extractPersonAction(
   return null;
 }
 
+/**
+ * "학생 수정 김민준 …", "교사 추가 박지훈 …"에서 명령어 바로 뒤 이름을 뽑는다.
+ *
+ * AI가 이름 칸을 안 채워도 수정 화면에 이름이 들어가게 하려는 보루다. 원장이
+ * 명령어 다음에 이름부터 치는 것은 거의 확실하므로 그 자리만 본다. 뒤쪽 아무
+ * 낱말이나 이름으로 집으면 "학교"·"연락처" 같은 항목명이 이름으로 들어간다.
+ */
+export function extractCommandName(text: string): string | null {
+  const m = text
+    .trim()
+    .match(
+      /(?:학생|교사|강사|선생님|쌤)\s*(?:정보)?\s*(?:수정|변경|추가|등록|신규|생성)\s+([가-힣a-zA-Z]{2,5})/
+    );
+  if (!m) return null;
+  // 이름 자리에 항목명이 오면(= "학생 수정 학교 …") 이름이 생략된 것이다
+  if (/^(학교|학년|이름|과목|연락처|전화|번호|메모|정보)$/.test(m[1])) return null;
+  return cleanStudentName(m[1]);
+}
+
+/** "김하늘 선생님", "담당 정우석T"처럼 적힌 강사 이름을 뽑는다. */
+export function extractTeacherName(text: string): string | null {
+  const m = text.match(/([가-힣]{2,4})\s*(?:선생님|샘|쌤|T\b|강사|교사)/);
+  return m ? cleanStudentName(m[1]) : null;
+}
+
+/**
+ * "중등심화반 신설", "국어반 수강료 변경"에서 반 이름을 뽑는다.
+ *
+ * 반 이름은 학원마다 제각각이라 최종 확정은 실제 반 목록과 대조해서 한다.
+ * 여기서는 "…반" 꼴만 집어 화면 입력칸을 미리 채우는 용도다.
+ */
+export function extractClassNameFromText(text: string): string | null {
+  const m = text.match(/([가-힣a-zA-Z0-9]{1,10}반)/);
+  return m ? m[1] : null;
+}
+
+/**
+ * "문의 왔어요", "상담 전화" 처럼 남의 말을 옮긴 문장인지 본다.
+ *
+ * "수강료 변경 문의 왔어요"는 반을 고치라는 지시가 아니라 상담 기록이다.
+ * 이 구분이 없으면 문의 전화 한 통에 반 수강료가 실제로 바뀐다.
+ */
+export function looksLikeInquiry(text: string): boolean {
+  return /(문의|여쭤|물어|상담\s*(전화|요청|옴|왔)|전화\s*(왔|옴)|왔어요|왔습니다)/.test(text);
+}
+
 /** "담당 과목은 수학", "수학 담당" 처럼 적힌 과목을 뽑는다. */
 export function extractSubject(text: string): string | null {
   const m = text.match(

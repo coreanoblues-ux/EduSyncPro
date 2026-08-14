@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Plus, Edit, Trash2, User, School, Users, Phone, Info, UserMinus, UserPlus, Search } from "lucide-react";
+import { Plus, Edit, Trash2, User, School, Users, Phone, Info, UserMinus, UserPlus, Search, BookOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +18,12 @@ import { z } from "zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Student, Class, InsertEnrollment } from "@shared/schema";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
+/**
+ * 학원 학생 대부분이 영어라 영어는 배지 없이 이름만 보여준다.
+ * 국어 등 그 외 과목만 이름 옆에 배지가 붙어 눈에 띄게 한다.
+ */
+const DEFAULT_SUBJECT = "영어";
 
 const studentFormSchema = z.object({
   // 1. 이름 - 필수 필드
@@ -60,6 +66,10 @@ interface StudentsProps {
 export default function Students({ userRole }: StudentsProps) {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
+  // 반 추가 대상 학생 (EditStudent는 기존 수강을 덮어써서 두 번째 반을 만들 수 없다)
+  const [addClassTarget, setAddClassTarget] = useState<Student | null>(null);
+  const [addClassId, setAddClassId] = useState<string>("");
+  const [addClassStartDate, setAddClassStartDate] = useState<string>("");
   const [, setLocation] = useLocation();
   const { toast } = useToast();
 
@@ -83,39 +93,80 @@ export default function Students({ userRole }: StudentsProps) {
     queryKey: ['/api/teachers'],
   });
 
-  // 향상된 검색 기능: 학생명, 반명, 선생님 이름으로 검색
-  const filteredStudents = useMemo(() => {
-    if (!searchTerm.trim()) return students;
+  /**
+   * 카드 한 장 = 수강 한 건.
+   *
+   * 한 학생이 국어와 영어를 함께 들으면 "김윤후 [국어]", "김윤후 [영어]" 두 장이 뜬다.
+   * 학생당 한 장만 보여주면 두 번째 과목이 화면에서 사라져, 원장이 반별로 학생을
+   * 훑을 때 실제 수강 인원과 눈에 보이는 인원이 어긋난다.
+   */
+  interface StudentCardData {
+    student: Student;
+    enrollment: any | null;
+    cls: any | null;
+    teacherName: string | null;
+    /** 이 학생이 듣는 전체 과목 — 삭제·휴원이 어디까지 영향을 주는지 알려주는 데 쓴다 */
+    subjects: string[];
+    /** 학생당 첫 카드에만 "반 추가" 버튼을 둔다 (카드마다 있으면 중복 조작처럼 보인다) */
+    isPrimary: boolean;
+  }
 
-    const searchLower = searchTerm.toLowerCase();
+  const cards = useMemo<StudentCardData[]>(() => {
     const enrollmentsArray = Array.isArray(enrollments) ? enrollments : [];
     const classesArray = Array.isArray(classes) ? classes : [];
     const teachersArray = Array.isArray(teachers) ? teachers : [];
 
-    return students.filter((student: any) => {
-      // 1. 학생명으로 검색
-      if (student.name.toLowerCase().includes(searchLower)) return true;
-      
-      // 2. 학생의 수강 정보를 찾기
-      const studentEnrollment = enrollmentsArray.find((e: any) => e.studentId === student.id && e.isActive);
-      if (studentEnrollment) {
-        // 3. 반명으로 검색
-        const studentClass = classesArray.find((c: any) => c.id === studentEnrollment.classId);
-        if (studentClass) {
-          // 반명으로 검색
-          if (studentClass.name.toLowerCase().includes(searchLower)) return true;
-          
-          // 4. 선생님 이름으로 검색
-          if (studentClass.teacherId) {
-            const teacher = teachersArray.find((t: any) => t.id === studentClass.teacherId);
-            if (teacher && teacher.name.toLowerCase().includes(searchLower)) return true;
-          }
-        }
+    const classById = new Map(classesArray.map((c: any) => [c.id, c]));
+    const teacherById = new Map(teachersArray.map((t: any) => [t.id, t]));
+
+    return students.flatMap((student: any) => {
+      const mine = enrollmentsArray.filter(
+        (e: any) => e.studentId === student.id && e.isActive
+      );
+      const subjects = mine
+        .map((e: any) => classById.get(e.classId)?.subject)
+        .filter(Boolean) as string[];
+
+      // 반이 배정되지 않은 학생도 목록에서 사라지면 안 된다.
+      // (수강 건수로만 카드를 만들면 미배정 학생이 통째로 안 보인다)
+      if (mine.length === 0) {
+        return [{ student, enrollment: null, cls: null, teacherName: null, subjects: [], isPrimary: true }];
       }
-      
+
+      return mine
+        .map((e: any) => {
+          const cls = classById.get(e.classId) ?? null;
+          return {
+            student,
+            enrollment: e,
+            cls,
+            teacherName: cls?.teacherId ? teacherById.get(cls.teacherId)?.name ?? null : null,
+            subjects,
+            isPrimary: false,
+          };
+        })
+        // 배지 없는 기본 과목(영어) 카드를 먼저 두어 "강단우" 다음에 "강단우 [국어]"가 오게 한다.
+        .sort((a: StudentCardData, b: StudentCardData) => {
+          const rank = (c: StudentCardData) => (c.cls?.subject === DEFAULT_SUBJECT ? 0 : 1);
+          return rank(a) - rank(b);
+        })
+        .map((c: StudentCardData, i: number) => ({ ...c, isPrimary: i === 0 }));
+    });
+  }, [students, enrollments, classes, teachers]);
+
+  // 검색은 카드 단위로 건다. "영어"로 검색하면 그 학생의 영어 카드만 남는다.
+  const filteredCards = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    if (!q) return cards;
+
+    return cards.filter(({ student, cls, teacherName }) => {
+      if (student.name.toLowerCase().includes(q)) return true;
+      if (cls?.name?.toLowerCase().includes(q)) return true;
+      if (cls?.subject?.toLowerCase().includes(q)) return true;
+      if (teacherName?.toLowerCase().includes(q)) return true;
       return false;
     });
-  }, [searchTerm, students, enrollments, classes, teachers]);
+  }, [searchTerm, cards]);
 
   // Add student mutation
   const addStudentMutation = useMutation({
@@ -178,6 +229,52 @@ export default function Students({ userRole }: StudentsProps) {
     },
   });
 
+
+  // 기존 학생에게 반을 하나 더 붙인다. 국어·영어를 함께 듣는 학생이 두 장의 카드를 갖게 된다.
+  const addEnrollmentMutation = useMutation({
+    mutationFn: async ({ studentId, classId, startDate }: { studentId: string; classId: string; startDate: string }) => {
+      const selectedClass = classes.find((c) => c.id === classId);
+      await apiRequest('POST', '/api/enrollments', {
+        studentId,
+        classId,
+        startDate,
+        tuition: selectedClass?.defaultTuition ?? null,
+        dueDay: 8,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/enrollments'] });
+      setAddClassTarget(null);
+      toast({
+        title: "반 추가 완료",
+        description: "학생에게 새로운 반이 추가되었습니다.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "반 추가 실패",
+        description: error.message || "반 추가 중 오류가 발생했습니다.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // 이미 듣고 있는 반은 목록에서 뺀다. 같은 반을 두 번 등록하면 카드가 중복으로 뜬다.
+  const alreadyEnrolledClassIds = useMemo(() => {
+    if (!addClassTarget) return new Set<string>();
+    const enrollmentsArray = Array.isArray(enrollments) ? enrollments : [];
+    return new Set<string>(
+      enrollmentsArray
+        .filter((e: any) => e.studentId === addClassTarget.id && e.isActive)
+        .map((e: any) => e.classId)
+    );
+  }, [addClassTarget, enrollments]);
+
+  const openAddClassDialog = (student: Student) => {
+    setAddClassId("");
+    setAddClassStartDate(new Date().toISOString().slice(0, 10));
+    setAddClassTarget(student);
+  };
 
   // Delete student mutation
   const deleteStudentMutation = useMutation({
@@ -304,7 +401,7 @@ export default function Students({ userRole }: StudentsProps) {
           <div>
             <h1 className="text-2xl font-bold">학생 관리</h1>
             <p className="text-muted-foreground">
-              학생 {students.length}명이 등록되어 있습니다
+              학생 {students.length}명 · 수강 {cards.filter((c) => c.enrollment).length}건
             </p>
           </div>
           
@@ -661,10 +758,10 @@ export default function Students({ userRole }: StudentsProps) {
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-semibold">학생 목록</h2>
           <div className="text-sm text-muted-foreground">
-            {searchTerm ? `${filteredStudents.length}명 (검색 결과)` : `총 ${students.length}명`}
+            {searchTerm ? `${filteredCards.length}건 (검색 결과)` : `총 ${filteredCards.length}건`}
           </div>
         </div>
-        {filteredStudents.length === 0 ? (
+        {filteredCards.length === 0 ? (
         <div className="text-center py-12 border-2 border-dashed border-muted-foreground/25 rounded-lg">
           <User className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
           <div className="text-lg font-medium">등록된 학생이 없습니다</div>
@@ -672,28 +769,61 @@ export default function Students({ userRole }: StudentsProps) {
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {filteredStudents.map((student) => (
-            <Card key={student.id} className="hover-elevate" data-testid={`student-card-${student.id}`}>
+          {filteredCards.map(({ student, enrollment, cls, teacherName, subjects, isPrimary }) => {
+            const cardKey = `${student.id}-${enrollment?.id ?? "none"}`;
+            // 삭제·휴원은 학생 단위라 다른 과목 카드까지 함께 사라진다. 그 사실을 문구로 알린다.
+            const scopeNote =
+              subjects.length > 1 ? ` 수강 중인 ${subjects.join("·")} ${subjects.length}개 반이 모두 함께 처리됩니다.` : "";
+            return (
+            <Card key={cardKey} className="hover-elevate" data-testid={`student-card-${cardKey}`}>
               <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-2">
-                <div className="flex items-center gap-2">
-                  <CardTitle className="text-lg" data-testid={`student-name-${student.id}`}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <CardTitle className="text-lg" data-testid={`student-name-${cardKey}`}>
                     {student.name}
                   </CardTitle>
-                  <Badge 
+                  {/*
+                    영어가 기본 과목이라 배지를 붙이지 않는다. 국어처럼 기본이 아닌
+                    과목만 이름 옆에 배지로 드러내서 "강단우" / "강단우 [국어]"
+                    두 장이 한눈에 구분되게 한다.
+                  */}
+                  {cls && cls.subject !== DEFAULT_SUBJECT && (
+                    <Badge variant="outline" className="text-sm font-semibold" data-testid={`student-subject-${cardKey}`}>
+                      {cls.subject}
+                    </Badge>
+                  )}
+                  {!cls && (
+                    <Badge variant="outline" className="text-sm text-muted-foreground">
+                      반 미배정
+                    </Badge>
+                  )}
+                  <Badge
                     variant={student.isActive ? "default" : "secondary"}
-                    data-testid={`student-status-${student.id}`}
+                    data-testid={`student-status-${cardKey}`}
                   >
                     {student.isActive ? "활성" : "비활성"}
                   </Badge>
                 </div>
                 {(userRole === 'owner' || userRole === 'teacher') && (
                   <div className="flex items-center gap-1">
+                    {/* 반 추가 버튼 — 학생당 한 번만 노출한다 */}
+                    {isPrimary && student.isActive && (
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        title="반 추가"
+                        onClick={() => openAddClassDialog(student)}
+                        data-testid={`button-add-class-${student.id}`}
+                      >
+                        <BookOpen className="h-4 w-4 text-blue-500" />
+                      </Button>
+                    )}
+
                     {/* 수정 버튼 */}
                     <Button
                       size="icon"
                       variant="ghost"
                       onClick={() => openEditDialog(student)}
-                      data-testid={`button-edit-student-${student.id}`}
+                      data-testid={`button-edit-student-${cardKey}`}
                     >
                       <Edit className="h-4 w-4" />
                     </Button>
@@ -705,7 +835,7 @@ export default function Students({ userRole }: StudentsProps) {
                           <Button
                             size="icon"
                             variant="ghost"
-                            data-testid={`button-deactivate-student-${student.id}`}
+                            data-testid={`button-deactivate-student-${cardKey}`}
                           >
                             <UserMinus className="h-4 w-4 text-orange-500" />
                           </Button>
@@ -716,15 +846,16 @@ export default function Students({ userRole }: StudentsProps) {
                             <AlertDialogDescription>
                               정말로 {student.name} 학생을 휴강 처리하시겠습니까?
                               휴강된 학생은 재수강을 통해 다시 활성화할 수 있습니다.
+                              {scopeNote}
                             </AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
-                            <AlertDialogCancel data-testid={`button-cancel-deactivate-student-${student.id}`}>
+                            <AlertDialogCancel data-testid={`button-cancel-deactivate-student-${cardKey}`}>
                               취소
                             </AlertDialogCancel>
                             <AlertDialogAction
                               onClick={() => handleDeactivateStudent(student.id)}
-                              data-testid={`button-confirm-deactivate-student-${student.id}`}
+                              data-testid={`button-confirm-deactivate-student-${cardKey}`}
                             >
                               휴강 처리
                             </AlertDialogAction>
@@ -740,7 +871,7 @@ export default function Students({ userRole }: StudentsProps) {
                           <Button
                             size="icon"
                             variant="ghost"
-                            data-testid={`button-activate-student-${student.id}`}
+                            data-testid={`button-activate-student-${cardKey}`}
                           >
                             <UserPlus className="h-4 w-4 text-green-500" />
                           </Button>
@@ -754,12 +885,12 @@ export default function Students({ userRole }: StudentsProps) {
                             </AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
-                            <AlertDialogCancel data-testid={`button-cancel-activate-student-${student.id}`}>
+                            <AlertDialogCancel data-testid={`button-cancel-activate-student-${cardKey}`}>
                               취소
                             </AlertDialogCancel>
                             <AlertDialogAction
                               onClick={() => handleActivateStudent(student.id)}
-                              data-testid={`button-confirm-activate-student-${student.id}`}
+                              data-testid={`button-confirm-activate-student-${cardKey}`}
                             >
                               재수강
                             </AlertDialogAction>
@@ -774,7 +905,7 @@ export default function Students({ userRole }: StudentsProps) {
                         <Button
                           size="icon"
                           variant="ghost"
-                          data-testid={`button-delete-student-${student.id}`}
+                          data-testid={`button-delete-student-${cardKey}`}
                         >
                           <Trash2 className="h-4 w-4 text-destructive" />
                         </Button>
@@ -785,15 +916,16 @@ export default function Students({ userRole }: StudentsProps) {
                           <AlertDialogDescription>
                             정말로 {student.name} 학생을 퇴원 처리하시겠습니까?
                             이 작업은 되돌릴 수 없으며, 모든 데이터가 영구적으로 삭제됩니다.
+                            {scopeNote}
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
-                          <AlertDialogCancel data-testid={`button-cancel-delete-student-${student.id}`}>
+                          <AlertDialogCancel data-testid={`button-cancel-delete-student-${cardKey}`}>
                             취소
                           </AlertDialogCancel>
                           <AlertDialogAction
                             onClick={() => handleDeleteStudent(student.id)}
-                            data-testid={`button-confirm-delete-student-${student.id}`}
+                            data-testid={`button-confirm-delete-student-${cardKey}`}
                             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                           >
                             퇴원
@@ -805,44 +937,119 @@ export default function Students({ userRole }: StudentsProps) {
                 )}
               </CardHeader>
               <CardContent className="space-y-2">
+                {/* 과목만으로는 어느 반인지 모른다. 같은 과목이 여러 반으로 갈리기 때문. */}
+                {cls && (
+                  <div className="flex items-start gap-2 text-sm">
+                    <BookOpen className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+                    <div>
+                      <div className="font-medium" data-testid={`student-class-${cardKey}`}>{cls.name}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {cls.schedule}
+                        {teacherName ? ` · ${teacherName} 선생님` : ""}
+                      </div>
+                    </div>
+                  </div>
+                )}
                 {student.school && (
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <School className="h-4 w-4" />
-                    <span data-testid={`student-school-${student.id}`}>{student.school}</span>
+                    <span data-testid={`student-school-${cardKey}`}>{student.school}</span>
                   </div>
                 )}
                 {student.grade && (
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Users className="h-4 w-4" />
-                    <span data-testid={`student-grade-${student.id}`}>{student.grade}</span>
+                    <span data-testid={`student-grade-${cardKey}`}>{student.grade}</span>
                   </div>
                 )}
                 {student.parentPhone && (
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Phone className="h-4 w-4" />
-                    <span data-testid={`student-parent-phone-${student.id}`}>{student.parentPhone}</span>
+                    <span data-testid={`student-parent-phone-${cardKey}`}>{student.parentPhone}</span>
                   </div>
                 )}
                 {student.siblingGroup && (
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Users className="h-4 w-4" />
-                    <span data-testid={`student-sibling-group-${student.id}`}>형제그룹: {student.siblingGroup}</span>
+                    <span data-testid={`student-sibling-group-${cardKey}`}>형제그룹: {student.siblingGroup}</span>
                   </div>
                 )}
                 {student.notes && (
                   <div className="text-xs text-muted-foreground">
-                    <span data-testid={`student-notes-${student.id}`}>{student.notes}</span>
+                    <span data-testid={`student-notes-${cardKey}`}>{student.notes}</span>
                   </div>
                 )}
                 <div className="text-xs text-muted-foreground">
-                  등록일: {new Date(student.createdAt).toLocaleDateString()}
+                  {enrollment
+                    ? `수강 시작: ${new Date(enrollment.startDate).toLocaleDateString()}`
+                    : `등록일: ${new Date(student.createdAt).toLocaleDateString()}`}
                 </div>
               </CardContent>
             </Card>
-          ))}
+            );
+          })}
         </div>
       )}
       </div>
+
+      {/* 반 추가 다이얼로그 — 기존 수강을 건드리지 않고 수강 건만 하나 더 만든다 */}
+      <Dialog open={!!addClassTarget} onOpenChange={(open) => !open && setAddClassTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>반 추가</DialogTitle>
+            <DialogDescription>
+              {addClassTarget?.name} 학생에게 반을 하나 더 추가합니다. 기존 반은 그대로 유지됩니다.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>반</Label>
+              <Select value={addClassId} onValueChange={setAddClassId}>
+                <SelectTrigger data-testid="select-add-class">
+                  <SelectValue placeholder="반을 선택하세요" />
+                </SelectTrigger>
+                <SelectContent>
+                  {classes
+                    .filter((c) => !alreadyEnrolledClassIds.has(c.id))
+                    .map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        [{c.subject}] {c.name} · {c.schedule}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>수강 시작일</Label>
+              <Input
+                type="date"
+                value={addClassStartDate}
+                onChange={(e) => setAddClassStartDate(e.target.value)}
+                data-testid="input-add-class-start-date"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddClassTarget(null)}>
+              취소
+            </Button>
+            <Button
+              disabled={!addClassId || !addClassStartDate || addEnrollmentMutation.isPending}
+              onClick={() =>
+                addClassTarget &&
+                addEnrollmentMutation.mutate({
+                  studentId: addClassTarget.id,
+                  classId: addClassId,
+                  startDate: addClassStartDate,
+                })
+              }
+              data-testid="button-confirm-add-class"
+            >
+              추가
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -18,6 +18,7 @@ import DashboardCard from "./DashboardCard";
 import StudentCard from "./StudentCard";
 import OverdueAlert from "./OverdueAlert";
 import ClassLogForm from "./ClassLogForm";
+import QuickInput from "./QuickInput";
 import { CreditCard, Users, AlertTriangle, BookOpen } from "lucide-react";
 
 interface DashboardProps {
@@ -312,11 +313,16 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
           const dueDate = new Date(checkYear, checkMonth - 1, dueDay);
           if (currentDate > dueDate) {
             // 해당 월 납부 기록이 있는지 확인
-            const hasPayment = paymentsArray.some((payment: any) => 
-              payment.enrollmentId === enrollment.id && 
-              payment.paymentMonth === paymentMonth
-            );
-            
+            // 환불(음수)이 있으므로 기록 존재 여부가 아니라 순액으로 판정한다.
+            const netPaid = paymentsArray
+              .filter((payment: any) =>
+                payment.enrollmentId === enrollment.id &&
+                payment.paymentMonth === paymentMonth
+              )
+              .reduce((sum: number, payment: any) => sum + (payment.amount || 0), 0);
+            const hasPayment = netPaid > 0;
+
+
             if (!hasPayment) {
               hasOverdue = true;
               overdueStudents++;
@@ -429,6 +435,9 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
           )}
         </div>
       )}
+
+      {/* 자연어 빠른 입력 — 승인된 학원에서만 노출 */}
+      {isApproved && userRole !== 'superadmin' && <QuickInput />}
 
       {/* Overdue Alert */}
       <OverdueAlert overdueCount={overdueCount} onViewOverdues={handleViewOverdues} />

@@ -84,11 +84,16 @@ export default function Overdues({ userRole }: OverduesProps) {
           const dueDate = new Date(checkYear, checkMonth - 1, dueDay);
           if (currentDate > dueDate) {
             // Look for payment for this month
-            const hasPayment = payments.some(payment => 
-              payment.enrollmentId === enrollment.id && 
-              payment.paymentMonth === paymentMonth
-            );
-            
+            // 환불(음수)이 있으므로 "기록 존재" 대신 순액을 합산해 판정한다.
+            // 수납 후 전액 환불된 달은 다시 미납으로 잡혀야 한다.
+            const netPaid = payments
+              .filter(payment =>
+                payment.enrollmentId === enrollment.id &&
+                payment.paymentMonth === paymentMonth
+              )
+              .reduce((sum, payment) => sum + (payment.amount || 0), 0);
+            const hasPayment = netPaid > 0;
+
             if (!hasPayment) {
               overdueMonths.push(paymentMonth);
               totalOverdueAmount += tuitionAmount;

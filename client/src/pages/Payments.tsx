@@ -150,13 +150,29 @@ export default function Payments({ userRole }: PaymentsProps) {
           const allMonths = getMonthsBetween(enrollment.startDate, enrollment.endDate, now);
 
           const enrollmentPayments = payments.filter(p => p.enrollmentId === enrollment.id);
-          const paidMonthSet = new Set(enrollmentPayments.map(p => p.paymentMonth));
+
+          // 환불(음수)이 들어오면서 "기록이 있으면 납부 완료"라는 기존 판정은 더 이상 안전하지 않다.
+          // 같은 달에 350,000 수납 + 350,000 환불이 있으면 순액은 0원이므로 미납으로 봐야 한다.
+          // 따라서 달마다 금액을 합산해 순액이 0보다 클 때만 납부 완료로 처리한다.
+          const netByMonth = new Map<string, number>();
+          for (const p of enrollmentPayments) {
+            if (!p.paymentMonth) continue;
+            netByMonth.set(p.paymentMonth, (netByMonth.get(p.paymentMonth) || 0) + (p.amount || 0));
+          }
+          const paidMonthSet = new Set(
+            Array.from(netByMonth.entries())
+              .filter(([, net]) => net > 0)
+              .map(([month]) => month)
+          );
 
           const paidMonths = allMonths.filter(m => paidMonthSet.has(m));
           const unpaidMonths = allMonths.filter(m => !paidMonthSet.has(m));
 
           const currentMonthPaid = paidMonthSet.has(currentMonthStr);
-          const latestPayment = enrollmentPayments.find(p => p.paymentMonth === currentMonthStr);
+          // 표시용 영수증 정보는 실제 수납 기록(양수)을 우선한다.
+          const latestPayment =
+            enrollmentPayments.find(p => p.paymentMonth === currentMonthStr && (p.amount || 0) > 0) ??
+            enrollmentPayments.find(p => p.paymentMonth === currentMonthStr);
 
           return {
             id: student?.id || '',

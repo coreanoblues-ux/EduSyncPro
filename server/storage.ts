@@ -17,6 +17,8 @@ import {
   type InsertLessonLog,
   type Waiter,
   type InsertWaiter,
+  type Consultation,
+  type InsertConsultation,
   users,
   tenants,
   students,
@@ -25,9 +27,10 @@ import {
   enrollments,
   payments,
   lessonLogs,
-  waiters
+  waiters,
+  consultations
 } from "@shared/schema";
-import { eq, and, sql, desc, isNull } from "drizzle-orm";
+import { eq, and, sql, desc, isNull, gt } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { db } from "./db";
 
@@ -95,6 +98,20 @@ export interface IStorage {
   getWaiter(id: string): Promise<Waiter | undefined>;
   createWaiter(waiter: InsertWaiter): Promise<Waiter>;
   deleteWaiter(id: string): Promise<void>;
+
+  // Consultation methods
+  getConsultationsByTenant(tenantId: string): Promise<Consultation[]>;
+  getConsultation(id: string): Promise<Consultation | undefined>;
+  createConsultation(consultation: InsertConsultation): Promise<Consultation>;
+  updateConsultation(id: string, consultation: Partial<InsertConsultation>): Promise<Consultation>;
+  deleteConsultation(id: string): Promise<void>;
+
+  // 자연어 입력 지원
+  findStudentsByName(tenantId: string, name: string): Promise<Student[]>;
+  getActiveEnrollmentsWithClass(
+    tenantId: string,
+    studentId: string
+  ): Promise<Array<Enrollment & { className: string; classSubject: string; defaultTuition: number }>>;
 }
 
 export class DbStorage implements IStorage {
@@ -217,7 +234,9 @@ export class DbStorage implements IStorage {
       .leftJoin(classes, eq(classes.id, enrollments.classId))
       .leftJoin(payments, and(
         eq(payments.enrollmentId, enrollments.id),
-        eq(payments.paymentMonth, currentMonth)
+        eq(payments.paymentMonth, currentMonth),
+        // 환불(음수)·지출은 납부 실적이 아니므로 제외한다
+        gt(payments.amount, 0)
       ))
       .where(and(
         eq(students.tenantId, tenantId),
@@ -517,6 +536,90 @@ export class DbStorage implements IStorage {
 
   async deleteWaiter(id: string): Promise<void> {
     await db.delete(waiters).where(eq(waiters.id, id));
+  }
+
+  // Consultation methods
+  async getConsultationsByTenant(tenantId: string): Promise<Consultation[]> {
+    return await db
+      .select()
+      .from(consultations)
+      .where(eq(consultations.tenantId, tenantId))
+      .orderBy(desc(consultations.createdAt));
+  }
+
+  async getConsultation(id: string): Promise<Consultation | undefined> {
+    const result = await db.select().from(consultations).where(eq(consultations.id, id)).limit(1);
+    return result[0];
+  }
+
+  async createConsultation(insert: InsertConsultation): Promise<Consultation> {
+    const result = await db.insert(consultations).values({
+      ...insert,
+      id: randomUUID(),
+      createdAt: new Date(),
+      updatedAt: new Date()
+    }).returning();
+    return result[0];
+  }
+
+  async updateConsultation(id: string, patch: Partial<InsertConsultation>): Promise<Consultation> {
+    const result = await db.update(consultations)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(consultations.id, id))
+      .returning();
+    return result[0];
+  }
+
+  async deleteConsultation(id: string): Promise<void> {
+    await db.delete(consultations).where(eq(consultations.id, id));
+  }
+
+  // 자연어 입력 지원 — 이름으로 학생 찾기
+  /**
+   * 이름이 정확히 일치하는 활성 학생을 찾는다.
+   * 동명이인이 있을 수 있으므로 배열을 반환하고, 판단은 호출자(=원장 확인 UI)에 맡긴다.
+   */
+  async findStudentsByName(tenantId: string, name: string): Promise<Student[]> {
+    return await db
+      .select()
+      .from(students)
+      .where(and(
+        eq(students.tenantId, tenantId),
+        eq(students.name, name),
+        eq(students.isActive, true)
+      ));
+  }
+
+  /**
+   * 학생의 활성 수강 등록 목록을 반 정보와 함께 반환한다.
+   * 자연어 수납 입력에서 enrollmentId를 확정하기 위해 쓰인다.
+   * 학생이 두 반을 들으면 결과가 2건이 되고, 그때는 원장이 직접 골라야 한다.
+   */
+  async getActiveEnrollmentsWithClass(
+    tenantId: string,
+    studentId: string
+  ): Promise<Array<Enrollment & { className: string; classSubject: string; defaultTuition: number }>> {
+    const rows = await db
+      .select({
+        enrollment: enrollments,
+        className: classes.name,
+        classSubject: classes.subject,
+        defaultTuition: classes.defaultTuition,
+      })
+      .from(enrollments)
+      .innerJoin(classes, eq(enrollments.classId, classes.id))
+      .where(and(
+        eq(enrollments.tenantId, tenantId),
+        eq(enrollments.studentId, studentId),
+        eq(enrollments.isActive, true)
+      ));
+
+    return rows.map((r) => ({
+      ...r.enrollment,
+      className: r.className,
+      classSubject: r.classSubject,
+      defaultTuition: r.defaultTuition,
+    }));
   }
 }
 

@@ -8,6 +8,13 @@ export const userRoleEnum = pgEnum("user_role", ["owner", "teacher", "superadmin
 export const tenantStatusEnum = pgEnum("tenant_status", ["pending", "active", "expired", "suspended"]);
 export const paymentStatusEnum = pgEnum("payment_status", ["paid", "overdue", "pending"]);
 
+// 결제 수단 / 거래 종류 (자연어 입력 기능에서 사용)
+export const paymentMethodEnum = pgEnum("payment_method", ["계좌이체", "카드", "현금"]);
+export const paymentTypeEnum = pgEnum("payment_type", ["원비", "환불", "지출", "기타"]);
+
+// 상담 진행 상태
+export const consultationStatusEnum = pgEnum("consultation_status", ["상담문의", "대기등록", "최종등록", "보류"]);
+
 // Tenant table (학원)
 export const tenants = pgTable("tenants", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -97,13 +104,41 @@ export const enrollments = pgTable("enrollments", {
 export const payments = pgTable("payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
-  enrollmentId: varchar("enrollment_id").references(() => enrollments.id, { onDelete: "cascade" }).notNull(),
+  // 원비/환불은 수강 등록에 연결되지만, 학원 운영 지출은 연결할 등록이 없으므로 nullable.
+  enrollmentId: varchar("enrollment_id").references(() => enrollments.id, { onDelete: "cascade" }),
+  // ⚠️ 부호 규칙: 원비는 양수, 환불·지출은 음수로 저장한다.
+  // Payments 화면이 amount를 단순 SUM 하므로, 이렇게 해야 합계가 자동으로 순액이 된다.
   amount: integer("amount").notNull(),
+  type: paymentTypeEnum("type").default("원비").notNull(),
+  method: paymentMethodEnum("method"), // 계좌이체/카드/현금 (모르면 null)
   paymentMonth: text("payment_month").notNull(), // YYYY-MM 형식
   paidDate: timestamp("paid_date").notNull(),
   createdBy: varchar("created_by").references(() => users.id).notNull(),
   notes: text("notes"),
+  // 자연어 입력으로 생성된 건지 표시 (원본 문장 보관 → 나중에 오분류 추적용)
+  sourceText: text("source_text"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// Consultation table (상담/문의)
+export const consultations = pgTable("consultations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  phone: text("phone").notNull(),
+  guardianName: text("guardian_name"), // 보호자명
+  studentName: text("student_name"),
+  studentGrade: text("student_grade"), // "중1", "고2" 등
+  status: consultationStatusEnum("status").default("상담문의").notNull(),
+  subject: text("subject"), // 문의 과목
+  followUp: text("follow_up"), // 후속 조치 (예: "다음주 화요일 재통화")
+  memo: text("memo"),
+  // 최종등록으로 전환되면 아래 두 필드가 채워진다
+  classId: varchar("class_id").references(() => classes.id, { onDelete: "set null" }),
+  studentId: varchar("student_id").references(() => students.id, { onDelete: "set null" }),
+  sourceText: text("source_text"),
+  createdBy: varchar("created_by").references(() => users.id).notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
 // LessonLog table (반별 일지)
@@ -229,6 +264,25 @@ export const lessonLogsRelations = relations(lessonLogs, ({ one }) => ({
   }),
 }));
 
+export const consultationsRelations = relations(consultations, ({ one }) => ({
+  tenant: one(tenants, {
+    fields: [consultations.tenantId],
+    references: [tenants.id],
+  }),
+  class: one(classes, {
+    fields: [consultations.classId],
+    references: [classes.id],
+  }),
+  student: one(students, {
+    fields: [consultations.studentId],
+    references: [students.id],
+  }),
+  createdBy: one(users, {
+    fields: [consultations.createdBy],
+    references: [users.id],
+  }),
+}));
+
 export const waitersRelations = relations(waiters, ({ one }) => ({
   tenant: one(tenants, {
     fields: [waiters.tenantId],
@@ -252,6 +306,25 @@ export const insertLessonLogSchema = createInsertSchema(lessonLogs).omit({ id: t
   date: z.coerce.date(), // 문자열을 자동으로 Date 객체로 변환
 });
 export const insertWaiterSchema = createInsertSchema(waiters).omit({ id: true, createdAt: true });
+export const insertConsultationSchema = createInsertSchema(consultations)
+  .omit({ id: true, createdAt: true, updatedAt: true });
+
+// POST /api/payments 본문 검증용.
+// enrollmentId가 nullable이 되었으므로, 원비/환불일 때만 필수라는 규칙을 코드로 강제한다.
+// (insertPaymentSchema 자체는 .omit()을 쓰는 기존 코드가 있어 ZodObject로 남겨둔다)
+export const createPaymentBodySchema = insertPaymentSchema
+  .omit({ tenantId: true, createdBy: true })
+  .refine(
+    (d) => d.type === "지출" || d.type === "기타" || !!d.enrollmentId,
+    { message: "원비/환불은 수강 등록(enrollmentId)이 필요합니다.", path: ["enrollmentId"] }
+  )
+  .refine(
+    (d) => (d.type === "환불" || d.type === "지출" ? d.amount < 0 : d.amount > 0),
+    { message: "환불·지출은 음수, 원비는 양수로 입력해야 합니다.", path: ["amount"] }
+  );
+
+export const createConsultationBodySchema = insertConsultationSchema
+  .omit({ tenantId: true, createdBy: true });
 
 // Update schemas
 export const updateEnrollmentSchema = z.object({
@@ -274,6 +347,7 @@ export type Enrollment = typeof enrollments.$inferSelect;
 export type Payment = typeof payments.$inferSelect;
 export type LessonLog = typeof lessonLogs.$inferSelect;
 export type Waiter = typeof waiters.$inferSelect;
+export type Consultation = typeof consultations.$inferSelect;
 
 export type InsertTenant = z.infer<typeof insertTenantSchema>;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -284,3 +358,4 @@ export type InsertEnrollment = z.infer<typeof insertEnrollmentSchema>;
 export type InsertPayment = z.infer<typeof insertPaymentSchema>;
 export type InsertLessonLog = z.infer<typeof insertLessonLogSchema>;
 export type InsertWaiter = z.infer<typeof insertWaiterSchema>;
+export type InsertConsultation = z.infer<typeof insertConsultationSchema>;

@@ -20,8 +20,11 @@ import {
   insertPaymentSchema,
   insertLessonLogSchema,
   insertWaiterSchema,
-  updateEnrollmentSchema
+  updateEnrollmentSchema,
+  createPaymentBodySchema,
+  createConsultationBodySchema
 } from "@shared/schema";
+import { parseInput, NlpConfigError } from "./lib/nlpParser";
 import { z } from "zod";
 import { db } from "./db";
 import { users } from "@shared/schema";
@@ -1001,7 +1004,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       next();
     },
-    validateBody(insertPaymentSchema.omit({ tenantId: true, createdBy: true })),
+    validateBody(createPaymentBodySchema),
     async (req: Request, res: Response) => {
       try {
         const paymentData = {
@@ -1134,6 +1137,121 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } catch (error) {
         console.error('Delete waiter error:', error);
         res.status(500).json({ error: '대기자 삭제 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
+  // ─── Consultation Routes (상담/문의) ────────────────────────────────────
+  app.get('/api/consultations', authGuard, tenantGuard, async (req, res) => {
+    try {
+      const rows = await storage.getConsultationsByTenant(req.user!.tenantId!);
+      res.json(rows);
+    } catch (error) {
+      console.error('Get consultations error:', error);
+      res.status(500).json({ error: '상담 목록 조회 중 오류가 발생했습니다.' });
+    }
+  });
+
+  app.post('/api/consultations',
+    authGuard,
+    tenantGuard,
+    roleGuard('owner', 'teacher'),
+    validateBody(createConsultationBodySchema),
+    async (req: Request, res: Response) => {
+      try {
+        const created = await storage.createConsultation({
+          ...req.body,
+          tenantId: req.user!.tenantId!,
+          createdBy: req.user!.id,
+        });
+        res.status(201).json(created);
+      } catch (error) {
+        console.error('Create consultation error:', error);
+        res.status(500).json({ error: '상담 등록 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
+  app.patch('/api/consultations/:id',
+    authGuard,
+    tenantGuard,
+    roleGuard('owner', 'teacher'),
+    validateParams(idParamSchema),
+    validateBody(createConsultationBodySchema.partial()),
+    async (req: Request, res: Response) => {
+      try {
+        const existing = await storage.getConsultation(req.params.id);
+        if (!existing) return res.status(404).json({ error: '상담 기록을 찾을 수 없습니다.' });
+        if (existing.tenantId !== req.user!.tenantId) {
+          return res.status(403).json({ error: '접근 권한이 없습니다.' });
+        }
+        const updated = await storage.updateConsultation(req.params.id, req.body);
+        res.json(updated);
+      } catch (error) {
+        console.error('Update consultation error:', error);
+        res.status(500).json({ error: '상담 수정 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
+  app.delete('/api/consultations/:id',
+    authGuard,
+    tenantGuard,
+    roleGuard('owner'),
+    validateParams(idParamSchema),
+    async (req: Request, res: Response) => {
+      try {
+        const existing = await storage.getConsultation(req.params.id);
+        if (!existing) return res.status(404).json({ error: '상담 기록을 찾을 수 없습니다.' });
+        if (existing.tenantId !== req.user!.tenantId) {
+          return res.status(403).json({ error: '접근 권한이 없습니다.' });
+        }
+        await storage.deleteConsultation(req.params.id);
+        res.json({ message: '상담 기록이 삭제되었습니다.' });
+      } catch (error) {
+        console.error('Delete consultation error:', error);
+        res.status(500).json({ error: '상담 삭제 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
+  // ─── 자연어 입력 파싱 ───────────────────────────────────────────────────
+  // ⚠️ 이 엔드포인트는 절대 DB에 저장하지 않는다. 초안만 돌려주고,
+  //    실제 저장은 원장이 확인한 뒤 POST /api/payments 또는 /api/consultations로 이루어진다.
+  app.post('/api/nlp/parse',
+    authGuard,
+    tenantGuard,
+    roleGuard('owner', 'teacher'),
+    validateBody(z.object({
+      text: z.string().min(1, '입력 내용이 필요합니다.').max(500, '500자 이내로 입력해주세요.'),
+    })),
+    async (req: Request, res: Response) => {
+      try {
+        const result = await parseInput(req.body.text);
+
+        // 수납 초안이면 학생 이름을 실제 수강 등록으로 해석해 후보를 붙여준다.
+        let studentMatches: any[] = [];
+        if (result.draft.category === 'accounting' && result.draft.studentName) {
+          const found = await storage.findStudentsByName(
+            req.user!.tenantId!,
+            result.draft.studentName
+          );
+          studentMatches = await Promise.all(
+            found.map(async (s) => ({
+              student: { id: s.id, name: s.name, grade: s.grade, school: s.school },
+              enrollments: await storage.getActiveEnrollmentsWithClass(req.user!.tenantId!, s.id),
+            }))
+          );
+        }
+
+        res.json({ ...result, studentMatches });
+      } catch (error: any) {
+        if (error instanceof NlpConfigError) {
+          console.error('NLP config error:', error.message);
+          return res.status(503).json({ error: error.message });
+        }
+        console.error('NLP parse error:', error?.message || error);
+        res.status(502).json({ error: '문장 분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
       }
     }
   );

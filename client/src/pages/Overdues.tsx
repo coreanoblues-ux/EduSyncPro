@@ -8,15 +8,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { Payment, Enrollment, Student, Class } from "@shared/schema";
-
-interface OverdueInfo {
-  enrollment: Enrollment;
-  student: Student;
-  class: Class;
-  overdueMonths: string[];
-  totalOverdueAmount: number;
-  latestOverdueMonth: string;
-}
+import { computeOverdues, type OverdueInfo } from "@/lib/overdues";
 
 interface OverduesProps {
   userRole: 'owner' | 'teacher' | 'superadmin';
@@ -43,81 +35,11 @@ export default function Overdues({ userRole }: OverduesProps) {
     queryKey: ['/api/classes'],
   });
 
-  // Calculate overdue information
-  const overdueList = useMemo((): OverdueInfo[] => {
-    if (!enrollments.length || !students.length || !classes.length) {
-      return [];
-    }
-
-    const currentDate = new Date();
-    const currentYear = currentDate.getFullYear();
-    const currentMonth = currentDate.getMonth() + 1; // getMonth() returns 0-11
-    
-    const overdues: OverdueInfo[] = [];
-
-    // Check each active enrollment
-    enrollments
-      .filter(enrollment => enrollment.isActive)
-      .forEach(enrollment => {
-        const student = students.find(s => s.id === enrollment.studentId);
-        const classItem = classes.find(c => c.id === enrollment.classId);
-        
-        if (!student || !classItem) return;
-
-        const startDate = new Date(enrollment.startDate);
-        const endDate = enrollment.endDate ? new Date(enrollment.endDate) : currentDate;
-        const dueDay = enrollment.dueDay || 8;
-        
-        const overdueMonths: string[] = [];
-        let totalOverdueAmount = 0;
-        const tuitionAmount = enrollment.tuition || classItem.defaultTuition || 0;
-
-        // Check each month from start date to current/end date
-        let checkDate = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
-        
-        while (checkDate <= endDate && checkDate <= currentDate) {
-          const checkYear = checkDate.getFullYear();
-          const checkMonth = checkDate.getMonth() + 1;
-          const paymentMonth = `${checkYear}-${checkMonth.toString().padStart(2, '0')}`;
-          
-          // Check if due date has passed
-          const dueDate = new Date(checkYear, checkMonth - 1, dueDay);
-          if (currentDate > dueDate) {
-            // Look for payment for this month
-            // 환불(음수)이 있으므로 "기록 존재" 대신 순액을 합산해 판정한다.
-            // 수납 후 전액 환불된 달은 다시 미납으로 잡혀야 한다.
-            const netPaid = payments
-              .filter(payment =>
-                payment.enrollmentId === enrollment.id &&
-                payment.paymentMonth === paymentMonth
-              )
-              .reduce((sum, payment) => sum + (payment.amount || 0), 0);
-            const hasPayment = netPaid > 0;
-
-            if (!hasPayment) {
-              overdueMonths.push(paymentMonth);
-              totalOverdueAmount += tuitionAmount;
-            }
-          }
-          
-          // Move to next month
-          checkDate.setMonth(checkDate.getMonth() + 1);
-        }
-
-        if (overdueMonths.length > 0) {
-          overdues.push({
-            enrollment,
-            student,
-            class: classItem,
-            overdueMonths,
-            totalOverdueAmount,
-            latestOverdueMonth: overdueMonths[overdueMonths.length - 1],
-          });
-        }
-      });
-
-    return overdues;
-  }, [enrollments, payments, students, classes]);
+  // 미납 판정 규칙은 대시보드와 공유한다 (client/src/lib/overdues.ts)
+  const overdueList = useMemo(
+    () => computeOverdues(enrollments, payments, students, classes),
+    [enrollments, payments, students, classes]
+  );
 
   // Filter overdue list
   const filteredOverdues = useMemo(() => {

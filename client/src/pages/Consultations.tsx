@@ -1,7 +1,7 @@
 /**
  * 상담/문의 목록
  *
- * 빠른 입력으로 저장한 상담 기록이 여기 쌓인다.
+ * AI 입력으로 저장한 상담 기록이 여기 쌓인다.
  * 상담문의 → 대기등록 → 최종등록으로 이어지는 흐름을 이 화면에서 끝낼 수 있도록,
  * 목록에서 바로 학생·수강 등록을 만드는 "학생으로 등록"을 함께 둔다.
  */
@@ -37,6 +37,32 @@ type Status = "상담문의" | "대기등록" | "최종등록" | "보류";
 
 const STATUSES: Status[] = ["상담문의", "대기등록", "최종등록", "보류"];
 
+/**
+ * 목록에 쌓이는 순서. 원장이 처리해야 할 급한 것부터 위로 올린다.
+ * 최종등록은 이미 끝난 건이라 맨 아래에 두고, 보류는 그 뒤에 붙인다.
+ */
+const GROUP_ORDER: Status[] = ["상담문의", "대기등록", "최종등록", "보류"];
+
+const GROUP_HINT: Record<Status, string> = {
+  상담문의: "연락은 왔지만 아직 아무것도 정해지지 않은 건",
+  대기등록: "자리가 나면 등록하기로 한 건",
+  최종등록: "등록이 끝난 건 — 7일이 지나면 목록에서 사라집니다",
+  보류: "진행이 멈춘 건",
+};
+
+/**
+ * 최종등록이 목록에 남아 있는 기간(일).
+ *
+ * 등록이 끝나도 며칠은 보여야 원장이 "이번 주에 누가 들어왔지"를 확인할 수 있다.
+ * 그 뒤로는 학생 관리에서 보면 되므로 상담 목록에서 치운다. 데이터는 그대로 있고
+ * 화면에서만 감춘다.
+ */
+const FINAL_VISIBLE_DAYS = 7;
+
+function daysSince(value: string | Date, now: number): number {
+  return (now - new Date(value).getTime()) / (1000 * 60 * 60 * 24);
+}
+
 const STATUS_STYLE: Record<Status, string> = {
   상담문의: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
   대기등록: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
@@ -61,6 +87,7 @@ interface ConsultationsProps {
 export default function Consultations({ userRole }: ConsultationsProps) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [showStale, setShowStale] = useState(false);
   const [enrollTarget, setEnrollTarget] = useState<Consultation | null>(null);
   const [form, setForm] = useState({ name: "", grade: "", classId: "", startDate: today(), dueDay: "8" });
 
@@ -78,10 +105,21 @@ export default function Consultations({ userRole }: ConsultationsProps) {
     return acc;
   }, [consultations]);
 
-  const visible = useMemo(() => {
+  // 7일이 지난 최종등록. 감춰 두되 몇 건인지는 알려주고 펼쳐 볼 수 있게 한다.
+  const staleFinal = useMemo(() => {
+    const now = Date.now();
+    return consultations.filter(
+      (c) => c.status === "최종등록" && daysSince(c.updatedAt, now) > FINAL_VISIBLE_DAYS
+    );
+  }, [consultations]);
+
+  const groups = useMemo(() => {
     const term = search.trim().toLowerCase();
-    return consultations
+    const staleIds = new Set(staleFinal.map((c) => c.id));
+
+    const matched = consultations
       .filter((c) => statusFilter === "all" || c.status === statusFilter)
+      .filter((c) => showStale || !staleIds.has(c.id))
       .filter((c) => {
         if (!term) return true;
         return [c.studentName, c.guardianName, c.phone, c.subject, c.memo]
@@ -89,7 +127,14 @@ export default function Consultations({ userRole }: ConsultationsProps) {
           .some((v) => String(v).toLowerCase().includes(term));
       })
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [consultations, search, statusFilter]);
+
+    return GROUP_ORDER.map((status) => ({
+      status,
+      items: matched.filter((c) => c.status === status),
+    })).filter((g) => g.items.length > 0);
+  }, [consultations, search, statusFilter, showStale, staleFinal]);
+
+  const visibleCount = groups.reduce((sum, g) => sum + g.items.length, 0);
 
   const statusMutation = useMutation({
     mutationFn: async ({ id, status }: { id: string; status: Status }) => {
@@ -184,7 +229,7 @@ export default function Consultations({ userRole }: ConsultationsProps) {
       <div>
         <h1 className="text-2xl font-bold">상담 관리</h1>
         <p className="text-muted-foreground">
-          빠른 입력으로 저장한 상담·문의 {consultations.length}건
+          AI 입력으로 저장한 상담·문의 {consultations.length}건
         </p>
       </div>
 
@@ -223,7 +268,24 @@ export default function Consultations({ userRole }: ConsultationsProps) {
         </Select>
       </div>
 
-      {visible.length === 0 ? (
+      {staleFinal.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm">
+          <span className="text-muted-foreground">
+            등록된 지 {FINAL_VISIBLE_DAYS}일이 지난 최종등록 {staleFinal.length}건은 목록에서
+            숨겼습니다. 학생 관리에는 그대로 있습니다.
+          </span>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setShowStale((v) => !v)}
+            data-testid="button-toggle-stale-final"
+          >
+            {showStale ? "다시 숨기기" : "숨긴 건 보기"}
+          </Button>
+        </div>
+      )}
+
+      {visibleCount === 0 ? (
         <div className="text-center py-12 border-2 border-dashed border-muted-foreground/25 rounded-lg">
           <MessageSquare className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
           <div className="text-lg font-medium">
@@ -231,13 +293,22 @@ export default function Consultations({ userRole }: ConsultationsProps) {
           </div>
           <p className="text-muted-foreground mt-2">
             {consultations.length === 0
-              ? "대시보드의 빠른 입력에 «010-1234-5678 김민준 중2 영어 문의»처럼 적어보세요."
+              ? "대시보드의 AI 입력에 «010-1234-5678 김민준 중2 영어 문의»처럼 적어보세요."
               : "검색어나 상태 필터를 바꿔보세요."}
           </p>
         </div>
       ) : (
-        <div className="space-y-4">
-          {visible.map((c) => (
+        <div className="space-y-8">
+          {groups.map((group) => (
+          <section key={group.status} className="space-y-4" data-testid={`consultation-group-${group.status}`}>
+            <div className="flex items-baseline gap-2 border-b pb-2">
+              <h2 className="text-lg font-semibold">{group.status}</h2>
+              <span className="text-sm text-muted-foreground">{group.items.length}건</span>
+              <span className="hidden text-xs text-muted-foreground sm:inline">
+                · {GROUP_HINT[group.status]}
+              </span>
+            </div>
+          {group.items.map((c) => (
             <Card key={c.id} className="hover-elevate" data-testid={`consultation-card-${c.id}`}>
               <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-3">
                 <div className="space-y-1">
@@ -311,6 +382,8 @@ export default function Consultations({ userRole }: ConsultationsProps) {
                 )}
               </CardContent>
             </Card>
+          ))}
+          </section>
           ))}
         </div>
       )}

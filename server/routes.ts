@@ -25,6 +25,7 @@ import {
   createConsultationBodySchema
 } from "@shared/schema";
 import { parseInput, NlpConfigError } from "./lib/nlpParser";
+import { matchClassName } from "./lib/nlpNormalize";
 import { z } from "zod";
 import { db } from "./db";
 import { users } from "@shared/schema";
@@ -1244,7 +1245,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
           );
         }
 
-        res.json({ ...result, studentMatches });
+        // "김민준 초등A반 등록"처럼 반 이름을 부르면 그 반을 미리 골라준다.
+        // 반 이름은 학원마다 다르므로 AI에게 맡기지 않고 실제 목록과 대조한다.
+        let classMatch: { id: string; name: string } | null = null;
+        if (result.draft.category === 'contact') {
+          const classes = await storage.getClassesByTenant(req.user!.tenantId!);
+          const hit = matchClassName(req.body.text, classes);
+          if (hit) classMatch = { id: hit.id, name: hit.name };
+        }
+
+        res.json({ ...result, studentMatches, classMatch });
       } catch (error: any) {
         if (error instanceof NlpConfigError) {
           console.error('NLP config error:', error.message);

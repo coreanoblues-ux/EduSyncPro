@@ -191,6 +191,164 @@ export function normalizeMonth(
   return null;
 }
 
+// ─── 납부 기준일 / 등록일 ─────────────────────────────────────────────────
+
+/**
+ * "기준일 13일", "매월 13일" 같은 표현에서 납부 기준일(1~31)을 뽑는다.
+ *
+ * 키워드가 붙은 경우에만 인정한다. 문장에 떠 있는 아무 "13일"이나 집으면
+ * "13일에 상담함" 같은 문장에서 엉뚱한 청구 기준일이 만들어지기 때문이다.
+ */
+export function extractDueDay(text: string): number | null {
+  const patterns = [
+    /(?:납부|납입|수납)?\s*기준일\s*(?:은|는|:)?\s*(?:매\s*월\s*)?(\d{1,2})\s*일?/,
+    /매\s*월\s*(\d{1,2})\s*일/,
+    /(\d{1,2})\s*일\s*기준/,
+    /(?:납부|납입|수납)일\s*(?:은|는|:)?\s*(\d{1,2})\s*일?/,
+  ];
+
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (!m) continue;
+    const day = Number(m[1]);
+    if (Number.isInteger(day) && day >= 1 && day <= 31) return day;
+  }
+  return null;
+}
+
+/** 연도가 생략된 "8월 13일"을 해석한다. 12월에 "1월"이라고 하면 다음 해로 본다. */
+function inferYear(month: number, now: Date): number {
+  const diff = month - (now.getMonth() + 1);
+  if (diff <= -6) return now.getFullYear() + 1;
+  if (diff >= 7) return now.getFullYear() - 1;
+  return now.getFullYear();
+}
+
+function toIsoDate(year: number, month: number, day: number): string | null {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  // 2월 30일 같은 값을 걸러낸다 (Date가 조용히 다음 달로 넘겨버리므로 되돌려 확인)
+  const d = new Date(year, month - 1, day);
+  if (d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/**
+ * "2026-08-13", "8월 13일", "8/13" 같은 표현을 등록일(YYYY-MM-DD)로 변환한다.
+ *
+ * 월만 있고 일이 없는 "8월 등록"은 날짜를 지어내지 않고 null을 반환한다.
+ * 등록일은 몇 달치 미납을 계산하는 기준이라, 추측해서 틀리면 청구가 어긋난다.
+ */
+export function extractStartDate(text: string, now: Date = new Date()): string | null {
+  const iso = text.match(/(20\d{2})[-./](0?[1-9]|1[0-2])[-./](0?[1-9]|[12]\d|3[01])(?!\d)/);
+  if (iso) {
+    const hit = toIsoDate(Number(iso[1]), Number(iso[2]), Number(iso[3]));
+    if (hit) return hit;
+  }
+
+  const korean = text.match(/(1[0-2]|[1-9])\s*월\s*(0?[1-9]|[12]\d|3[01])\s*일/);
+  if (korean) {
+    const month = Number(korean[1]);
+    const hit = toIsoDate(inferYear(month, now), month, Number(korean[2]));
+    if (hit) return hit;
+  }
+
+  // "8/13" — 앞뒤에 숫자가 붙어 있으면(전화번호·금액 조각) 날짜로 보지 않는다
+  const slash = text.match(/(?<![\d/])(1[0-2]|[1-9])\/(0?[1-9]|[12]\d|3[01])(?![\d/])/);
+  if (slash) {
+    const month = Number(slash[1]);
+    const hit = toIsoDate(inferYear(month, now), month, Number(slash[2]));
+    if (hit) return hit;
+  }
+
+  return null;
+}
+
+// ─── 상담 상태 / 결제 유형 / 결제 수단 ───────────────────────────────────
+
+/**
+ * "등록", "신규등록", "대기" 같은 표현에서 상담 상태를 결정한다.
+ *
+ * AI에게 맡기면 "홍효서 등록"을 상담문의로 흘려보내는 일이 잦았다.
+ * 최종등록은 학생·수강 등록을 실제로 만드는 분기라 원장이 기대한 대로
+ * 걸려야 해서, 명시적인 낱말은 코드가 직접 판단한다.
+ *
+ * 우선순위가 곧 규칙이다. "등록 보류"는 보류이고, "등록 문의"는 문의다.
+ * 다만 "최종등록"·"등록생"처럼 이미 등록이 끝났음을 뜻하는 말은 문의보다 세다.
+ */
+export function extractConsultationStatus(
+  text: string
+): "상담문의" | "대기등록" | "최종등록" | "보류" | null {
+  if (/보류|철회|거절|등록\s*취소|안\s*하기로|그만/.test(text)) return "보류";
+
+  // 등록이 완료됐음을 명시하는 표현 — "등록 문의"보다 우선한다
+  if (
+    /최종\s*등록|신규\s*등록|정식\s*등록|등록\s*생|등록\s*완료|등록\s*했|등록\s*함|등록\s*시켜|등록\s*시켰|등록\s*처리|등록\s*확정/.test(
+      text
+    )
+  ) {
+    return "최종등록";
+  }
+
+  if (/대기(?!\s*중이지)|웨이팅|웨이트|자리\s*나면/.test(text)) return "대기등록";
+  if (/문의|상담|알아보|물어/.test(text)) return "상담문의";
+
+  // 위 어느 것도 아닌 채로 "등록"만 있으면 등록으로 본다 ("홍효서 등록")
+  if (
+    /등록|입반|반\s*(?:에|으로)?\s*(?:넣|배정|편성|올려)|들어오기로|다니기로|시작하기로/.test(text)
+  ) {
+    return "최종등록";
+  }
+
+  return null;
+}
+
+/**
+ * "결제", "수납", "환불", "지출" 같은 낱말에서 결제 유형을 결정한다.
+ *
+ * AI가 "결제"를 환불로 뒤집는 일이 있었는데, 환불은 금액이 음수로 저장되므로
+ * 한 번 틀리면 매출이 두 배로 어긋난다. 그래서 낱말이 분명하면 코드가 이긴다.
+ */
+export function extractPaymentType(text: string): "원비" | "환불" | "지출" | "기타" | null {
+  if (/환불|환급|반환|돌려\s*(주|줌|드림|드렸)|결제\s*취소|취소\s*환/.test(text)) return "환불";
+  if (/지출|매입|구입|구매|수리|임대료|월세|공과금|급여|인건비|비품|운영비/.test(text)) return "지출";
+  if (/원비|수강료|학원비|교습비|수납|결제|납부|입금|완납|선납/.test(text)) return "원비";
+  return null;
+}
+
+/** "카드로 결제", "계좌이체", "현금" 에서 결제 수단을 뽑는다. */
+export function extractPaymentMethod(text: string): "계좌이체" | "카드" | "현금" | null {
+  if (/계좌\s*이체|이체|무통장|송금|입금\s*받/.test(text)) return "계좌이체";
+  if (/카드|신용\s*카드|체크\s*카드/.test(text)) return "카드";
+  if (/현금/.test(text)) return "현금";
+  return null;
+}
+
+// ─── 반 이름 ──────────────────────────────────────────────────────────────
+
+/**
+ * 원문에 학원의 반 이름이 들어 있으면 그 반을 찾아준다. ("김민준 초등부A반 등록")
+ *
+ * 지어내지 않는 것이 요점이다. 후보가 둘 이상 걸리면 어느 쪽인지 알 수 없으므로
+ * null을 돌려 원장이 직접 고르게 한다.
+ */
+export function matchClassName<T extends { id: string; name: string }>(
+  text: string,
+  classes: T[]
+): T | null {
+  const normalized = text.replace(/\s+/g, "");
+  // 긴 이름부터 본다 — "A반"과 "초등A반"이 함께 있으면 더 구체적인 쪽이 맞다
+  const sorted = [...classes].sort((a, b) => b.name.length - a.name.length);
+  const hits = sorted.filter((c) => {
+    const name = c.name.replace(/\s+/g, "");
+    return name.length >= 2 && normalized.includes(name);
+  });
+  if (hits.length === 0) return null;
+  // 가장 긴 이름이 다른 후보를 모두 포함하면 그것이 정답이다 ("초등A반" ⊃ "A반")
+  const best = hits[0].name.replace(/\s+/g, "");
+  const ambiguous = hits.some((c) => !best.includes(c.name.replace(/\s+/g, "")));
+  return ambiguous ? null : hits[0];
+}
+
 // ─── 학생 이름 ────────────────────────────────────────────────────────────
 
 /**

@@ -988,6 +988,91 @@ function normalizeMonth(raw, text2, now = /* @__PURE__ */ new Date()) {
   }
   return null;
 }
+function extractDueDay(text2) {
+  const patterns = [
+    /(?:납부|납입|수납)?\s*기준일\s*(?:은|는|:)?\s*(?:매\s*월\s*)?(\d{1,2})\s*일?/,
+    /매\s*월\s*(\d{1,2})\s*일/,
+    /(\d{1,2})\s*일\s*기준/,
+    /(?:납부|납입|수납)일\s*(?:은|는|:)?\s*(\d{1,2})\s*일?/
+  ];
+  for (const re of patterns) {
+    const m = text2.match(re);
+    if (!m) continue;
+    const day = Number(m[1]);
+    if (Number.isInteger(day) && day >= 1 && day <= 31) return day;
+  }
+  return null;
+}
+function inferYear(month, now) {
+  const diff = month - (now.getMonth() + 1);
+  if (diff <= -6) return now.getFullYear() + 1;
+  if (diff >= 7) return now.getFullYear() - 1;
+  return now.getFullYear();
+}
+function toIsoDate(year, month, day) {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const d = new Date(year, month - 1, day);
+  if (d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+function extractStartDate(text2, now = /* @__PURE__ */ new Date()) {
+  const iso = text2.match(/(20\d{2})[-./](0?[1-9]|1[0-2])[-./](0?[1-9]|[12]\d|3[01])(?!\d)/);
+  if (iso) {
+    const hit = toIsoDate(Number(iso[1]), Number(iso[2]), Number(iso[3]));
+    if (hit) return hit;
+  }
+  const korean = text2.match(/(1[0-2]|[1-9])\s*월\s*(0?[1-9]|[12]\d|3[01])\s*일/);
+  if (korean) {
+    const month = Number(korean[1]);
+    const hit = toIsoDate(inferYear(month, now), month, Number(korean[2]));
+    if (hit) return hit;
+  }
+  const slash = text2.match(/(?<![\d/])(1[0-2]|[1-9])\/(0?[1-9]|[12]\d|3[01])(?![\d/])/);
+  if (slash) {
+    const month = Number(slash[1]);
+    const hit = toIsoDate(inferYear(month, now), month, Number(slash[2]));
+    if (hit) return hit;
+  }
+  return null;
+}
+function extractConsultationStatus(text2) {
+  if (/보류|철회|거절|등록\s*취소|안\s*하기로|그만/.test(text2)) return "\uBCF4\uB958";
+  if (/최종\s*등록|신규\s*등록|정식\s*등록|등록\s*생|등록\s*완료|등록\s*했|등록\s*함|등록\s*시켜|등록\s*시켰|등록\s*처리|등록\s*확정/.test(
+    text2
+  )) {
+    return "\uCD5C\uC885\uB4F1\uB85D";
+  }
+  if (/대기(?!\s*중이지)|웨이팅|웨이트|자리\s*나면/.test(text2)) return "\uB300\uAE30\uB4F1\uB85D";
+  if (/문의|상담|알아보|물어/.test(text2)) return "\uC0C1\uB2F4\uBB38\uC758";
+  if (/등록|입반|반\s*(?:에|으로)?\s*(?:넣|배정|편성|올려)|들어오기로|다니기로|시작하기로/.test(text2)) {
+    return "\uCD5C\uC885\uB4F1\uB85D";
+  }
+  return null;
+}
+function extractPaymentType(text2) {
+  if (/환불|환급|반환|돌려\s*(주|줌|드림|드렸)|결제\s*취소|취소\s*환/.test(text2)) return "\uD658\uBD88";
+  if (/지출|매입|구입|구매|수리|임대료|월세|공과금|급여|인건비|비품|운영비/.test(text2)) return "\uC9C0\uCD9C";
+  if (/원비|수강료|학원비|교습비|수납|결제|납부|입금|완납|선납/.test(text2)) return "\uC6D0\uBE44";
+  return null;
+}
+function extractPaymentMethod(text2) {
+  if (/계좌\s*이체|이체|무통장|송금|입금\s*받/.test(text2)) return "\uACC4\uC88C\uC774\uCCB4";
+  if (/카드|신용\s*카드|체크\s*카드/.test(text2)) return "\uCE74\uB4DC";
+  if (/현금/.test(text2)) return "\uD604\uAE08";
+  return null;
+}
+function matchClassName(text2, classes2) {
+  const normalized = text2.replace(/\s+/g, "");
+  const sorted = [...classes2].sort((a, b) => b.name.length - a.name.length);
+  const hits = sorted.filter((c) => {
+    const name = c.name.replace(/\s+/g, "");
+    return name.length >= 2 && normalized.includes(name);
+  });
+  if (hits.length === 0) return null;
+  const best = hits[0].name.replace(/\s+/g, "");
+  const ambiguous = hits.some((c) => !best.includes(c.name.replace(/\s+/g, "")));
+  return ambiguous ? null : hits[0];
+}
 function cleanStudentName(raw) {
   if (!raw) return null;
   let name = raw.trim().replace(/\s+/g, "");
@@ -1013,7 +1098,24 @@ var SYSTEM_PROMPT = `\uB2F9\uC2E0\uC740 \uD55C\uAD6D \uC601\uC5B4\uD559\uC6D0 \u
 - amount\uB294 \uD56D\uC0C1 \uC591\uC218\uB85C \uCD94\uCD9C\uD558\uC138\uC694. \uD658\uBD88/\uC9C0\uCD9C \uC5EC\uBD80\uB294 type \uD544\uB4DC\uB85C\uB9CC \uD45C\uD604\uD569\uB2C8\uB2E4.
 - \uD655\uC2E4\uD558\uC9C0 \uC54A\uC740 \uD544\uB4DC\uB294 \uC808\uB300 \uCD94\uCE21\uD558\uC9C0 \uB9D0\uACE0 null\uC744 \uB123\uC73C\uC138\uC694.
 - \uC774\uB984\uC774 \uBA85\uC2DC\uB418\uC9C0 \uC54A\uC558\uC73C\uBA74 student_name\uC740 null\uC785\uB2C8\uB2E4. \uD754\uD55C \uC774\uB984\uC744 \uC9C0\uC5B4\uB0B4\uC9C0 \uB9C8\uC138\uC694.
-- month\uB294 \uC6D0\uBB38 \uD45C\uD604\uC744 \uADF8\uB300\uB85C \uB123\uC73C\uC138\uC694 ("\uC774\uBC88\uB2EC", "8\uC6D4", "2026-08" \uB4F1). \uACC4\uC0B0\uD558\uC9C0 \uB9C8\uC138\uC694.`;
+- month\uB294 \uC6D0\uBB38 \uD45C\uD604\uC744 \uADF8\uB300\uB85C \uB123\uC73C\uC138\uC694 ("\uC774\uBC88\uB2EC", "8\uC6D4", "2026-08" \uB4F1). \uACC4\uC0B0\uD558\uC9C0 \uB9C8\uC138\uC694.
+
+[type \u2014 \uB3C8\uC774 \uB4E4\uC5B4\uC624\uB294 \uBC29\uD5A5]
+- "\uACB0\uC81C", "\uC218\uB0A9", "\uB0A9\uBD80", "\uC785\uAE08", "\uC6D0\uBE44", "\uC218\uAC15\uB8CC" \u2192 "\uC6D0\uBE44" (\uD559\uC6D0\uC73C\uB85C \uB3C8\uC774 \uB4E4\uC5B4\uC634)
+- "\uD658\uBD88", "\uD658\uAE09", "\uB3CC\uB824\uC90C" \u2192 "\uD658\uBD88"
+- "\uC9C0\uCD9C", "\uAD6C\uC785", "\uC218\uB9AC\uBE44", "\uC6D4\uC138", "\uAE09\uC5EC" \u2192 "\uC9C0\uCD9C"
+- \uACB0\uC81C \uAD00\uB828 \uB0B1\uB9D0\uC744 \uD658\uBD88\uB85C \uB4A4\uC9D1\uC9C0 \uB9C8\uC138\uC694. \uD658\uBD88\uC740 "\uD658\uBD88"\uC774\uB77C\uACE0 \uBA85\uC2DC\uB41C \uACBD\uC6B0\uC5D0\uB9CC\uC785\uB2C8\uB2E4.
+
+[status \u2014 \uC0C1\uB2F4 \uC9C4\uD589 \uB2E8\uACC4]
+- "\uB4F1\uB85D", "\uC2E0\uADDC\uB4F1\uB85D", "\uCD5C\uC885\uB4F1\uB85D", "\uB4F1\uB85D\uC0DD", "\uB4F1\uB85D\uD588\uC5B4", "\uBC18\uC5D0 \uB123\uC5B4\uC918" \u2192 "\uCD5C\uC885\uB4F1\uB85D"
+- "\uB300\uAE30", "\uC790\uB9AC \uB098\uBA74" \u2192 "\uB300\uAE30\uB4F1\uB85D"
+- "\uBB38\uC758", "\uC0C1\uB2F4", "\uC54C\uC544\uBD04" \u2192 "\uC0C1\uB2F4\uBB38\uC758"
+- "\uBCF4\uB958", "\uCDE8\uC18C", "\uC548 \uD558\uAE30\uB85C" \u2192 "\uBCF4\uB958"
+
+[\uC608\uC2DC]
+- "010-1234-5678 \uAE40\uBBFC\uC900 \uC9112 \uC601\uC5B4 \uB4F1\uB85D, \uAE30\uC900\uC77C 13\uC77C" \u2192 contact / status="\uCD5C\uC885\uB4F1\uB85D"
+- "\uAE40\uBBFC\uC900 35\uB9CC\uC6D0 \uC774\uBC88\uB2EC \uC6D0\uBE44 \uCE74\uB4DC \uACB0\uC81C" \u2192 accounting / type="\uC6D0\uBE44" / payment_method="\uCE74\uB4DC"
+- "\uC774\uC9C0\uC6B0 20\uB9CC\uC6D0 \uD658\uBD88" \u2192 accounting / type="\uD658\uBD88"`;
 var JSON_SCHEMA = {
   name: "hagwon_input",
   strict: true,
@@ -1100,12 +1202,20 @@ function arbitrate(ai, sourceText, now = /* @__PURE__ */ new Date()) {
     if (ai.category !== "contact") {
       corrections.push(`\uC804\uD654\uBC88\uD638(${phones[0]})\uAC00 \uC788\uC5B4 \uC0C1\uB2F4/\uBB38\uC758\uB85C \uBD84\uB958\uD588\uC2B5\uB2C8\uB2E4.`);
     }
-    const status = ["\uC0C1\uB2F4\uBB38\uC758", "\uB300\uAE30\uB4F1\uB85D", "\uCD5C\uC885\uB4F1\uB85D", "\uBCF4\uB958"].includes(
+    const aiStatus = ["\uC0C1\uB2F4\uBB38\uC758", "\uB300\uAE30\uB4F1\uB85D", "\uCD5C\uC885\uB4F1\uB85D", "\uBCF4\uB958"].includes(
       ai.status
-    ) ? ai.status : "\uC0C1\uB2F4\uBB38\uC758";
-    if (ai.status && status !== ai.status) {
+    ) ? ai.status : null;
+    const statusFromText = extractConsultationStatus(sourceText);
+    const status = statusFromText ?? aiStatus ?? "\uC0C1\uB2F4\uBB38\uC758";
+    if (statusFromText && aiStatus && statusFromText !== aiStatus) {
+      corrections.push(`\uC0C1\uD0DC\uB97C \uC6D0\uBB38 \uAE30\uC900 "${statusFromText}"\uB85C \uC815\uC815\uD588\uC2B5\uB2C8\uB2E4. (AI \uD310\uB2E8: "${aiStatus}")`);
+    } else if (!statusFromText && !aiStatus) {
       corrections.push(`\uC0C1\uD0DC\uB97C \uAE30\uBCF8\uAC12 "\uC0C1\uB2F4\uBB38\uC758"\uB85C \uC124\uC815\uD588\uC2B5\uB2C8\uB2E4.`);
     }
+    const dueDay = extractDueDay(sourceText);
+    const startDate = extractStartDate(sourceText, now);
+    if (dueDay !== null) corrections.push(`\uB0A9\uBD80 \uAE30\uC900\uC77C\uC744 \uB9E4\uC6D4 ${dueDay}\uC77C\uB85C \uC77D\uC5C8\uC2B5\uB2C8\uB2E4.`);
+    if (startDate !== null) corrections.push(`\uB4F1\uB85D\uC77C\uC744 ${startDate}\uB85C \uC77D\uC5C8\uC2B5\uB2C8\uB2E4.`);
     return {
       sourceText,
       corrections,
@@ -1118,7 +1228,9 @@ function arbitrate(ai, sourceText, now = /* @__PURE__ */ new Date()) {
         status,
         subject: ai.subject?.trim() || null,
         followUp: ai.follow_up?.trim() || null,
-        memo: ai.memo?.trim() || null
+        memo: ai.memo?.trim() || null,
+        dueDay,
+        startDate
       }
     };
   }
@@ -1146,9 +1258,12 @@ function arbitrate(ai, sourceText, now = /* @__PURE__ */ new Date()) {
         `\uAE08\uC561\uC774 \uC5EC\uB7EC \uAC1C(${amounts.map((a) => a.toLocaleString()).join(", ")}) \uBC1C\uACAC\uB418\uC5B4 \uCCAB \uBC88\uC9F8\uB97C \uC0AC\uC6A9\uD588\uC2B5\uB2C8\uB2E4. \uD655\uC778\uD574 \uC8FC\uC138\uC694.`
       );
     }
-    const type = ["\uC6D0\uBE44", "\uD658\uBD88", "\uC9C0\uCD9C", "\uAE30\uD0C0"].includes(
-      ai.type
-    ) ? ai.type : "\uC6D0\uBE44";
+    const aiType = ["\uC6D0\uBE44", "\uD658\uBD88", "\uC9C0\uCD9C", "\uAE30\uD0C0"].includes(ai.type) ? ai.type : null;
+    const typeFromText = extractPaymentType(sourceText);
+    const type = typeFromText ?? aiType ?? "\uC6D0\uBE44";
+    if (typeFromText && aiType && typeFromText !== aiType) {
+      corrections.push(`\uC720\uD615\uC744 \uC6D0\uBB38 \uAE30\uC900 "${typeFromText}"\uB85C \uC815\uC815\uD588\uC2B5\uB2C8\uB2E4. (AI \uD310\uB2E8: "${aiType}")`);
+    }
     const signed = type === "\uD658\uBD88" || type === "\uC9C0\uCD9C" ? -fromText : fromText;
     if (signed < 0) {
       corrections.push(`${type}\uC774\uBBC0\uB85C \uAE08\uC561\uC744 \uC74C\uC218(${signed.toLocaleString()}\uC6D0)\uB85C \uAE30\uB85D\uD569\uB2C8\uB2E4.`);
@@ -1182,7 +1297,7 @@ function arbitrate(ai, sourceText, now = /* @__PURE__ */ new Date()) {
     }
     const method = ["\uACC4\uC88C\uC774\uCCB4", "\uCE74\uB4DC", "\uD604\uAE08"].includes(
       ai.payment_method
-    ) ? ai.payment_method : null;
+    ) ? ai.payment_method : extractPaymentMethod(sourceText);
     return {
       sourceText,
       corrections,
@@ -1197,14 +1312,36 @@ function arbitrate(ai, sourceText, now = /* @__PURE__ */ new Date()) {
       }
     };
   }
-  const looksLikePayment = /원비|수강료|납부|입금|결제|환불|지출/.test(sourceText);
+  const looksLikePayment = /원비|수강료|납부|입금|결제|환불|지출|수납/.test(sourceText);
+  if (looksLikePayment) {
+    return {
+      sourceText,
+      corrections,
+      draft: {
+        category: "unclear",
+        reason: "\uC218\uB0A9 \uAD00\uB828 \uBB38\uC7A5 \uAC19\uC740\uB370 \uAE08\uC561\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.",
+        question: "\uAE08\uC561\uC774 \uC5BC\uB9C8\uC778\uAC00\uC694? (\uC608: \uAE40\uBBFC\uC900 35\uB9CC\uC6D0 \uC774\uBC88\uB2EC \uC6D0\uBE44 \uCE74\uB4DC)"
+      }
+    };
+  }
+  if (extractConsultationStatus(sourceText) !== null) {
+    return {
+      sourceText,
+      corrections,
+      draft: {
+        category: "unclear",
+        reason: "\uB4F1\uB85D/\uC0C1\uB2F4 \uAC74\uC73C\uB85C \uBCF4\uC774\uB294\uB370 \uC5F0\uB77D\uCC98\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.",
+        question: "\uD559\uBD80\uBAA8 \uC5F0\uB77D\uCC98\uB97C \uD568\uAED8 \uC801\uC5B4\uC8FC\uC138\uC694. (\uC608: 010-1234-5678 \uAE40\uBBFC\uC900 \uC9112 \uC601\uC5B4 \uB4F1\uB85D, \uAE30\uC900\uC77C 13\uC77C, 8\uC6D4 13\uC77C\uBD80\uD130)"
+      }
+    };
+  }
   return {
     sourceText,
     corrections,
     draft: {
       category: "unclear",
-      reason: looksLikePayment ? "\uC218\uB0A9 \uAD00\uB828 \uBB38\uC7A5 \uAC19\uC740\uB370 \uAE08\uC561\uC774 \uC5C6\uC2B5\uB2C8\uB2E4." : "\uC804\uD654\uBC88\uD638\uB3C4 \uAE08\uC561\uB3C4 \uC5C6\uC5B4 \uC5B4\uB290 \uCABD\uC778\uC9C0 \uD310\uB2E8\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",
-      question: looksLikePayment ? "\uAE08\uC561\uC774 \uC5BC\uB9C8\uC778\uAC00\uC694?" : "\uC218\uB0A9 \uAC74\uC774\uBA74 \uAE08\uC561\uC744, \uC0C1\uB2F4 \uBB38\uC758\uBA74 \uC5F0\uB77D\uCC98\uB97C \uD568\uAED8 \uC801\uC5B4\uC8FC\uC138\uC694."
+      reason: "\uC804\uD654\uBC88\uD638\uB3C4 \uAE08\uC561\uB3C4 \uC5C6\uC5B4 \uC5B4\uB290 \uCABD\uC778\uC9C0 \uD310\uB2E8\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",
+      question: "\uC218\uB0A9 \uAC74\uC774\uBA74 \uAE08\uC561\uC744, \uC0C1\uB2F4\xB7\uB4F1\uB85D \uAC74\uC774\uBA74 \uC5F0\uB77D\uCC98\uB97C \uD568\uAED8 \uC801\uC5B4\uC8FC\uC138\uC694."
     }
   };
 }
@@ -2282,7 +2419,13 @@ async function registerRoutes(app2) {
             }))
           );
         }
-        res.json({ ...result, studentMatches });
+        let classMatch = null;
+        if (result.draft.category === "contact") {
+          const classes2 = await storage.getClassesByTenant(req.user.tenantId);
+          const hit = matchClassName(req.body.text, classes2);
+          if (hit) classMatch = { id: hit.id, name: hit.name };
+        }
+        res.json({ ...result, studentMatches, classMatch });
       } catch (error) {
         if (error instanceof NlpConfigError) {
           console.error("NLP config error:", error.message);

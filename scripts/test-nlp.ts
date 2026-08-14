@@ -9,7 +9,16 @@
  */
 
 import { arbitrate } from "../server/lib/nlpParser";
-import { extractPhones, extractAmounts } from "../server/lib/nlpNormalize";
+import {
+  extractPhones,
+  extractAmounts,
+  extractDueDay,
+  extractStartDate,
+  extractConsultationStatus,
+  extractPaymentType,
+  extractPaymentMethod,
+  matchClassName,
+} from "../server/lib/nlpNormalize";
 
 const NOW = new Date(2026, 7, 14); // 2026-08-14 고정
 
@@ -151,6 +160,60 @@ const cases: Case[] = [
       r.draft.category === "accounting" && r.corrections.some((c) => c.includes("여러 개")),
     why: "부분 납부는 사람이 확인해야 하므로 경고를 띄운다",
   },
+  {
+    label: "최종등록 — 기준일·등록일 추출",
+    text: "010-9612-4295 홍효서 등록생 기준일 13일, 8월 13일 최초 등록",
+    ai: { category: "contact", phone: "010-9612-4295", student_name: "홍효서", status: "최종등록" },
+    expect: (r) =>
+      r.draft.category === "contact" &&
+      r.draft.status === "최종등록" &&
+      r.draft.dueDay === 13 &&
+      r.draft.startDate === "2026-08-13",
+    why: "수강 등록에 넣을 기준일·등록일을 원문에서 뽑아야 한다",
+  },
+  {
+    label: "상담 — 기준일·등록일이 없으면 지어내지 않는다",
+    text: "010-1234-5678 박서연 어머니 중2 영어 문의",
+    ai: { category: "contact", phone: "010-1234-5678", student_name: "박서연", student_grade: "중2", subject: "영어" },
+    expect: (r) =>
+      r.draft.category === "contact" && r.draft.dueDay === null && r.draft.startDate === null,
+    why: "값이 없으면 null로 두고 원장이 직접 채우게 해야 한다",
+  },
+  {
+    label: "AI가 '등록'을 상담문의로 흘림",
+    text: "010-1234-5678 김민준 중2 영어 등록",
+    ai: { category: "contact", phone: "010-1234-5678", student_name: "김민준", student_grade: "중2", subject: "영어", status: "상담문의" },
+    expect: (r) =>
+      r.draft.category === "contact" &&
+      r.draft.status === "최종등록" &&
+      r.corrections.some((c) => c.includes("최종등록")),
+    why: "'등록'이라고 썼는데 상담문의로 남으면 학생이 생성되지 않아 학생 목록에 안 뜬다",
+  },
+  {
+    label: "AI가 '결제'를 환불로 뒤집음",
+    text: "김민준 35만원 이번달 카드 결제",
+    ai: { category: "accounting", student_name: "김민준", amount: 350000, type: "환불", month: "이번달" },
+    expect: (r) =>
+      r.draft.category === "accounting" &&
+      r.draft.type === "원비" &&
+      r.draft.amount === 350000 &&
+      r.draft.method === "카드",
+    why: "환불로 저장되면 금액이 음수라 매출이 70만원만큼 어긋난다",
+  },
+  {
+    label: "환불이라고 쓰면 AI가 뭐라 하든 환불",
+    text: "이지우 20만원 환불 지난달",
+    ai: { category: "accounting", student_name: "이지우", amount: 200000, type: "원비", month: "지난달" },
+    expect: (r) => r.draft.category === "accounting" && r.draft.amount === -200000,
+    why: "코드가 결제 쪽으로 과보정해서 환불을 놓치면 안 된다",
+  },
+  {
+    label: "연락처 없는 등록 요청",
+    text: "김민준 초등A반에 넣어줘",
+    ai: { category: "unclear" },
+    expect: (r) => r.draft.category === "unclear" && r.draft.question.includes("연락처"),
+    why: "무엇이 빠졌는지 알려줘야 원장이 다시 칠 수 있다",
+  },
 ];
 
 let pass = 0;
@@ -180,6 +243,123 @@ const amountCases: Array<[string, number[]]> = [
   ["10만원 20만원", [100000, 200000]],
   ["1만 2만 3만", [10000, 20000, 30000]],
 ];
+
+const dueDayCases: Array<[string, number | null]> = [
+  ["기준일 13일", 13],
+  ["납부 기준일은 27일", 27],
+  ["매월 5일 납부", 5],
+  ["10일 기준", 10],
+  // 키워드 없이 떠 있는 날짜를 청구 기준일로 오해하면 안 된다
+  ["13일에 상담함", null],
+  ["010-9612-4295 홍효서 등록생", null],
+  ["기준일 45일", null],
+];
+
+const startDateCases: Array<[string, string | null]> = [
+  ["2026-08-13 등록", "2026-08-13"],
+  ["8월 13일 등록", "2026-08-13"],
+  ["8/13 등록", "2026-08-13"],
+  // 연도가 없으면 가까운 쪽으로 — 2026-08 기준 "1월"은 내년
+  ["1월 5일 등록", "2027-01-05"],
+  // 일(日)이 없으면 날짜를 지어내지 않는다
+  ["8월 최초 등록", null],
+  // 존재하지 않는 날짜
+  ["2월 30일 등록", null],
+  ["010-9612-4295 홍효서", null],
+];
+
+const statusCases: Array<[string, string | null]> = [
+  ["010-1234-5678 김민준 등록", "최종등록"],
+  ["010-1234-5678 김민준 신규등록", "최종등록"],
+  ["010-1234-5678 김민준 최종등록", "최종등록"],
+  ["010-1234-5678 김민준 등록생", "최종등록"],
+  ["김민준 초등A반에 넣어줘", "최종등록"],
+  ["김민준 다음주부터 다니기로 함", "최종등록"],
+  // "등록"이 들어 있어도 문의는 문의다
+  ["010-1234-5678 등록 문의", "상담문의"],
+  ["중2 영어 상담", "상담문의"],
+  ["자리 나면 연락 달라고 함", "대기등록"],
+  ["대기 걸어둠", "대기등록"],
+  // 등록이 끝났다는 표현은 문의보다 세다
+  ["상담 후 등록 완료", "최종등록"],
+  ["등록 보류", "보류"],
+  ["등록 취소함", "보류"],
+  ["오늘 날씨 좋네", null],
+];
+
+const paymentTypeCases: Array<[string, string | null]> = [
+  ["김민준 35만원 결제", "원비"],
+  ["김민준 35만원 카드 결제", "원비"],
+  ["김민준 35만원 수납", "원비"],
+  ["김민준 35만원 이번달 원비 입금", "원비"],
+  ["이지우 20만원 환불", "환불"],
+  ["이지우 20만원 결제 취소", "환불"],
+  ["에어컨 수리비 15만원 지출", "지출"],
+  ["프린터 토너 5만원 구입", "지출"],
+  ["김민준 35만원", null],
+];
+
+const methodCases: Array<[string, string | null]> = [
+  ["김민준 35만원 카드 결제", "카드"],
+  ["김민준 35만원 계좌이체", "계좌이체"],
+  ["김민준 35만원 현금", "현금"],
+  ["김민준 35만원 결제", null],
+];
+
+const classList = [
+  { id: "c1", name: "초등A반" },
+  { id: "c2", name: "A반" },
+  { id: "c3", name: "중등심화" },
+];
+const classCases: Array<[string, string | null]> = [
+  ["김민준 초등A반 등록", "c1"], // 더 구체적인 이름이 이긴다
+  ["김민준 중등심화 등록", "c3"],
+  ["김민준 A반 등록", "c2"],
+  ["김민준 등록", null],
+  ["김민준 고등B반 등록", null], // 없는 반을 지어내지 않는다
+];
+
+for (const [input, expected] of statusCases) {
+  const got = extractConsultationStatus(input);
+  if (got === expected) { pass++; console.log(`✅ [상태] ${JSON.stringify(input)}`); }
+  else { fail++; console.log(`❌ [상태] ${JSON.stringify(input)} → ${got} (기대 ${expected})`); }
+}
+
+for (const [input, expected] of paymentTypeCases) {
+  const got = extractPaymentType(input);
+  if (got === expected) { pass++; console.log(`✅ [유형] ${JSON.stringify(input)}`); }
+  else { fail++; console.log(`❌ [유형] ${JSON.stringify(input)} → ${got} (기대 ${expected})`); }
+}
+
+for (const [input, expected] of methodCases) {
+  const got = extractPaymentMethod(input);
+  if (got === expected) { pass++; console.log(`✅ [수단] ${JSON.stringify(input)}`); }
+  else { fail++; console.log(`❌ [수단] ${JSON.stringify(input)} → ${got} (기대 ${expected})`); }
+}
+
+for (const [input, expected] of classCases) {
+  const got = matchClassName(input, classList);
+  if ((got?.id ?? null) === expected) { pass++; console.log(`✅ [반] ${JSON.stringify(input)}`); }
+  else { fail++; console.log(`❌ [반] ${JSON.stringify(input)} → ${got?.id ?? null} (기대 ${expected})`); }
+}
+
+for (const [input, expected] of dueDayCases) {
+  const got = extractDueDay(input);
+  if (got === expected) { pass++; console.log(`✅ [기준일] ${JSON.stringify(input)}`); }
+  else {
+    fail++;
+    console.log(`❌ [기준일] ${JSON.stringify(input)} → ${got} (기대 ${expected})`);
+  }
+}
+
+for (const [input, expected] of startDateCases) {
+  const got = extractStartDate(input, NOW);
+  if (got === expected) { pass++; console.log(`✅ [등록일] ${JSON.stringify(input)}`); }
+  else {
+    fail++;
+    console.log(`❌ [등록일] ${JSON.stringify(input)} → ${got} (기대 ${expected})`);
+  }
+}
 
 for (const [input, expected] of phoneCases) {
   const got = extractPhones(input);

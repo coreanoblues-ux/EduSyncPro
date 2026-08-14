@@ -19,6 +19,11 @@ import {
   isPlausibleAmount,
   AMOUNT_MIN,
   AMOUNT_MAX,
+  extractDueDay,
+  extractStartDate,
+  extractConsultationStatus,
+  extractPaymentType,
+  extractPaymentMethod,
 } from "./nlpNormalize";
 
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
@@ -48,6 +53,9 @@ export interface ContactDraft {
   subject: string | null;
   followUp: string | null;
   memo: string | null;
+  /** 최종등록으로 저장할 때 수강 등록에 넣을 값. 문장에 없으면 null이고 원장이 직접 채운다. */
+  dueDay: number | null;
+  startDate: string | null; // YYYY-MM-DD
 }
 
 export interface UnclearDraft {
@@ -79,7 +87,24 @@ const SYSTEM_PROMPT = `당신은 한국 영어학원 관리 시스템의 자연�
 - amount는 항상 양수로 추출하세요. 환불/지출 여부는 type 필드로만 표현합니다.
 - 확실하지 않은 필드는 절대 추측하지 말고 null을 넣으세요.
 - 이름이 명시되지 않았으면 student_name은 null입니다. 흔한 이름을 지어내지 마세요.
-- month는 원문 표현을 그대로 넣으세요 ("이번달", "8월", "2026-08" 등). 계산하지 마세요.`;
+- month는 원문 표현을 그대로 넣으세요 ("이번달", "8월", "2026-08" 등). 계산하지 마세요.
+
+[type — 돈이 들어오는 방향]
+- "결제", "수납", "납부", "입금", "원비", "수강료" → "원비" (학원으로 돈이 들어옴)
+- "환불", "환급", "돌려줌" → "환불"
+- "지출", "구입", "수리비", "월세", "급여" → "지출"
+- 결제 관련 낱말을 환불로 뒤집지 마세요. 환불은 "환불"이라고 명시된 경우에만입니다.
+
+[status — 상담 진행 단계]
+- "등록", "신규등록", "최종등록", "등록생", "등록했어", "반에 넣어줘" → "최종등록"
+- "대기", "자리 나면" → "대기등록"
+- "문의", "상담", "알아봄" → "상담문의"
+- "보류", "취소", "안 하기로" → "보류"
+
+[예시]
+- "010-1234-5678 김민준 중2 영어 등록, 기준일 13일" → contact / status="최종등록"
+- "김민준 35만원 이번달 원비 카드 결제" → accounting / type="원비" / payment_method="카드"
+- "이지우 20만원 환불" → accounting / type="환불"`;
 
 /** OpenAI Structured Outputs 스키마. 두 카테고리를 한 객체로 평탄화해 strict 모드를 쓴다. */
 const JSON_SCHEMA = {
@@ -203,15 +228,27 @@ export function arbitrate(
       corrections.push(`전화번호(${phones[0]})가 있어 상담/문의로 분류했습니다.`);
     }
 
-    const status = (["상담문의", "대기등록", "최종등록", "보류"] as const).includes(
+    // "등록"이라고 썼으면 등록으로 걸려야 한다. AI가 이를 상담문의로 흘려보내면
+    // 학생·수강 등록이 만들어지지 않아 학생 목록에 뜨지 않는다.
+    const aiStatus = (["상담문의", "대기등록", "최종등록", "보류"] as const).includes(
       ai.status as ConsultationStatus
     )
       ? (ai.status as ConsultationStatus)
-      : "상담문의";
+      : null;
+    const statusFromText = extractConsultationStatus(sourceText);
+    const status: ConsultationStatus = statusFromText ?? aiStatus ?? "상담문의";
 
-    if (ai.status && status !== ai.status) {
+    if (statusFromText && aiStatus && statusFromText !== aiStatus) {
+      corrections.push(`상태를 원문 기준 "${statusFromText}"로 정정했습니다. (AI 판단: "${aiStatus}")`);
+    } else if (!statusFromText && !aiStatus) {
       corrections.push(`상태를 기본값 "상담문의"로 설정했습니다.`);
     }
+
+    // 청구가 어긋나면 안 되는 값이라 AI를 거치지 않고 원문에서 직접 뽑는다.
+    const dueDay = extractDueDay(sourceText);
+    const startDate = extractStartDate(sourceText, now);
+    if (dueDay !== null) corrections.push(`납부 기준일을 매월 ${dueDay}일로 읽었습니다.`);
+    if (startDate !== null) corrections.push(`등록일을 ${startDate}로 읽었습니다.`);
 
     return {
       sourceText,
@@ -226,6 +263,8 @@ export function arbitrate(
         subject: ai.subject?.trim() || null,
         followUp: ai.follow_up?.trim() || null,
         memo: ai.memo?.trim() || null,
+        dueDay,
+        startDate,
       },
     };
   }
@@ -260,11 +299,17 @@ export function arbitrate(
       );
     }
 
-    const type: PaymentType = (["원비", "환불", "지출", "기타"] as const).includes(
-      ai.type as PaymentType
-    )
+    // "결제"·"수납"을 AI가 환불로 뒤집는 일이 있었다. 환불은 음수로 저장되므로
+    // 한 번 틀리면 매출이 금액의 두 배만큼 어긋난다 — 낱말이 분명하면 코드가 이긴다.
+    const aiType = (["원비", "환불", "지출", "기타"] as const).includes(ai.type as PaymentType)
       ? (ai.type as PaymentType)
-      : "원비";
+      : null;
+    const typeFromText = extractPaymentType(sourceText);
+    const type: PaymentType = typeFromText ?? aiType ?? "원비";
+
+    if (typeFromText && aiType && typeFromText !== aiType) {
+      corrections.push(`유형을 원문 기준 "${typeFromText}"로 정정했습니다. (AI 판단: "${aiType}")`);
+    }
 
     // 환불·지출은 음수로 저장한다 (Payments 화면이 amount를 단순 SUM 하므로)
     const signed = type === "환불" || type === "지출" ? -fromText : fromText;
@@ -302,11 +347,11 @@ export function arbitrate(
       };
     }
 
-    const method = (["계좌이체", "카드", "현금"] as const).includes(
+    const method: PaymentMethod | null = (["계좌이체", "카드", "현금"] as const).includes(
       ai.payment_method as PaymentMethod
     )
       ? (ai.payment_method as PaymentMethod)
-      : null;
+      : extractPaymentMethod(sourceText);
 
     return {
       sourceText,
@@ -327,18 +372,41 @@ export function arbitrate(
   // 원장님 원안은 "애매하면 CONTACT"였지만, 그러면 "김민준 이번달 원비"처럼
   // 금액만 빠진 수납 문장이 상담 목록으로 새어 들어가 회계가 누락된다.
   // 그래서 저장하지 않고 명시적으로 되묻는 쪽을 택했다.
-  const looksLikePayment = /원비|수강료|납부|입금|결제|환불|지출/.test(sourceText);
+  const looksLikePayment = /원비|수강료|납부|입금|결제|환불|지출|수납/.test(sourceText);
+  if (looksLikePayment) {
+    return {
+      sourceText,
+      corrections,
+      draft: {
+        category: "unclear",
+        reason: "수납 관련 문장 같은데 금액이 없습니다.",
+        question: "금액이 얼마인가요? (예: 김민준 35만원 이번달 원비 카드)",
+      },
+    };
+  }
+
+  // 등록 의사는 읽었지만 연락처가 없는 경우. 그냥 "판단 불가"라고만 하면
+  // 원장은 무엇을 더 써야 하는지 알 수 없다.
+  if (extractConsultationStatus(sourceText) !== null) {
+    return {
+      sourceText,
+      corrections,
+      draft: {
+        category: "unclear",
+        reason: "등록/상담 건으로 보이는데 연락처가 없습니다.",
+        question:
+          "학부모 연락처를 함께 적어주세요. (예: 010-1234-5678 김민준 중2 영어 등록, 기준일 13일, 8월 13일부터)",
+      },
+    };
+  }
+
   return {
     sourceText,
     corrections,
     draft: {
       category: "unclear",
-      reason: looksLikePayment
-        ? "수납 관련 문장 같은데 금액이 없습니다."
-        : "전화번호도 금액도 없어 어느 쪽인지 판단할 수 없습니다.",
-      question: looksLikePayment
-        ? "금액이 얼마인가요?"
-        : "수납 건이면 금액을, 상담 문의면 연락처를 함께 적어주세요.",
+      reason: "전화번호도 금액도 없어 어느 쪽인지 판단할 수 없습니다.",
+      question: "수납 건이면 금액을, 상담·등록 건이면 연락처를 함께 적어주세요.",
     },
   };
 }

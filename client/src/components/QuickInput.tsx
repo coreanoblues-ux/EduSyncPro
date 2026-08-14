@@ -8,7 +8,7 @@
  */
 
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Sparkles, AlertTriangle, Loader2, Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -62,6 +62,15 @@ interface ContactDraft {
   subject: string | null;
   followUp: string | null;
   memo: string | null;
+  dueDay: number | null;
+  startDate: string | null; // YYYY-MM-DD
+}
+
+interface ClassOption {
+  id: string;
+  name: string;
+  subject: string;
+  defaultTuition: number;
 }
 
 interface UnclearDraft {
@@ -75,10 +84,13 @@ interface ParseResponse {
   sourceText: string;
   corrections: string[];
   studentMatches: StudentMatch[];
+  /** 원문에 반 이름이 있으면 서버가 실제 반 목록과 대조해 찾아준 결과 */
+  classMatch: { id: string; name: string } | null;
 }
 
 const EXAMPLES = [
-  "김민준 35만원 이번달 원비 계좌이체",
+  "010-1234-5678 김민준 중2 영어 등록, 기준일 13일, 8월 13일부터",
+  "김민준 35만원 이번달 원비 카드 결제",
   "010-1234-5678 박서연 어머니 중2 영어 문의",
 ];
 
@@ -88,8 +100,12 @@ export default function QuickInput() {
   // 초안을 원장이 수정할 수 있도록 별도 상태로 복사해 둔다
   const [draft, setDraft] = useState<any>(null);
   const [enrollmentId, setEnrollmentId] = useState<string>("");
+  // 최종등록으로 저장할 때 새로 만들 수강 등록이 들어갈 반
+  const [classId, setClassId] = useState<string>("");
   const { toast } = useToast();
   const qc = useQueryClient();
+
+  const { data: classes = [] } = useQuery<ClassOption[]>({ queryKey: ["/api/classes"] });
 
   const parseMutation = useMutation({
     mutationFn: async (input: string) => {
@@ -104,6 +120,8 @@ export default function QuickInput() {
       setEnrollmentId(
         only && only.enrollments.length === 1 ? only.enrollments[0].id : ""
       );
+      // 문장에 반 이름을 적었으면 미리 골라둔다 ("김민준 초등A반 등록")
+      setClassId(data.classMatch?.id ?? "");
     },
     onError: (err: Error) => {
       toast({
@@ -117,7 +135,7 @@ export default function QuickInput() {
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (draft.category === "accounting") {
-        return apiRequest("POST", "/api/payments", {
+        await apiRequest("POST", "/api/payments", {
           enrollmentId: enrollmentId || null,
           amount: draft.amount,
           type: draft.type,
@@ -127,8 +145,30 @@ export default function QuickInput() {
           notes: draft.memo,
           sourceText: parsed?.sourceText ?? null,
         });
+        return { enrolled: false };
       }
-      return apiRequest("POST", "/api/consultations", {
+      // 최종등록은 상담 기록만 남기고 끝내지 않는다. 학생과 수강 등록을 실제로 만들어야
+      // 학생 목록에 뜨고, 납부 기준일이 미납 계산에 반영된다.
+      let studentId: string | null = null;
+      if (draft.status === "최종등록") {
+        const res = await apiRequest("POST", "/api/students", {
+          name: draft.studentName,
+          grade: draft.studentGrade,
+          parentPhone: draft.phone,
+          notes: draft.memo,
+        });
+        studentId = (await res.json()).id as string;
+
+        // tuition을 비워두면 반의 기본 수강료가 그대로 적용된다
+        await apiRequest("POST", "/api/enrollments", {
+          studentId,
+          classId,
+          startDate: draft.startDate,
+          dueDay: draft.dueDay ?? 8,
+        });
+      }
+
+      await apiRequest("POST", "/api/consultations", {
         phone: draft.phone,
         guardianName: draft.guardianName,
         studentName: draft.studentName,
@@ -138,12 +178,19 @@ export default function QuickInput() {
         followUp: draft.followUp,
         memo: draft.memo,
         sourceText: parsed?.sourceText ?? null,
+        studentId,
+        classId: studentId ? classId : null,
       });
+      return { enrolled: studentId !== null };
     },
-    onSuccess: () => {
-      toast({ title: "저장되었습니다" });
+    onSuccess: (result) => {
+      toast({
+        title: result?.enrolled ? "학생 등록까지 완료되었습니다" : "저장되었습니다",
+      });
       qc.invalidateQueries({ queryKey: ["/api/payments"] });
       qc.invalidateQueries({ queryKey: ["/api/consultations"] });
+      qc.invalidateQueries({ queryKey: ["/api/students"] });
+      qc.invalidateQueries({ queryKey: ["/api/enrollments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/students"] });
       reset();
     },
@@ -161,16 +208,20 @@ export default function QuickInput() {
     setParsed(null);
     setDraft(null);
     setEnrollmentId("");
+    setClassId("");
   };
 
   const matches = parsed?.studentMatches ?? [];
   const matchedStudent = matches[0];
   const needsEnrollment =
     draft?.category === "accounting" && (draft.type === "원비" || draft.type === "환불");
+  // 최종등록이면 학생·수강 등록을 만들어야 하므로 반과 등록일이 반드시 있어야 한다
+  const isFinalRegistration = draft?.category === "contact" && draft.status === "최종등록";
   const canSave =
     draft &&
     draft.category !== "unclear" &&
-    (!needsEnrollment || !!enrollmentId);
+    (!needsEnrollment || !!enrollmentId) &&
+    (!isFinalRegistration || (!!classId && !!draft.startDate && !!draft.studentName));
 
   return (
     <Card data-testid="quick-input">
@@ -429,6 +480,77 @@ export default function QuickInput() {
                 />
               </div>
             </div>
+
+            {/* 최종등록이면 상담 기록에 그치지 않고 학생·수강 등록까지 만든다 */}
+            {isFinalRegistration && (
+              <div className="space-y-3 rounded-md border border-primary/40 bg-primary/5 p-3">
+                <p className="text-sm font-medium">
+                  저장하면 학생과 수강 등록이 함께 생성됩니다
+                </p>
+
+                {!draft.studentName && (
+                  <p className="text-sm text-destructive">
+                    학생명이 비어 있습니다. 위에서 학생명을 입력해주세요.
+                  </p>
+                )}
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="sm:col-span-2">
+                    <Label>반</Label>
+                    {classes.length === 0 ? (
+                      <p className="text-sm text-destructive">
+                        등록된 반이 없습니다. 반을 먼저 만들어주세요.
+                      </p>
+                    ) : (
+                      <Select value={classId} onValueChange={setClassId}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="반을 선택하세요" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {classes.map((c) => (
+                            <SelectItem key={c.id} value={c.id}>
+                              {c.name} · {c.subject} · {c.defaultTuition.toLocaleString()}원
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </div>
+
+                  <div>
+                    <Label>등록일</Label>
+                    <Input
+                      type="date"
+                      value={draft.startDate ?? ""}
+                      onChange={(e) => setDraft({ ...draft, startDate: e.target.value || null })}
+                    />
+                    {!draft.startDate && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        미납 개월 수를 세는 기준이라 반드시 필요합니다
+                      </p>
+                    )}
+                  </div>
+
+                  <div>
+                    <Label>납부 기준일 (매월)</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={31}
+                      value={draft.dueDay ?? ""}
+                      placeholder="비우면 8일"
+                      onChange={(e) => {
+                        const n = parseInt(e.target.value, 10);
+                        setDraft({
+                          ...draft,
+                          dueDay: Number.isInteger(n) && n >= 1 && n <= 31 ? n : null,
+                        });
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

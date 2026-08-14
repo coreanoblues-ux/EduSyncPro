@@ -19,6 +19,11 @@ import {
   extractPaymentMethod,
   matchClassName,
   matchClass,
+  extractClassAction,
+  extractClassTime,
+  extractMaxStudents,
+  extractPersonAction,
+  narrowByHint,
   type ClassHintInput,
 } from "../server/lib/nlpNormalize";
 
@@ -51,6 +56,11 @@ const blank: Ai = {
   memo: null,
   needs_clarification: false,
   question: null,
+  class_action: null,
+  class_name: null,
+  class_time: null,
+  max_students: null,
+  person_action: null,
 };
 
 interface Case {
@@ -95,11 +105,22 @@ const cases: Case[] = [
     why: "'얼마냐'는 문의를 수납으로 저장하면 받지도 않은 돈이 매출에 잡힌다",
   },
   {
-    label: "금액 없는 원비 문장",
+    label: "금액도 학생도 없는 원비 문장",
+    text: "이번달 원비",
+    ai: {},
+    expect: (r) => r.draft.category === "unclear" && r.draft.question.includes("금액"),
+    why: "누구 것인지도 모르면 채워 넣을 수강료가 없다 — 되물어야 한다",
+  },
+  {
+    label: "금액 없는 원비 — 학생을 알면 금액을 비운 채 초안까지",
     text: "김민준 이번달 원비",
     ai: { student_name: "김민준" },
-    expect: (r) => r.draft.category === "unclear" && r.draft.question.includes("금액"),
-    why: "상담으로 흘리면 회계 누락 — 되물어야 한다",
+    expect: (r) =>
+      r.draft.category === "accounting" &&
+      r.draft.studentName === "김민준" &&
+      r.draft.amount === null &&
+      r.corrections.some((c) => c.includes("수강료")),
+    why: "'김민 수납'처럼 급히 칠 때 반을 고르면 수강료가 채워진다. 금액을 지어내지 않고 비운다",
   },
   {
     label: "환불은 음수",
@@ -300,6 +321,114 @@ const cases: Case[] = [
     expect: (r) => r.draft.category === "accounting" && r.draft.amount === -280000,
     why: "'등록'이라는 글자에 끌려 환불을 신규 등록으로 만들면 학생이 중복 생성된다",
   },
+  // ─── 반 생성·수정 ───
+  {
+    label: "반 신설",
+    text: "중등심화반 신설 정우석 선생님 화목 19:00-21:00 수강료 35만 정원 15명",
+    ai: {
+      class_action: "생성", class_name: "중등심화반", subject: "영어",
+      schedule_days: ["화", "목"], class_time: "19:00-21:00",
+      teacher_name: "정우석", amount: 350000, max_students: 15,
+    },
+    expect: (r) =>
+      r.draft.category === "class" &&
+      r.draft.action === "create" &&
+      r.draft.name === "중등심화반" &&
+      r.draft.schedule === "화목 19:00-21:00" &&
+      r.draft.defaultTuition === 350000 &&
+      r.draft.maxStudents === 15 &&
+      r.draft.teacherName === "정우석",
+    why: "반 개설 문장은 학생을 만들지 않고 시간표만 만든다",
+  },
+  {
+    label: "반 수정",
+    text: "초등A반 수강료 30만으로 변경",
+    ai: { class_action: "수정", class_name: "초등A반", amount: 300000 },
+    expect: (r) =>
+      r.draft.category === "class" &&
+      r.draft.action === "update" &&
+      r.draft.defaultTuition === 300000,
+    why: "수정은 대상 반을 찾을 재료만 담고 나머지는 서버가 대조한다",
+  },
+  {
+    label: "'반 추가'는 학생 등록이지 반 생성이 아니다",
+    text: "강단우 국어반 추가 등록",
+    ai: { enroll: true, student_name: "강단우", subject: "국어" },
+    expect: (r) => r.draft.category !== "class",
+    why: "학생을 반에 넣는 말을 반 생성으로 읽으면 엉뚱한 반이 하나 더 생긴다",
+  },
+  {
+    label: "AI가 반 작업이라 해도 원문에 근거가 없으면 무시",
+    text: "김민준 35만원 이번달 원비 계좌이체",
+    ai: {
+      class_action: "생성", class_name: "유령반",
+      payment: true, student_name: "김민준", amount: 350000,
+      payment_type: "원비", payment_month: "이번달", payment_method: "계좌이체",
+    },
+    expect: (r) => r.draft.category === "accounting" && r.draft.amount === 350000,
+    why: "AI 단독 판단으로 반을 만들면 사람이 시키지 않은 반이 생긴다",
+  },
+  {
+    label: "시간 숫자가 수강료로 새면 안 된다",
+    text: "고등반 개설 김하늘 선생님 월수금 19:00-21:00",
+    ai: {
+      class_action: "생성", class_name: "고등반",
+      schedule_days: ["월", "수", "금"], teacher_name: "김하늘", amount: 19,
+    },
+    expect: (r) => r.draft.category === "class" && r.draft.defaultTuition === null,
+    why: "19:00에서 뽑힌 19가 수강료 19원으로 저장되면 미납 계산이 망가진다",
+  },
+  {
+    label: "학생 수정",
+    text: "학생 수정 김민준 학교 숭의중으로 바꿔줘",
+    ai: { person_action: "학생수정", student_name: "김민준", school: "숭의중" },
+    expect: (r) =>
+      r.draft.category === "person" &&
+      r.draft.target === "student" &&
+      r.draft.action === "update" &&
+      r.draft.name === "김민준" &&
+      r.draft.school === "숭의중",
+    why: "명시적 수정 명령이 등록이나 상담으로 새면 엉뚱한 레코드가 하나 더 생긴다",
+  },
+  {
+    label: "학생 수정 — 말 안 한 항목은 null로 남는다",
+    text: "학생 수정 김민준 학교 숭의중으로 바꿔줘",
+    ai: { person_action: "학생수정", student_name: "김민준", school: "숭의중" },
+    expect: (r) =>
+      r.draft.category === "person" && r.draft.grade === null && r.draft.phone === null,
+    why: "빈 값을 그대로 저장하면 기존 학년·연락처가 지워진다",
+  },
+  {
+    label: "교사 추가",
+    text: "교사 추가 박지훈 수학 010-1111-2222",
+    ai: { person_action: "교사추가", teacher_name: "박지훈", subject: "수학", parent_phone: "010-1111-2222" },
+    expect: (r) =>
+      r.draft.category === "person" &&
+      r.draft.target === "teacher" &&
+      r.draft.action === "create" &&
+      r.draft.name === "박지훈" &&
+      r.draft.subject === "수학" &&
+      r.draft.phone === "010-1111-2222",
+    why: "전화번호가 섞여 있어도 상담 문의로 가로채이면 안 된다",
+  },
+  {
+    label: "교사 수정 — AI가 과목을 놓쳐도 원문에서 살린다",
+    text: "교사 수정 김하늘 영어 담당으로 변경",
+    ai: { person_action: "교사수정", teacher_name: "김하늘" },
+    expect: (r) =>
+      r.draft.category === "person" &&
+      r.draft.target === "teacher" &&
+      r.draft.action === "update" &&
+      r.draft.subject === "영어",
+    why: "과목이 비면 수정 화면에서 다시 타이핑해야 한다",
+  },
+  {
+    label: "'학생 추가'는 수정 분기로 가지 않는다",
+    text: "강단우 3학년 국어반 등록 010-1234-5678",
+    ai: { enroll: true, student_name: "강단우", grade: "3학년", class_level: "국어반", parent_phone: "010-1234-5678" },
+    expect: (r) => r.draft.category === "registration",
+    why: "신규 학생은 반 배정·납부일까지 정하는 등록 흐름을 거쳐야 한다",
+  },
 ];
 
 let pass = 0;
@@ -417,6 +546,65 @@ const classCases: Array<[string, string | null]> = [
   ["김민준 고등B반 등록", null], // 없는 반을 지어내지 않는다
 ];
 
+// 반 자체를 건드리는 말인지 판정. "반 추가"처럼 학생 등록과 겹치는 표현이 가장 위험하다.
+const classActionCases: Array<[string, string | null]> = [
+  ["중등심화반 신설", "create"],
+  ["국어반 하나 더 개설", "create"],
+  ["새로운 반 만들어줘", "create"],
+  ["초등A반 수강료 30만으로 변경", "update"],
+  ["심화반 시간표 바꿔줘", "update"],
+  ["고등반 폐강", "update"],
+  ["수강료 35만으로 올려줘", "update"],
+  // 학생을 반에 넣는 말은 반 작업이 아니다
+  ["강단우 국어반 추가", null],
+  ["김민준 초등A반 등록", null],
+  ["김민준 35만원 이번달 원비", null],
+];
+
+const classTimeCases: Array<[string, string | null]> = [
+  ["화목 19:00-21:00", "19:00-21:00"],
+  // 오전·오후를 짐작하지 않는다. 19시를 7시로 저장하는 것보다 그대로 두고 사람이 고치는 편이 낫다.
+  ["7시~9시 수업", "07:00-09:00"],
+  ["오늘 상담함", null],
+];
+
+const maxStudentsCases: Array<[string, number | null]> = [
+  ["정원 20명", 20],
+  ["최대 15명", 15],
+  ["35만원 납부", null],
+];
+
+// 사람 정보를 고치라는 명시적 명령. 학생 "추가"는 일부러 빠져 있다 —
+// 신규 학생은 반 배정·납부일까지 정하는 등록 흐름을 거쳐야 하기 때문.
+const personActionCases: Array<[string, string | null]> = [
+  ["학생 수정 김민준 학교 숭의중으로", "student/update"],
+  ["학생정보 변경 박서연 학년 2학년", "student/update"],
+  ["교사 추가 박지훈 수학", "teacher/create"],
+  ["강사 등록 김하늘 영어", "teacher/create"],
+  ["교사 수정 김하늘 연락처 바꿔줘", "teacher/update"],
+  ["선생님 정보 변경", "teacher/update"],
+  ["쌤 수정 정우석", "teacher/update"],
+  // 등록·수납 문장을 수정 명령으로 오해하면 안 된다
+  ["강단우 3학년 국어반 등록", null],
+  ["김민준 35만원 이번달 원비", null],
+  ["중등심화반 신설", null],
+];
+
+// 동명이인을 힌트로 좁히는 규칙. 잘못 좁히는 것이 안 좁히는 것보다 위험하므로
+// 걸리는 힌트가 하나도 없으면 후보를 전부 남긴다.
+const hintRows = [
+  { id: "s1", hints: ["3학년", "숭의중", "초등A반"] },
+  { id: "s2", hints: ["1학년", "인천중", "중등심화"] },
+  { id: "s3", hints: [null, null, "초등A반"] },
+];
+const narrowCases: Array<[string, string, string[]]> = [
+  ["학교로 좁힌다", "김민 숭의중 수납", ["s1"]],
+  ["반 이름으로 좁힌다", "김민 중등심화 수납", ["s2"]],
+  ["힌트가 하나도 없으면 전부 남긴다", "김민 수납", ["s1", "s2", "s3"]],
+  ["여러 명이 같은 힌트를 가지면 둘 다 남긴다", "김민 초등A반 수납", ["s1", "s3"]],
+  ["힌트가 어긋나도 지어내지 않는다", "김민 없는학교 수납", ["s1", "s2", "s3"]],
+];
+
 // 요일·강사·레벨로 반을 좁히는 경우. 반 이름은 학원마다 제각각이라
 // "화목 심화"만으로는 이름을 알 수 없고, 반 목록과 대조해야만 확정된다.
 const classRows = [
@@ -468,6 +656,41 @@ for (const [input, expected] of classCases) {
   const got = matchClassName(input, classList);
   if ((got?.id ?? null) === expected) { pass++; console.log(`✅ [반] ${JSON.stringify(input)}`); }
   else { fail++; console.log(`❌ [반] ${JSON.stringify(input)} → ${got?.id ?? null} (기대 ${expected})`); }
+}
+
+for (const [input, expected] of classActionCases) {
+  const got = extractClassAction(input);
+  if (got === expected) { pass++; console.log(`✅ [반작업] ${JSON.stringify(input)}`); }
+  else { fail++; console.log(`❌ [반작업] ${JSON.stringify(input)} → ${got} (기대 ${expected})`); }
+}
+
+for (const [input, expected] of classTimeCases) {
+  const got = extractClassTime(input);
+  if (got === expected) { pass++; console.log(`✅ [수업시간] ${JSON.stringify(input)}`); }
+  else { fail++; console.log(`❌ [수업시간] ${JSON.stringify(input)} → ${got} (기대 ${expected})`); }
+}
+
+for (const [input, expected] of maxStudentsCases) {
+  const got = extractMaxStudents(input);
+  if (got === expected) { pass++; console.log(`✅ [정원] ${JSON.stringify(input)}`); }
+  else { fail++; console.log(`❌ [정원] ${JSON.stringify(input)} → ${got} (기대 ${expected})`); }
+}
+
+for (const [input, expected] of personActionCases) {
+  const r = extractPersonAction(input);
+  const got = r ? `${r.target}/${r.action}` : null;
+  if (got === expected) { pass++; console.log(`✅ [사람작업] ${JSON.stringify(input)}`); }
+  else { fail++; console.log(`❌ [사람작업] ${JSON.stringify(input)} → ${got} (기대 ${expected})`); }
+}
+
+for (const [label, text, expectedIds] of narrowCases) {
+  const got = narrowByHint(hintRows, text).map((r) => r.id);
+  if (JSON.stringify(got) === JSON.stringify(expectedIds)) {
+    pass++; console.log(`✅ [동명이인] ${label}`);
+  } else {
+    fail++;
+    console.log(`❌ [동명이인] ${label} → ${JSON.stringify(got)} (기대 ${JSON.stringify(expectedIds)})`);
+  }
 }
 
 for (const [input, expected] of dueDayCases) {

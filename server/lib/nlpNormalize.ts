@@ -359,6 +359,50 @@ export function extractPaymentMethod(text: string): "계좌이체" | "카드" | 
   return null;
 }
 
+// ─── 반 관리(생성·수정) ────────────────────────────────────────────────────
+
+/**
+ * 이 문장이 "반 자체를 만들거나 고치는" 말인지 판정한다.
+ *
+ * AI 판단만 믿으면 "강단우 국어반 추가"(학생을 반에 넣는 말)를 반 생성으로
+ * 오해해 엉뚱한 반이 하나 더 생긴다. 그래서 AI가 반 작업이라고 해도 원문에
+ * 아래 표현이 실제로 들어 있을 때만 반 초안으로 넘긴다.
+ *
+ * "반 추가"를 생성 표현에서 뺀 것도 같은 이유다. 학생을 반에 추가하는 말과
+ * 구분되지 않는다. 반을 새로 만들 때는 "신설·개설·만들"이라고 쓰게 한다.
+ */
+export function extractClassAction(text: string): "create" | "update" | null {
+  const t = text.replace(/\s+/g, "");
+  // 수정을 먼저 본다. "반 만들 때 수강료 변경"처럼 둘 다 나오면 이미 있는 반을
+  // 고치는 말일 가능성이 높고, 잘못 만드는 쪽이 잘못 고치는 쪽보다 되돌리기 어렵다.
+  if (/(반|클래스)[^.]{0,12}?(수정|변경|바꿔|바꾸|고쳐|고치|올려|내려|없애|폐강)/.test(t)) {
+    return "update";
+  }
+  if (/(수강료|원비|정원|시간표|일정|담당|강사|선생님)[^.]{0,8}?(수정|변경|바꿔|바꾸|고쳐|고치|올려|내려)/.test(t)) {
+    return "update";
+  }
+  if (/(반|클래스)[^.]{0,8}?(신설|개설|생성|만들|만듦|개강)/.test(t)) return "create";
+  if (/(신설|개설|새로운|새)(반|클래스)/.test(t)) return "create";
+  return null;
+}
+
+/** "19:00-21:00", "7시~9시" 같은 수업 시간대를 원문에서 뽑는다. */
+export function extractClassTime(text: string): string | null {
+  const range = text.match(/(\d{1,2}:\d{2})\s*[-~–]\s*(\d{1,2}:\d{2})/);
+  if (range) return `${range[1]}-${range[2]}`;
+  const korean = text.match(/(\d{1,2})\s*시\s*[-~–]\s*(\d{1,2})\s*시/);
+  if (korean) return `${korean[1].padStart(2, "0")}:00-${korean[2].padStart(2, "0")}:00`;
+  return null;
+}
+
+/** "정원 20명", "최대 15명" 에서 정원을 뽑는다. */
+export function extractMaxStudents(text: string): number | null {
+  const m = text.match(/(?:정원|최대|최대\s*인원|인원)\s*(\d{1,3})\s*명|(\d{1,3})\s*명\s*(?:정원|까지)/);
+  if (!m) return null;
+  const n = parseInt(m[1] ?? m[2], 10);
+  return Number.isInteger(n) && n >= 1 && n <= 200 ? n : null;
+}
+
 // ─── 반 이름 ──────────────────────────────────────────────────────────────
 
 /**
@@ -460,4 +504,76 @@ export function cleanStudentName(raw: string | null | undefined): string | null 
   name = name.replace(/(이가|이는|이랑|이|가|은|는|의|도)$/, "");
   if (!/^[가-힣a-zA-Z]{2,5}$/.test(name)) return null;
   return name;
+}
+
+/**
+ * 이름이 같거나 부분 일치하는 후보가 여러 명일 때, 원문에 딸려온 힌트로 좁힌다.
+ *
+ * 원장이 급할 때 "김민 중2 수납"처럼 이름 뒤에 구별되는 낱말 하나를 붙이는 것을
+ * 노린 함수다. 학년·학교·반 이름·강사 이름 중 원문에 등장하는 것이 가장 많은
+ * 후보만 남긴다.
+ *
+ * 힌트가 하나도 안 맞으면 아무도 떨어뜨리지 않고 전원을 돌려준다. 잘못 좁혀서
+ * 엉뚱한 학생에게 수납이 꽂히는 것보다, 원장에게 전부 보여주고 고르게 하는 편이 낫다.
+ */
+export function narrowByHint<T extends { hints: Array<string | null | undefined> }>(
+  candidates: T[],
+  text: string
+): T[] {
+  if (candidates.length <= 1) return candidates;
+  const haystack = text.replace(/\s+/g, "");
+
+  const scored = candidates.map((c) => {
+    const hits = c.hints.filter((h) => {
+      const needle = h?.replace(/\s+/g, "");
+      // 한 글자 힌트는 우연히 걸리기 쉬워 세지 않는다
+      return needle && needle.length >= 2 && haystack.includes(needle);
+    }).length;
+    return { candidate: c, hits };
+  });
+
+  const best = Math.max(...scored.map((s) => s.hits));
+  if (best === 0) return candidates;
+  return scored.filter((s) => s.hits === best).map((s) => s.candidate);
+}
+
+// ─── 학생·교사 정보 수정 ──────────────────────────────────────────────────
+
+export type PersonTarget = "student" | "teacher";
+export type PersonAction = "create" | "update";
+
+/**
+ * "학생 수정", "교사 추가", "교사 수정" 같은 명시적 지시인지 판정한다.
+ *
+ * 여기는 AI 동의를 요구하지 않는다. 반 생성과 달리 원장이 외워서 치는 고정 명령어라
+ * 원문에 그대로 들어 있고, AI가 못 알아들었다는 이유로 명령이 씹히면 오히려 답답하다.
+ *
+ * 학생 "추가"는 일부러 뺐다. 신규 학생은 기존 등록 흐름(학생+수강등록+수납)으로
+ * 만들어야 반 배정과 납부 기준일이 함께 잡힌다. 여기서 만들면 반 없는 학생이 생긴다.
+ */
+export function extractPersonAction(
+  text: string
+): { target: PersonTarget; action: PersonAction } | null {
+  const t = text.replace(/\s+/g, "");
+  const TEACHER = "(교사|강사|선생님|쌤)";
+  const UPDATE = "(수정|변경|바꿔|바꾸|고쳐|고침)";
+
+  // "정보"는 끼어들 수 있다 — "교사 정보 수정"과 "교사 수정"은 같은 말이다.
+  // 그 외 낱말까지 허용하면 "교사가 학부모 연락처 변경 요청"처럼
+  // 사람 수정이 아닌 문장까지 걸린다.
+  const OF = "(정보)?";
+
+  if (new RegExp(`${TEACHER}${OF}${UPDATE}`).test(t)) return { target: "teacher", action: "update" };
+  if (new RegExp(`${TEACHER}${OF}(추가|등록|신규|생성)`).test(t))
+    return { target: "teacher", action: "create" };
+  if (new RegExp(`학생${OF}${UPDATE}`).test(t)) return { target: "student", action: "update" };
+  return null;
+}
+
+/** "담당 과목은 수학", "수학 담당" 처럼 적힌 과목을 뽑는다. */
+export function extractSubject(text: string): string | null {
+  const m = text.match(
+    /(국어|영어|수학|과학|사회|역사|물리|화학|생물|지구과학|논술|한문|중국어|일본어)/
+  );
+  return m ? m[1] : null;
 }

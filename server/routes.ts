@@ -25,7 +25,7 @@ import {
   createConsultationBodySchema
 } from "@shared/schema";
 import { parseInput, NlpConfigError } from "./lib/nlpParser";
-import { matchClassName, matchClass } from "./lib/nlpNormalize";
+import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
 import { z } from "zod";
 import { db } from "./db";
 import { users } from "@shared/schema";
@@ -1231,16 +1231,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const result = await parseInput(req.body.text);
         const tenantId = req.user!.tenantId!;
 
+        /**
+         * 이름(부분이어도 된다)으로 학생 후보를 찾고, 원문에 딸려온 힌트로 좁힌다.
+         *
+         * "김민 수납"이면 김민준·김민서가 모두 떠서 원장이 고르고,
+         * "김민 중2 수납"이면 학년이 맞는 한 명만 남아 바로 처리할 수 있다.
+         * 좁히는 재료는 학년·학교뿐 아니라 그 학생이 듣는 반 이름과 담당 강사까지다.
+         */
+        const lookupStudents = async (name: string) => {
+          const found = await storage.findStudentsByPartialName(tenantId, name);
+          const withEnrollments = await Promise.all(
+            found.map(async (s) => {
+              const enrollments = await storage.getActiveEnrollmentsWithClass(tenantId, s.id);
+              return {
+                student: {
+                  id: s.id,
+                  name: s.name,
+                  grade: s.grade,
+                  school: s.school,
+                  parentPhone: s.parentPhone,
+                  notes: s.notes,
+                },
+                enrollments,
+                hints: [
+                  s.grade,
+                  s.school,
+                  ...enrollments.map((e) => e.className),
+                  ...enrollments.map((e) => e.classSubject),
+                ],
+              };
+            })
+          );
+          // hints는 좁히기용 재료일 뿐이라 화면으로는 보내지 않는다
+          return narrowByHint(withEnrollments, req.body.text).map(({ hints, ...rest }) => rest);
+        };
+
         // 수납 초안이면 학생 이름을 실제 수강 등록으로 해석해 후보를 붙여준다.
         let studentMatches: any[] = [];
         if (result.draft.category === 'accounting' && result.draft.studentName) {
-          const found = await storage.findStudentsByName(tenantId, result.draft.studentName);
-          studentMatches = await Promise.all(
-            found.map(async (s) => ({
-              student: { id: s.id, name: s.name, grade: s.grade, school: s.school },
-              enrollments: await storage.getActiveEnrollmentsWithClass(tenantId, s.id),
-            }))
-          );
+          studentMatches = await lookupStudents(result.draft.studentName);
         }
 
         // 반 이름은 학원마다 다르므로 AI에게 맡기지 않고 실제 목록과 대조한다.
@@ -1276,7 +1305,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (hit) classMatch = { id: hit.id, name: hit.name };
         }
 
-        res.json({ ...result, studentMatches, classMatch, classCandidates });
+        // 반 작업 초안이면 강사 이름을 실제 강사로, 수정이면 대상 반까지 해석해 준다.
+        // 강사 이름과 반 이름은 학원마다 제각각이라 AI가 지어내면 엉뚱한 반이 바뀐다.
+        let teacherMatch: { id: string; name: string } | null = null;
+        if (result.draft.category === 'class') {
+          const draft = result.draft;
+
+          if (draft.teacherName) {
+            const wanted = draft.teacherName.replace(/\s+/g, '');
+            const hits = (await storage.getTeachersByTenant(tenantId)).filter(
+              (t) => t.isActive && t.name.replace(/\s+/g, '') === wanted
+            );
+            if (hits.length === 1) teacherMatch = { id: hits[0].id, name: hits[0].name };
+          }
+
+          if (draft.action === 'update') {
+            const rows = await storage.getClassesWithTeacher(tenantId);
+            const byName = draft.name
+              ? matchClassName(draft.name, rows)
+              : matchClassName(req.body.text, rows);
+            if (byName) {
+              classMatch = { id: byName.id, name: byName.name };
+            } else {
+              const { match, candidates } = matchClass(draft.classHint, rows);
+              if (match) classMatch = { id: match.id, name: match.name };
+              classCandidates = candidates.map((c) => ({ id: c.id, name: c.name }));
+            }
+          }
+        }
+
+        // 학생·교사 정보 수정 초안이면 고칠 대상을 찾아 붙여준다.
+        // 이름이 부분이거나 동명이인이면 후보를 전부 보내고 원장이 고르게 한다.
+        let teacherMatches: Array<{ id: string; name: string; subject: string; phone: string | null }> = [];
+        if (result.draft.category === 'person') {
+          const draft = result.draft;
+          if (draft.target === 'student' && draft.name) {
+            studentMatches = await lookupStudents(draft.name);
+          }
+          if (draft.target === 'teacher' && draft.action === 'update') {
+            const wanted = draft.name?.replace(/\s+/g, '') ?? '';
+            teacherMatches = (await storage.getTeachersByTenant(tenantId))
+              .filter((t) => t.isActive && (!wanted || t.name.replace(/\s+/g, '').includes(wanted)))
+              .map((t) => ({ id: t.id, name: t.name, subject: t.subject, phone: t.phone }));
+            if (teacherMatches.length === 1) {
+              teacherMatch = { id: teacherMatches[0].id, name: teacherMatches[0].name };
+            }
+          }
+        }
+
+        res.json({
+          ...result,
+          studentMatches,
+          classMatch,
+          classCandidates,
+          teacherMatch,
+          teacherMatches,
+        });
       } catch (error: any) {
         if (error instanceof NlpConfigError) {
           console.error('NLP config error:', error.message);

@@ -1,5 +1,5 @@
 /**
- * 자연어 한 줄 입력 (빠른 입력)
+ * 자연어 한 줄 입력 (AI 입력)
  *
  * 흐름: 문장 입력 → 서버가 초안 생성 → 원장이 확인·수정 → 저장
  *
@@ -9,6 +9,7 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import { Sparkles, AlertTriangle, Loader2, Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,18 +39,39 @@ interface EnrollmentOption {
 }
 
 interface StudentMatch {
-  student: { id: string; name: string; grade: string | null; school: string | null };
+  student: {
+    id: string;
+    name: string;
+    grade: string | null;
+    school: string | null;
+    parentPhone?: string | null;
+    notes?: string | null;
+  };
   enrollments: EnrollmentOption[];
 }
 
 interface AccountingDraft {
   category: "accounting";
   studentName: string | null;
-  amount: number;
+  /** null = 원장이 금액을 안 적음. 고른 반의 수강료로 채운 뒤에야 저장할 수 있다. */
+  amount: number | null;
   type: PaymentType;
   paymentMonth: string;
   method: PaymentMethod | null;
   memo: string | null;
+}
+
+/** 학생·교사 정보를 고치거나 교사를 새로 넣는 초안 */
+interface PersonDraft {
+  category: "person";
+  target: "student" | "teacher";
+  action: "create" | "update";
+  name: string | null;
+  school: string | null;
+  grade: string | null;
+  phone: string | null;
+  subject: string | null;
+  notes: string | null;
 }
 
 interface ContactDraft {
@@ -97,6 +119,31 @@ interface ClassOption {
   defaultTuition: number;
 }
 
+interface TeacherOption {
+  id: string;
+  name: string;
+  subject: string;
+  phone: string | null;
+  isActive: boolean;
+}
+
+/**
+ * 반 자체를 만들거나 고치는 초안. 학생이 아니라 시간표를 건드린다.
+ * 서버 ClassDraft(server/lib/nlpParser.ts)와 짝을 이룬다.
+ */
+interface ClassDraft {
+  category: "class";
+  action: "create" | "update";
+  classHint: { scheduleDays: string[] | null; teacherName: string | null; level: string | null };
+  name: string | null;
+  subject: string | null;
+  schedule: string | null;
+  teacherName: string | null;
+  defaultTuition: number | null;
+  maxStudents: number | null;
+  memo: string | null;
+}
+
 interface UnclearDraft {
   category: "unclear";
   reason: string;
@@ -104,7 +151,13 @@ interface UnclearDraft {
 }
 
 interface ParseResponse {
-  draft: AccountingDraft | RegistrationDraft | ContactDraft | UnclearDraft;
+  draft:
+    | AccountingDraft
+    | RegistrationDraft
+    | ContactDraft
+    | ClassDraft
+    | PersonDraft
+    | UnclearDraft;
   sourceText: string;
   corrections: string[];
   studentMatches: StudentMatch[];
@@ -112,17 +165,46 @@ interface ParseResponse {
   classMatch: { id: string; name: string } | null;
   /** 요일·강사로 좁혔지만 하나로 확정되지 않은 반들 */
   classCandidates?: Array<{ id: string; name: string }>;
+  /** 문장 속 강사 이름을 실제 강사와 대조해 찾은 결과 (반 초안일 때만) */
+  teacherMatch?: { id: string; name: string } | null;
+  /** 교사 수정 초안에서 고칠 수 있는 교사 후보들 */
+  teacherMatches?: Array<{ id: string; name: string; subject: string; phone: string | null }>;
 }
 
 const EXAMPLES = [
-  "정재현 숭의중1 등록 결제 28만 정우석 선생님 화 목 심화",
+  "김민 수납",
   "김민준 35만원 이번달 원비 카드 결제",
+  "정재현 숭의중1 등록 결제 28만 정우석 선생님 화 목 심화",
   "010-1234-5678 박서연 어머니 중2 영어 문의",
+  "중등심화반 신설 정우석 선생님 화목 19:00-21:00 수강료 35만 정원 15명",
+  "학생 수정 김민준 학교 숭의중으로",
+  "교사 추가 박지훈 수학 010-1111-2222",
 ];
 
 function today(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * 수정 대상의 현재 값을 초안의 빈 칸에 채운다.
+ *
+ * 초안에서 null은 "문장에 언급이 없었다"는 뜻이다. 그 자리를 지금 저장된 값으로
+ * 메워 두면 원장이 화면에서 바뀌는 항목과 그대로인 항목을 한눈에 비교할 수 있고,
+ * 저장할 때 언급 없던 항목이 빈 값으로 지워지지도 않는다.
+ */
+function fillFromStudent(draft: any, s: StudentMatch["student"]) {
+  draft.name = draft.name ?? s.name;
+  draft.school = draft.school ?? s.school;
+  draft.grade = draft.grade ?? s.grade;
+  draft.phone = draft.phone ?? s.parentPhone ?? null;
+  draft.notes = draft.notes ?? s.notes ?? null;
+}
+
+function fillFromTeacher(draft: any, t: { name: string; subject: string; phone: string | null }) {
+  draft.name = draft.name ?? t.name;
+  draft.subject = draft.subject ?? t.subject;
+  draft.phone = draft.phone ?? t.phone;
 }
 
 export default function QuickInput() {
@@ -135,10 +217,14 @@ export default function QuickInput() {
   const [classId, setClassId] = useState<string>("");
   // 같은 이름의 학생이 이미 있을 때, 새로 만들지 않고 그 학생에 붙이려면 여기에 id가 들어간다
   const [existingStudentId, setExistingStudentId] = useState<string>("");
+  // 반 초안에서 고른 담당 강사. classes.teacherId가 NOT NULL이라 반드시 있어야 한다.
+  const [teacherId, setTeacherId] = useState<string>("");
   const { toast } = useToast();
   const qc = useQueryClient();
+  const [, setLocation] = useLocation();
 
   const { data: classes = [] } = useQuery<ClassOption[]>({ queryKey: ["/api/classes"] });
+  const { data: teachers = [] } = useQuery<TeacherOption[]>({ queryKey: ["/api/teachers"] });
 
   const parseMutation = useMutation({
     mutationFn: async (input: string) => {
@@ -151,15 +237,40 @@ export default function QuickInput() {
       // 원장이 등록 직후에 적는 문장이므로 날짜가 없으면 오늘로 두고 화면에서 보여준다.
       const d: any = { ...data.draft };
       if (d.category === "registration" && !d.startDate) d.startDate = today();
-      setDraft(d);
-      // 수강 등록이 딱 하나면 자동 선택, 여러 개면 원장이 직접 고르게 둔다
-      const only = data.studentMatches?.[0];
-      setEnrollmentId(
-        only && only.enrollments.length === 1 ? only.enrollments[0].id : ""
-      );
+
+      /*
+        후보가 한 명으로 좁혀지고 그 학생이 듣는 반도 하나면 더 물어볼 것이 없다.
+        바로 골라 두고, 금액을 안 적었으면 그 반의 수강료까지 채워 둔다.
+        "김민 중2 수납"을 치면 확인 버튼 하나만 남는다는 뜻이다.
+      */
+      const all = (data.studentMatches ?? []).flatMap((m) => m.enrollments);
+      const only = all.length === 1 ? all[0] : null;
+      setEnrollmentId(only?.id ?? "");
+      if (d.category === "accounting" && d.amount == null && only) {
+        d.amount = only.tuition ?? only.defaultTuition;
+      }
+
       // 문장에 반 이름을 적었으면 미리 골라둔다 ("김민준 초등A반 등록")
       setClassId(data.classMatch?.id ?? "");
+      // 강사는 이름이 정확히 하나로 맞을 때만 서버가 알려준다. 애매하면 비워 두고 고르게 한다.
+      setTeacherId(data.teacherMatch?.id ?? "");
       setExistingStudentId("");
+
+      // 정보 수정 대상이 한 명뿐이면 바로 고르고, 현재 값을 폼에 채워 둔다
+      if (d.category === "person") {
+        const students = data.studentMatches ?? [];
+        if (d.target === "student" && students.length === 1) {
+          setExistingStudentId(students[0].student.id);
+          fillFromStudent(d, students[0].student);
+        }
+        const found = data.teacherMatches ?? [];
+        if (d.target === "teacher" && d.action === "update" && found.length === 1) {
+          setTeacherId(found[0].id);
+          fillFromTeacher(d, found[0]);
+        }
+      }
+
+      setDraft(d);
     },
     onError: (err: Error) => {
       toast({
@@ -172,6 +283,50 @@ export default function QuickInput() {
 
   const saveMutation = useMutation({
     mutationFn: async () => {
+      // 학생·교사 정보 수정
+      if (draft.category === "person") {
+        if (draft.target === "student") {
+          await apiRequest("PUT", `/api/students/${existingStudentId}`, {
+            name: draft.name,
+            school: draft.school,
+            grade: draft.grade,
+            parentPhone: draft.phone,
+            notes: draft.notes,
+          });
+          return { personSaved: "학생 정보를 수정했습니다" };
+        }
+        const body = { name: draft.name, subject: draft.subject, phone: draft.phone };
+        if (draft.action === "create") {
+          await apiRequest("POST", "/api/teachers", body);
+          return { personSaved: "교사를 추가했습니다" };
+        }
+        await apiRequest("PUT", `/api/teachers/${teacherId}`, body);
+        return { personSaved: "교사 정보를 수정했습니다" };
+      }
+
+      // 반 생성·수정 — 학생 데이터는 건드리지 않는다.
+      if (draft.category === "class") {
+        const body = {
+          name: draft.name,
+          subject: draft.subject,
+          schedule: draft.schedule,
+          teacherId,
+          defaultTuition: draft.defaultTuition,
+          maxStudents: draft.maxStudents,
+        };
+        if (draft.action === "update") {
+          // 수정은 화면에서 실제로 채워진 항목만 보낸다.
+          // 빈 칸까지 보내면 문장에 없던 값이 기본값으로 덮어써진다.
+          const patch = Object.fromEntries(
+            Object.entries(body).filter(([, v]) => v !== null && v !== "")
+          );
+          await apiRequest("PUT", `/api/classes/${classId}`, patch);
+        } else {
+          await apiRequest("POST", "/api/classes", { ...body, maxStudents: body.maxStudents ?? 20 });
+        }
+        return { enrolled: false, classSaved: true };
+      }
+
       if (draft.category === "accounting") {
         await apiRequest("POST", "/api/payments", {
           enrollmentId: enrollmentId || null,
@@ -261,14 +416,22 @@ export default function QuickInput() {
       });
       return { enrolled: studentId !== null };
     },
-    onSuccess: (result) => {
+    onSuccess: (result: any) => {
       toast({
-        title: result?.enrolled ? "학생 등록까지 완료되었습니다" : "저장되었습니다",
+        title:
+          result?.personSaved ??
+          (result?.classSaved
+            ? "반 정보가 저장되었습니다"
+            : result?.enrolled
+              ? "학생 등록까지 완료되었습니다"
+              : "저장되었습니다"),
       });
+      qc.invalidateQueries({ queryKey: ["/api/teachers"] });
       qc.invalidateQueries({ queryKey: ["/api/payments"] });
       qc.invalidateQueries({ queryKey: ["/api/consultations"] });
       qc.invalidateQueries({ queryKey: ["/api/students"] });
       qc.invalidateQueries({ queryKey: ["/api/enrollments"] });
+      qc.invalidateQueries({ queryKey: ["/api/classes"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/students"] });
       reset();
     },
@@ -288,18 +451,72 @@ export default function QuickInput() {
     setEnrollmentId("");
     setClassId("");
     setExistingStudentId("");
+    setTeacherId("");
   };
 
   const matches = parsed?.studentMatches ?? [];
   const matchedStudent = matches[0];
+  const teacherMatches = parsed?.teacherMatches ?? [];
   const classCandidates = parsed?.classCandidates ?? [];
+
+  /** 한 학생이 두 반을 들으면 줄이 두 개 나온다. 화면에서는 이 줄 단위로 고른다. */
+  const pickEnrollment = (id: string) => {
+    setEnrollmentId(id);
+    // 금액을 안 적었으면 고른 반의 수강료로 채운다. 이미 적었으면 건드리지 않는다.
+    const en = matches.flatMap((m) => m.enrollments).find((e) => e.id === id);
+    if (en && draft?.category === "accounting" && draft.amount == null) {
+      setDraft({ ...draft, amount: en.tuition ?? en.defaultTuition });
+    }
+  };
+
+  const pickStudentToEdit = (id: string) => {
+    setExistingStudentId(id);
+    const m = matches.find((x) => x.student.id === id);
+    if (!m) return;
+    const next = { ...draft };
+    fillFromStudent(next, m.student);
+    setDraft(next);
+  };
+
+  const pickTeacherToEdit = (id: string) => {
+    setTeacherId(id);
+    const t = teacherMatches.find((x) => x.id === id);
+    if (!t) return;
+    const next = { ...draft };
+    fillFromTeacher(next, t);
+    setDraft(next);
+  };
+
   const needsEnrollment =
     draft?.category === "accounting" && (draft.type === "원비" || draft.type === "환불");
   // 최종등록이면 학생·수강 등록을 만들어야 하므로 반과 등록일이 반드시 있어야 한다
   const isFinalRegistration = draft?.category === "contact" && draft.status === "최종등록";
+  const activeTeachers = teachers.filter((t) => t.isActive);
+  // 새 반은 classes 테이블의 NOT NULL 컬럼(이름·과목·일정·수강료·강사)이 모두 차야 만들 수 있다.
+  const canSaveClass =
+    draft?.category === "class" &&
+    (draft.action === "update"
+      ? !!classId
+      : !!draft.name &&
+        !!draft.subject &&
+        !!draft.schedule &&
+        !!draft.defaultTuition &&
+        !!teacherId);
+  // 수정은 "누구를" 고르지 않으면 저장할 수 없다. 교사 추가만 대상 없이 진행된다.
+  const canSavePerson =
+    draft?.category === "person" &&
+    !!draft.name &&
+    (draft.target === "student"
+      ? !!existingStudentId
+      : draft.action === "create"
+        ? !!draft.subject
+        : !!teacherId && !!draft.subject);
   const canSave =
     draft &&
     draft.category !== "unclear" &&
+    (draft.category !== "class" || canSaveClass) &&
+    (draft.category !== "person" || canSavePerson) &&
+    (draft.category !== "accounting" || draft.amount != null) &&
     (!needsEnrollment || !!enrollmentId) &&
     (draft.category !== "registration" ||
       (!!classId && !!draft.startDate && !!draft.studentName)) &&
@@ -310,7 +527,7 @@ export default function QuickInput() {
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
           <Sparkles className="h-4 w-4" />
-          빠른 입력
+          AI 입력
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -383,16 +600,88 @@ export default function QuickInput() {
           <div className="space-y-3 rounded-md border p-3" data-testid="quick-input-accounting">
             <Badge variant="secondary">수납/회계</Badge>
 
+            {/*
+              누구의 수납인지가 첫 결정이라 금액보다 위에 둔다.
+              후보가 여럿이면 눌러서 고르고, 하나면 이미 골라져 있어 확인만 하면 된다.
+            */}
+            {needsEnrollment && (
+              <div>
+                <Label>학생 / 반</Label>
+                {matches.length === 0 && (
+                  <p className="text-sm text-destructive">
+                    "{draft.studentName}" 로 찾은 재원생이 없습니다. 이름을 다시 확인해주세요.
+                  </p>
+                )}
+                {matches.length > 1 && (
+                  <p className="mb-1 text-xs text-amber-700 dark:text-amber-400">
+                    {matches.length}명이 검색되었습니다. 누구인지 골라주세요.
+                  </p>
+                )}
+                <div className="mt-1 space-y-1.5">
+                  {matches.flatMap((m: StudentMatch) =>
+                    m.enrollments.map((en) => {
+                      const picked = enrollmentId === en.id;
+                      return (
+                        <button
+                          key={en.id}
+                          type="button"
+                          onClick={() => pickEnrollment(en.id)}
+                          className={`flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2 text-left transition-colors ${
+                            picked ? "border-primary bg-primary/5" : "hover:bg-accent"
+                          }`}
+                          data-testid={`quick-input-enrollment-${en.id}`}
+                        >
+                          <span className="min-w-0">
+                            <span className="font-medium">{m.student.name}</span>
+                            {m.student.grade && (
+                              <span className="ml-1 text-xs text-muted-foreground">
+                                {m.student.grade}
+                              </span>
+                            )}
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {en.className}
+                              {m.student.school ? ` · ${m.student.school}` : ""}
+                            </span>
+                          </span>
+                          <span className="flex shrink-0 items-center gap-2">
+                            <span className="text-sm font-semibold">
+                              {(en.tuition ?? en.defaultTuition).toLocaleString()}원
+                            </span>
+                            {picked && <Check className="h-4 w-4 text-primary" />}
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+                {matchedStudent && matches.every((m) => m.enrollments.length === 0) && (
+                  <p className="mt-1 text-sm text-destructive">
+                    이 학생은 활성 수강 등록이 없습니다. 먼저 반에 등록해주세요.
+                  </p>
+                )}
+              </div>
+            )}
+
             <div className="grid gap-3 sm:grid-cols-2">
               <div>
                 <Label>금액</Label>
                 <Input
                   type="number"
-                  value={draft.amount}
-                  onChange={(e) => setDraft({ ...draft, amount: Number(e.target.value) })}
+                  value={draft.amount ?? ""}
+                  placeholder="반을 고르면 수강료가 채워집니다"
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      amount: e.target.value === "" ? null : Number(e.target.value),
+                    })
+                  }
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {draft.amount < 0 ? "환불·지출이므로 음수입니다" : `${draft.amount.toLocaleString()}원`}
+                  {draft.amount == null
+                    ? "금액을 채워야 저장할 수 있습니다"
+                    : draft.amount < 0
+                      ? "환불·지출이므로 음수입니다"
+                      : `${draft.amount.toLocaleString()}원`}
                 </p>
               </div>
 
@@ -402,8 +691,13 @@ export default function QuickInput() {
                   value={draft.type}
                   onValueChange={(v: PaymentType) => {
                     // 종류를 바꾸면 부호도 같이 맞춰준다
-                    const magnitude = Math.abs(draft.amount);
-                    const signed = v === "환불" || v === "지출" ? -magnitude : magnitude;
+                    const magnitude = draft.amount == null ? null : Math.abs(draft.amount);
+                    const signed =
+                      magnitude == null
+                        ? null
+                        : v === "환불" || v === "지출"
+                          ? -magnitude
+                          : magnitude;
                     setDraft({ ...draft, type: v, amount: signed });
                   }}
                 >
@@ -441,45 +735,6 @@ export default function QuickInput() {
                 </Select>
               </div>
             </div>
-
-            {needsEnrollment && (
-              <div>
-                <Label>학생 / 반</Label>
-                {matches.length === 0 && (
-                  <p className="text-sm text-destructive">
-                    "{draft.studentName}" 이름의 재원생을 찾지 못했습니다. 학생 등록 여부를 확인해주세요.
-                  </p>
-                )}
-                {matches.length > 1 && (
-                  <p className="mb-1 text-xs text-amber-700">
-                    동명이인 {matches.length}명이 있습니다. 반을 보고 골라주세요.
-                  </p>
-                )}
-                {matches.length > 0 && (
-                  <Select value={enrollmentId} onValueChange={setEnrollmentId}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="수강 반을 선택하세요" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {matches.flatMap((m: StudentMatch) =>
-                        m.enrollments.map((en) => (
-                          <SelectItem key={en.id} value={en.id}>
-                            {m.student.name}
-                            {m.student.grade ? ` (${m.student.grade})` : ""} · {en.className} ·{" "}
-                            {(en.tuition ?? en.defaultTuition).toLocaleString()}원
-                          </SelectItem>
-                        ))
-                      )}
-                    </SelectContent>
-                  </Select>
-                )}
-                {matchedStudent && matchedStudent.enrollments.length === 0 && (
-                  <p className="mt-1 text-sm text-destructive">
-                    이 학생은 활성 수강 등록이 없습니다. 먼저 반에 등록해주세요.
-                  </p>
-                )}
-              </div>
-            )}
 
             <div>
               <Label>메모</Label>
@@ -849,6 +1104,278 @@ export default function QuickInput() {
                   </div>
                 </div>
               </div>
+            )}
+          </div>
+        )}
+
+        {/* 반 생성·수정 초안 확인 폼 */}
+        {draft?.category === "class" && (
+          <div className="space-y-3 rounded-md border p-3" data-testid="quick-input-class">
+            <Badge variant="secondary">
+              {draft.action === "update" ? "반 수정" : "반 개설"}
+            </Badge>
+
+            {/* 수정은 대상 반을 잘못 고르면 엉뚱한 시간표가 바뀐다. 반드시 사람이 확인한다. */}
+            {draft.action === "update" && (
+              <div>
+                <Label>수정할 반</Label>
+                {classes.length === 0 ? (
+                  <p className="text-sm text-destructive">등록된 반이 없습니다.</p>
+                ) : (
+                  <Select value={classId} onValueChange={setClassId}>
+                    <SelectTrigger data-testid="quick-input-class-target">
+                      <SelectValue placeholder="반을 선택하세요" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {classes.map((c) => (
+                        <SelectItem key={c.id} value={c.id}>
+                          {c.name} · {c.subject}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                {classCandidates.length > 1 && !classId && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    후보가 여러 개입니다: {classCandidates.map((c) => c.name).join(", ")}
+                  </p>
+                )}
+                <p className="mt-1 text-xs text-muted-foreground">
+                  아래에서 비워 둔 항목은 지금 값 그대로 둡니다
+                </p>
+              </div>
+            )}
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <Label>반 이름</Label>
+                <Input
+                  value={draft.name ?? ""}
+                  onChange={(e) => setDraft({ ...draft, name: e.target.value || null })}
+                  placeholder="예) 중등심화반"
+                />
+              </div>
+              <div>
+                <Label>과목</Label>
+                <Input
+                  value={draft.subject ?? ""}
+                  onChange={(e) => setDraft({ ...draft, subject: e.target.value || null })}
+                  placeholder="예) 영어"
+                />
+              </div>
+              <div>
+                <Label>담당 강사</Label>
+                {activeTeachers.length === 0 ? (
+                  <p className="text-sm text-destructive">
+                    등록된 강사가 없습니다. 강사를 먼저 등록해주세요.
+                  </p>
+                ) : (
+                  <Select value={teacherId} onValueChange={setTeacherId}>
+                    <SelectTrigger data-testid="quick-input-class-teacher">
+                      <SelectValue placeholder="강사를 선택하세요" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {activeTeachers.map((t) => (
+                        <SelectItem key={t.id} value={t.id}>
+                          {t.name} · {t.subject}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                {draft.teacherName && !teacherId && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    "{draft.teacherName}" 과 일치하는 강사를 찾지 못했습니다
+                  </p>
+                )}
+              </div>
+              <div>
+                <Label>수업 일정</Label>
+                <Input
+                  value={draft.schedule ?? ""}
+                  onChange={(e) => setDraft({ ...draft, schedule: e.target.value || null })}
+                  placeholder="예) 화목 19:00-21:00"
+                />
+              </div>
+              <div>
+                <Label>수강료</Label>
+                <Input
+                  type="number"
+                  value={draft.defaultTuition ?? ""}
+                  onChange={(e) => {
+                    const n = parseInt(e.target.value, 10);
+                    setDraft({ ...draft, defaultTuition: Number.isFinite(n) ? n : null });
+                  }}
+                />
+                {draft.defaultTuition != null && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {draft.defaultTuition.toLocaleString()}원
+                  </p>
+                )}
+              </div>
+              <div>
+                <Label>정원</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={draft.maxStudents ?? ""}
+                  placeholder="비우면 20명"
+                  onChange={(e) => {
+                    const n = parseInt(e.target.value, 10);
+                    setDraft({ ...draft, maxStudents: Number.isFinite(n) && n > 0 ? n : null });
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 학생·교사 정보 수정 폼 — 알아들은 값은 채워져 있고, 나머지는 현재 값 그대로다 */}
+        {draft?.category === "person" && (
+          <div className="space-y-3 rounded-md border p-3" data-testid="quick-input-person">
+            <Badge variant="secondary">
+              {draft.target === "student"
+                ? "학생 정보 수정"
+                : draft.action === "create"
+                  ? "교사 추가"
+                  : "교사 정보 수정"}
+            </Badge>
+
+            {/* 대상 고르기 — 후보가 하나면 이미 골라져 있다 */}
+            {draft.target === "student" && (
+              <div>
+                <Label>수정할 학생</Label>
+                {matches.length === 0 ? (
+                  <p className="text-sm text-destructive">
+                    "{draft.name ?? ""}" 로 찾은 재원생이 없습니다.
+                  </p>
+                ) : (
+                  <div className="mt-1 space-y-1.5">
+                    {matches.map((m: StudentMatch) => {
+                      const picked = existingStudentId === m.student.id;
+                      return (
+                        <button
+                          key={m.student.id}
+                          type="button"
+                          onClick={() => pickStudentToEdit(m.student.id)}
+                          className={`flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2 text-left transition-colors ${
+                            picked ? "border-primary bg-primary/5" : "hover:bg-accent"
+                          }`}
+                          data-testid={`quick-input-person-student-${m.student.id}`}
+                        >
+                          <span className="min-w-0">
+                            <span className="font-medium">{m.student.name}</span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {[m.student.grade, m.student.school, m.enrollments[0]?.className]
+                                .filter(Boolean)
+                                .join(" · ") || "정보 없음"}
+                            </span>
+                          </span>
+                          {picked && <Check className="h-4 w-4 shrink-0 text-primary" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {draft.target === "teacher" && draft.action === "update" && (
+              <div>
+                <Label>수정할 교사</Label>
+                {teacherMatches.length === 0 ? (
+                  <p className="text-sm text-destructive">
+                    "{draft.name ?? ""}" 로 찾은 교사가 없습니다.
+                  </p>
+                ) : (
+                  <Select value={teacherId} onValueChange={pickTeacherToEdit}>
+                    <SelectTrigger data-testid="quick-input-person-teacher">
+                      <SelectValue placeholder="교사를 선택하세요" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {teacherMatches.map((t) => (
+                        <SelectItem key={t.id} value={t.id}>
+                          {t.name} · {t.subject}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            )}
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <Label>이름</Label>
+                <Input
+                  value={draft.name ?? ""}
+                  onChange={(e) => setDraft({ ...draft, name: e.target.value || null })}
+                />
+              </div>
+
+              {draft.target === "student" ? (
+                <>
+                  <div>
+                    <Label>학년</Label>
+                    <Input
+                      value={draft.grade ?? ""}
+                      onChange={(e) => setDraft({ ...draft, grade: e.target.value || null })}
+                      placeholder="예) 중2"
+                    />
+                  </div>
+                  <div>
+                    <Label>학교</Label>
+                    <Input
+                      value={draft.school ?? ""}
+                      onChange={(e) => setDraft({ ...draft, school: e.target.value || null })}
+                    />
+                  </div>
+                  <div>
+                    <Label>학부모 연락처</Label>
+                    <Input
+                      value={draft.phone ?? ""}
+                      onChange={(e) => setDraft({ ...draft, phone: e.target.value || null })}
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <Label>메모</Label>
+                    <Input
+                      value={draft.notes ?? ""}
+                      onChange={(e) => setDraft({ ...draft, notes: e.target.value || null })}
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <Label>담당 과목</Label>
+                    <Input
+                      value={draft.subject ?? ""}
+                      onChange={(e) => setDraft({ ...draft, subject: e.target.value || null })}
+                      placeholder="예) 수학"
+                    />
+                  </div>
+                  <div>
+                    <Label>연락처</Label>
+                    <Input
+                      value={draft.phone ?? ""}
+                      onChange={(e) => setDraft({ ...draft, phone: e.target.value || null })}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* 반 배정·수강료처럼 여기서 못 다루는 항목은 원래 화면으로 보낸다 */}
+            {draft.target === "student" && existingStudentId && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setLocation(`/students/edit/${existingStudentId}`)}
+                data-testid="quick-input-person-more"
+              >
+                반·수강료까지 수정하기
+              </Button>
             )}
           </div>
         )}

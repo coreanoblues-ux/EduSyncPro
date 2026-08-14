@@ -28,6 +28,13 @@ import {
   extractConsultationStatus,
   extractPaymentType,
   extractPaymentMethod,
+  extractClassAction,
+  extractClassTime,
+  extractMaxStudents,
+  extractPersonAction,
+  extractSubject,
+  type PersonTarget,
+  type PersonAction,
 } from "./nlpNormalize";
 
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
@@ -55,11 +62,38 @@ export interface ClassHint {
 export interface AccountingDraft {
   category: "accounting";
   studentName: string | null;
-  amount: number; // 원비=양수, 환불·지출=음수
+  /**
+   * 원비=양수, 환불·지출=음수.
+   *
+   * null은 "원장이 금액을 안 적었다"는 뜻이다. 급할 때 "김민 수납"만 치는 경우를
+   * 위해 허용했고, 화면에서 그 학생의 수강료로 채워 준다. 금액이 빈 채로는
+   * 저장되지 않으므로 지어낸 금액이 회계에 들어갈 일은 없다.
+   */
+  amount: number | null;
   type: PaymentType;
   paymentMonth: string; // YYYY-MM
   method: PaymentMethod | null;
   memo: string | null;
+}
+
+/**
+ * 사람(학생·교사) 정보를 고치거나 교사를 새로 넣는 사건.
+ *
+ * 학생 신규 생성은 여기 없다. 신규 학생은 반 배정과 납부 기준일이 함께 잡혀야 해서
+ * 기존 등록(registration) 흐름으로만 만든다.
+ */
+export interface PersonDraft {
+  category: "person";
+  target: PersonTarget;
+  action: PersonAction;
+  /** 대상을 찾을 이름. 부분 이름이어도 서버가 후보를 붙여 준다. */
+  name: string | null;
+  /** 원문에서 알아들은 값만 채운다. null은 "언급 없음" = 기존 값 유지. */
+  school: string | null;
+  grade: string | null;
+  phone: string | null;
+  subject: string | null;
+  notes: string | null;
 }
 
 /**
@@ -98,6 +132,27 @@ export interface ContactDraft {
   startDate: string | null; // YYYY-MM-DD
 }
 
+/**
+ * 반 자체를 만들거나 고치는 사건. 학생이 아니라 시간표를 건드리는 말이다.
+ *
+ * teacherId는 여기서 정하지 않는다. 문장에는 "정우석 선생님"이라는 이름만 있고
+ * 실제 강사 목록과 대조하는 것은 서버(routes.ts)의 일이다.
+ */
+export interface ClassDraft {
+  category: "class";
+  action: "create" | "update";
+  /** 수정이면 대상 반을 찾을 재료, 생성이면 새 반의 재료 */
+  classHint: ClassHint;
+  name: string | null;
+  subject: string | null;
+  /** "화목 19:00-21:00" 형태. 시간이 없으면 요일만 들어간다. */
+  schedule: string | null;
+  teacherName: string | null;
+  defaultTuition: number | null;
+  maxStudents: number | null;
+  memo: string | null;
+}
+
 export interface UnclearDraft {
   category: "unclear";
   reason: string;
@@ -105,7 +160,13 @@ export interface UnclearDraft {
   question: string;
 }
 
-export type Draft = AccountingDraft | RegistrationDraft | ContactDraft | UnclearDraft;
+export type Draft =
+  | AccountingDraft
+  | RegistrationDraft
+  | ContactDraft
+  | ClassDraft
+  | PersonDraft
+  | UnclearDraft;
 
 export type ParseResult = {
   draft: Draft;
@@ -196,6 +257,43 @@ consultation = true (문의·상담 기록 대상)
   · 대기 의사면 → status="대기등록"
   · 보류·취소면 → status="보류"
 
+class_action = "생성" 또는 "수정" (반 자체를 다루는 문장)
+  이것은 학생에 관한 사건이 아니라 학원의 시간표를 바꾸는 사건입니다.
+  "생성" 예: 반 신설, 반 개설, 새 반 만들기, 반 하나 만들어줘
+  "수정" 예: 반 이름 변경, 수강료 변경, 수업 시간 변경, 담당 강사 변경, 정원 조정
+
+  반 문장을 만나면 enroll·payment·consultation을 모두 false로 두십시오.
+  반을 만드는 것과 학생을 등록시키는 것은 서로 다른 사건입니다.
+
+  반대로 학생 이름이 나오고 그 학생이 어느 반에 들어간다는 뜻이면 그것은
+  등록입니다. class_action은 null로 두십시오.
+    "강단우 국어반 추가"      → enroll=true, class_action=null (학생을 반에 넣는 말)
+    "국어반 하나 더 개설"     → class_action="생성" (반을 만드는 말)
+
+  반 문장일 때 채워야 할 항목:
+    class_name    반 이름. 문장에 이름이 있으면 그대로. ("중등심화반")
+                  수정이면 "어느 반을 고치는지" 가리키는 이름을 넣으십시오.
+    subject       과목. ("영어", "국어")
+    schedule_days 요일 배열. ("화목" → ["화","목"])
+    class_time    수업 시간대. ("19:00-21:00", "7시~9시" → "19:00-21:00")
+    teacher_name  담당 강사 이름. 호칭은 떼십시오.
+    amount        수강료. 만원 환산은 동일하게 적용합니다.
+    max_students  정원. ("정원 20명" → 20)
+  없는 것은 null로 두십시오. 반 이름을 지어내지 마십시오.
+
+person_action = "학생수정" / "교사추가" / "교사수정"
+  원장이 외워서 치는 고정 명령어입니다. 문장이 이 말로 시작하면 그 뒤는 전부
+  "무엇을 어떻게 바꿀지"에 대한 설명입니다.
+    "학생 수정 김민준 학교 숭의중으로"  → person_action="학생수정",
+                                          student_name="김민준", school="숭의중"
+    "교사 추가 박지훈 수학 010-1111-2222" → person_action="교사추가",
+                                          teacher_name="박지훈", subject="수학",
+                                          parent_phone="010-1111-2222"
+    "교사 수정 정우석 과목 국어로"        → person_action="교사수정",
+                                          teacher_name="정우석", subject="국어"
+  이때 enroll·payment·consultation은 모두 false, class_action은 null입니다.
+  바꾸라고 하지 않은 항목은 반드시 null로 두십시오. 기존 값을 지우게 됩니다.
+
 ## 금액 규칙
 "만"·"만원"은 10000을 곱합니다. 28만 → 280000, 35만원 → 350000.
 amount는 항상 양수로 적으십시오. 환불·지출 여부는 payment_type으로만 표현합니다.
@@ -232,6 +330,7 @@ question에 원장에게 되물을 구체적인 질문을 적으십시오.
   "student_name": "정재현", "school": "숭의중", "grade": "1학년",
   "parent_phone": null, "guardian_name": null,
   "schedule_days": ["화","목"], "teacher_name": "정우석", "class_level": "심화",
+  "class_action": null, "class_name": null, "class_time": null, "max_students": null, "person_action": null,
   "amount": 280000, "payment_type": "원비", "payment_method": null,
   "payment_month": null, "due_day": null, "start_date": null,
   "status": "최종등록", "subject": null, "follow_up": null, "memo": null,
@@ -250,6 +349,7 @@ question에 원장에게 되물을 구체적인 질문을 적으십시오.
   "student_name": "민서", "school": null, "grade": null,
   "parent_phone": "010-2345-6789", "guardian_name": "민서 어머니",
   "schedule_days": null, "teacher_name": null, "class_level": null,
+  "class_action": null, "class_name": null, "class_time": null, "max_students": null, "person_action": null,
   "amount": 280000, "payment_type": "원비", "payment_method": "계좌이체",
   "payment_month": null, "due_day": null, "start_date": null,
   "status": null, "subject": null, "follow_up": null, "memo": null,
@@ -268,6 +368,7 @@ question에 원장에게 되물을 구체적인 질문을 적으십시오.
   "student_name": "김도윤", "school": null, "grade": null,
   "parent_phone": null, "guardian_name": null,
   "schedule_days": ["화","목"], "teacher_name": null, "class_level": "심화",
+  "class_action": null, "class_name": null, "class_time": null, "max_students": null, "person_action": null,
   "amount": 350000, "payment_type": null, "payment_method": null,
   "payment_month": null, "due_day": null, "start_date": "3월",
   "status": "최종등록", "subject": null, "follow_up": null, "memo": null,
@@ -287,12 +388,86 @@ question에 원장에게 되물을 구체적인 질문을 적으십시오.
   "student_name": "박서연", "school": null, "grade": "중2",
   "parent_phone": "010-1111-2222", "guardian_name": "박서연 어머니",
   "schedule_days": null, "teacher_name": null, "class_level": null,
+  "class_action": null, "class_name": null, "class_time": null, "max_students": null, "person_action": null,
   "amount": null, "payment_type": null, "payment_method": null,
   "payment_month": null, "due_day": null, "start_date": null,
   "status": "상담문의", "subject": "영어", "follow_up": "다음주 재통화",
   "needs_clarification": false, "question": null
 }
-(등록·결제 낱말이 없으므로 상담문의로만 처리했고, "중2"의 2를 학년으로 읽었습니다.)`;
+(등록·결제 낱말이 없으므로 상담문의로만 처리했고, "중2"의 2를 학년으로 읽었습니다.)
+
+입력: 중등심화반 신설 정우석 선생님 화목 19:00-21:00 수강료 35만 정원 15명
+{
+  "number_readings": [
+    {"token": "19:00-21:00", "context": "수업 시간", "meaning": "기타"},
+    {"token": "35만", "context": "수강료 35만", "meaning": "금액"},
+    {"token": "15명", "context": "정원 15명", "meaning": "기타"}
+  ],
+  "enroll": false, "payment": false, "consultation": false,
+  "student_name": null, "school": null, "grade": null,
+  "parent_phone": null, "guardian_name": null,
+  "schedule_days": ["화","목"], "teacher_name": "정우석", "class_level": "심화",
+  "class_action": "생성", "class_name": "중등심화반", "class_time": "19:00-21:00", "max_students": 15, "person_action": null,
+  "amount": 350000, "payment_type": null, "payment_method": null,
+  "payment_month": null, "due_day": null, "start_date": null,
+  "status": null, "subject": null, "follow_up": null, "memo": null,
+  "needs_clarification": false, "question": null
+}
+("신설"은 반을 만드는 말이므로 학생 등록이 아닙니다. enroll도 payment도
+ false로 두고, 35만원을 수납이 아니라 그 반의 수강료로 넘겼습니다.)
+
+입력: 초등A반 수강료 30만으로 변경하고 시간도 17:00-19:00으로
+{
+  "number_readings": [
+    {"token": "30만", "context": "수강료 30만", "meaning": "금액"},
+    {"token": "17:00-19:00", "context": "수업 시간", "meaning": "기타"}
+  ],
+  "enroll": false, "payment": false, "consultation": false,
+  "student_name": null, "school": null, "grade": null,
+  "parent_phone": null, "guardian_name": null,
+  "schedule_days": null, "teacher_name": null, "class_level": null,
+  "class_action": "수정", "class_name": "초등A반", "class_time": "17:00-19:00", "max_students": null, "person_action": null,
+  "amount": 300000, "payment_type": null, "payment_method": null,
+  "payment_month": null, "due_day": null, "start_date": null,
+  "status": null, "subject": null, "follow_up": null, "memo": null,
+  "needs_clarification": false, "question": null
+}
+("변경"은 이미 있는 반을 고치는 말입니다. class_name에 고칠 대상 반 이름을
+ 넣었고, 30만원은 누가 낸 돈이 아니라 바뀔 수강료입니다.)
+
+입력: 교사 추가 박지훈 수학 010-1111-2222
+{
+  "number_readings": [
+    {"token": "010-1111-2222", "context": "연락처", "meaning": "전화번호"}
+  ],
+  "enroll": false, "payment": false, "consultation": false,
+  "student_name": null, "school": null, "grade": null,
+  "parent_phone": "010-1111-2222", "guardian_name": null,
+  "schedule_days": null, "teacher_name": "박지훈", "class_level": null,
+  "class_action": null, "class_name": null, "class_time": null, "max_students": null, "person_action": "교사추가",
+  "amount": null, "payment_type": null, "payment_method": null,
+  "payment_month": null, "due_day": null, "start_date": null,
+  "status": null, "subject": "수학", "follow_up": null, "memo": null,
+  "needs_clarification": false, "question": null
+}
+(사람을 새로 넣는 말이지 상담도 등록도 아닙니다. 전화번호가 있다고 상담으로
+ 흘리지 마십시오.)
+
+입력: 학생 수정 김민준 학교 숭의중으로 바꿔줘
+{
+  "number_readings": [],
+  "enroll": false, "payment": false, "consultation": false,
+  "student_name": "김민준", "school": "숭의중", "grade": null,
+  "parent_phone": null, "guardian_name": null,
+  "schedule_days": null, "teacher_name": null, "class_level": null,
+  "class_action": null, "class_name": null, "class_time": null, "max_students": null, "person_action": "학생수정",
+  "amount": null, "payment_type": null, "payment_method": null,
+  "payment_month": null, "due_day": null, "start_date": null,
+  "status": null, "subject": null, "follow_up": null, "memo": null,
+  "needs_clarification": false, "question": null
+}
+(학년은 바꾸라는 말이 없으므로 grade는 null입니다. 값을 채우면 기존 학년이
+ 지워집니다.)`;
 
 /** OpenAI Structured Outputs 스키마. strict 모드라 모든 필드가 required여야 한다. */
 const JSON_SCHEMA = {
@@ -314,6 +489,11 @@ const JSON_SCHEMA = {
       "schedule_days",
       "teacher_name",
       "class_level",
+      "class_action",
+      "class_name",
+      "class_time",
+      "max_students",
+      "person_action",
       "amount",
       "payment_type",
       "payment_method",
@@ -356,6 +536,16 @@ const JSON_SCHEMA = {
       schedule_days: { type: ["array", "null"], items: { type: "string" } },
       teacher_name: { type: ["string", "null"] },
       class_level: { type: ["string", "null"] },
+      // 반 자체를 만들거나 고치는 문장일 때만 채운다. 학생 등록과 혼동하면 안 된다.
+      class_action: { type: ["string", "null"], enum: ["생성", "수정", null] },
+      class_name: { type: ["string", "null"] },
+      class_time: { type: ["string", "null"] },
+      max_students: { type: ["number", "null"] },
+      // 사람 정보를 고치는 문장일 때만 채운다.
+      person_action: {
+        type: ["string", "null"],
+        enum: ["학생수정", "교사추가", "교사수정", null],
+      },
       amount: { type: ["number", "null"] },
       payment_type: { type: ["string", "null"], enum: ["원비", "환불", "지출", "기타", null] },
       payment_method: { type: ["string", "null"], enum: ["계좌이체", "카드", "현금", null] },
@@ -394,6 +584,11 @@ export interface RawAiResult {
   schedule_days: string[] | null;
   teacher_name: string | null;
   class_level: string | null;
+  class_action: string | null;
+  class_name: string | null;
+  class_time: string | null;
+  max_students: number | null;
+  person_action: string | null;
   amount: number | null;
   payment_type: string | null;
   payment_method: string | null;
@@ -517,6 +712,44 @@ function resolveType(ai: RawAiResult, sourceText: string, corrections: string[])
 }
 
 /**
+ * 반 작업 문장인지 최종 판정한다.
+ *
+ * AI와 코드가 **둘 다** 반 작업이라고 해야 통과시킨다. AI만 믿으면 "강단우
+ * 국어반 추가" 같은 학생 등록이 반 생성으로 새고, 코드만 믿으면 "수강료 변경
+ * 문의 왔어요" 같은 상담이 반 수정으로 샌다.
+ *
+ * 생성/수정이 엇갈리면 원문 쪽을 따른다. 없는 반을 하나 더 만드는 실수가
+ * 있는 반을 고치는 실수보다 되돌리기 번거롭다.
+ */
+function resolveClassAction(
+  ai: RawAiResult,
+  sourceText: string,
+  corrections: string[]
+): "create" | "update" | null {
+  const fromText = extractClassAction(sourceText);
+  if (!fromText) return null;
+
+  const fromAi =
+    ai.class_action === "생성" ? "create" : ai.class_action === "수정" ? "update" : null;
+  if (!fromAi) return null;
+
+  if (fromAi !== fromText) {
+    corrections.push(
+      `반 작업을 원문 기준 "${fromText === "create" ? "생성" : "수정"}"으로 정정했습니다.`
+    );
+  }
+  return fromText;
+}
+
+/** 수강료를 뽑는다. "19:00" 같은 시간 조각이 금액으로 새지 않도록 범위로 거른다. */
+function resolveTuition(ai: RawAiResult, sourceText: string): number | null {
+  const fromText = extractAmounts(sourceText).find(isPlausibleAmount);
+  if (fromText != null) return fromText;
+  const fromAi = ai.amount != null ? Math.abs(ai.amount) : null;
+  return fromAi != null && isPlausibleAmount(fromAi) ? fromAi : null;
+}
+
+/**
  * AI 결과를 코드로 재검증해 최종 초안을 만든다.
  * 이 함수는 순수 함수이므로 API 없이 단독 테스트할 수 있다.
  */
@@ -530,6 +763,67 @@ export function arbitrate(
   const phones = extractPhones(sourceText);
   const phone = phones.length > 0 ? normalizePhone(phones[0]) : null;
   const studentName = cleanStudentName(ai.student_name);
+
+  // ── -1. 학생·교사 정보 수정 ──
+  // 가장 먼저 본다. "학생 수정 …"은 명시적 명령이므로 뒤쪽 분기가 이것을
+  // 등록이나 상담으로 가로채면 안 된다. 전화번호가 섞여 있어도 마찬가지다.
+  const person = extractPersonAction(sourceText);
+  if (person) {
+    const rawName = person.target === "teacher" ? ai.teacher_name : ai.student_name;
+    // 이름은 부분만 적어도 서버가 후보를 찾아 준다. cleanStudentName의 2자 하한만 지킨다.
+    const name = cleanStudentName(rawName) ?? cleanStudentName(ai.student_name);
+
+    return {
+      sourceText,
+      corrections,
+      draft: {
+        category: "person",
+        target: person.target,
+        action: person.action,
+        name,
+        school: person.target === "student" ? ai.school?.trim() || null : null,
+        grade: person.target === "student" ? ai.grade?.trim() || null : null,
+        phone,
+        subject:
+          person.target === "teacher"
+            ? ai.subject?.trim() || extractSubject(sourceText)
+            : null,
+        notes: ai.memo?.trim() || null,
+      },
+    };
+  }
+
+  // ── 0. 반 생성·수정 ──
+  // 학생 판정보다 먼저 본다. "반 신설"에는 학생 이름이 없어야 정상이므로
+  // 뒤쪽 분기까지 흘러가면 "판단 불가"로 되물어지고 만다.
+  const classAction = resolveClassAction(ai, sourceText, corrections);
+  if (classAction) {
+    const teacherName = ai.teacher_name?.trim().replace(/\s*(선생님|쌤|T)$/, "") || null;
+    const days = ai.schedule_days?.length ? ai.schedule_days : null;
+    const time = extractClassTime(sourceText) ?? ai.class_time?.trim() ?? null;
+    const schedule = [days?.join(""), time].filter(Boolean).join(" ") || null;
+
+    return {
+      sourceText,
+      corrections,
+      draft: {
+        category: "class",
+        action: classAction,
+        classHint: {
+          scheduleDays: days,
+          teacherName,
+          level: ai.class_level?.trim() || null,
+        },
+        name: ai.class_name?.trim() || null,
+        subject: ai.subject?.trim() || null,
+        schedule,
+        teacherName,
+        defaultTuition: resolveTuition(ai, sourceText),
+        maxStudents: extractMaxStudents(sourceText) ?? ai.max_students ?? null,
+        memo: ai.memo?.trim() || null,
+      },
+    };
+  }
 
   // 낱말이 명백하면 코드 판정을 신뢰한다. AI가 "등록"을 상담문의로 흘려보내면
   // 학생·수강등록이 만들어지지 않아 학생 목록에 뜨지 않는다.
@@ -618,7 +912,13 @@ export function arbitrate(
   const amounts = extractAmounts(sourceText);
   if ((hasPayment || isOutflow || amounts.length > 0) && !ai.consultation) {
     const amount = resolveAmount(ai, sourceText, corrections);
-    if (amount === null) {
+    const type = resolveType(ai, sourceText, corrections);
+
+    // 금액을 안 적었어도 "누구의 원비인지"만 분명하면 초안까지는 만든다.
+    // 급할 때 "김민 수납"만 치고 화면에서 그 학생 수강료를 확인해 누르는 흐름이다.
+    // 지어낸 금액이 아니라 빈 칸으로 넘기고, 화면에서 채워지기 전에는 저장할 수 없다.
+    const canDeferAmount = amount === null && type === "원비" && !!studentName;
+    if (amount === null && !canDeferAmount) {
       return unclear(
         sourceText,
         corrections,
@@ -626,7 +926,7 @@ export function arbitrate(
         "금액이 얼마인가요? (예: 김민준 35만원 이번달 원비 카드)"
       );
     }
-    if (!isPlausibleAmount(amount)) {
+    if (amount !== null && !isPlausibleAmount(amount)) {
       return unclear(
         sourceText,
         corrections,
@@ -635,11 +935,14 @@ export function arbitrate(
       );
     }
 
-    const type = resolveType(ai, sourceText, corrections);
     // 환불·지출은 음수로 저장한다 (Payments 화면이 amount를 단순 SUM 하므로)
-    const signed = type === "환불" || type === "지출" ? -amount : amount;
-    if (signed < 0) {
+    const signed =
+      amount === null ? null : type === "환불" || type === "지출" ? -amount : amount;
+    if (signed !== null && signed < 0) {
       corrections.push(`${type}이므로 금액을 음수(${signed.toLocaleString()}원)로 기록합니다.`);
+    }
+    if (signed === null) {
+      corrections.push("금액이 없어 비워 두었습니다. 수강료를 확인하고 저장하세요.");
     }
 
     const paymentMonth = normalizeMonth(ai.payment_month, sourceText, now);

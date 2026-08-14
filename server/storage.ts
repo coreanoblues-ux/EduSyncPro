@@ -30,7 +30,7 @@ import {
   waiters,
   consultations
 } from "@shared/schema";
-import { eq, and, sql, desc, isNull, gt } from "drizzle-orm";
+import { eq, and, sql, desc, isNull, gt, ilike } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { db } from "./db";
 
@@ -112,6 +112,7 @@ export interface IStorage {
 
   // 자연어 입력 지원
   findStudentsByName(tenantId: string, name: string): Promise<Student[]>;
+  findStudentsByPartialName(tenantId: string, name: string): Promise<Student[]>;
   getActiveEnrollmentsWithClass(
     tenantId: string,
     studentId: string
@@ -607,6 +608,34 @@ export class DbStorage implements IStorage {
         eq(students.name, name),
         eq(students.isActive, true)
       ));
+  }
+
+  /**
+   * 이름의 일부만으로 활성 학생을 찾는다. ("김민" → 김민준, 김민서)
+   *
+   * 원장이 급할 때 성만 치거나 이름 뒤 두 글자만 치는 것을 받아내기 위한 것이다.
+   * 정확히 일치하는 학생을 앞에 세워서, 완전한 이름을 친 사람이 부분 일치 결과에
+   * 묻히지 않게 한다.
+   */
+  async findStudentsByPartialName(tenantId: string, name: string): Promise<Student[]> {
+    const term = name.trim();
+    if (term.length < 2) return [];
+    // LIKE 와일드카드가 이름에 섞여 들어오면 엉뚱한 학생까지 걸린다
+    const escaped = term.replace(/[\\%_]/g, (ch) => "\\" + ch);
+
+    const rows = await db
+      .select()
+      .from(students)
+      .where(and(
+        eq(students.tenantId, tenantId),
+        ilike(students.name, `%${escaped}%`),
+        eq(students.isActive, true)
+      ));
+
+    return rows.sort((a, b) => {
+      const exact = (s: Student) => (s.name === term ? 0 : 1);
+      return exact(a) - exact(b) || a.name.localeCompare(b.name, "ko");
+    });
   }
 
   /**

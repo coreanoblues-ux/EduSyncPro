@@ -8,7 +8,9 @@ buildCommand = "npm install && npm run build"
 # 빌드가 끝난 뒤, 새 버전이 트래픽을 받기 전에 실행되므로 앱이 끊기는 구간이 없다.
 # 실패하면 배포가 중단되고 기존 버전이 그대로 서비스되므로 안전하다.
 # --force를 붙이지 않았다: 데이터가 지워지는 변경이 필요한 경우 자동 승인하지 않고 실패시키기 위함.
-preDeployCommand = "npx --yes drizzle-kit@0.30.4 push"
+# npx로 drizzle-kit을 즉석 설치하면 격리된 경로에 깔려 drizzle-orm을 못 찾는다.
+# 반드시 이미지에 설치된 로컬 drizzle-kit(npm run db:push)을 써야 한다.
+preDeployCommand = "npm run db:push"
 startCommand = "npm start"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3

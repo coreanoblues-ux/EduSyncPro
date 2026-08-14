@@ -16,9 +16,15 @@ var schema_exports = {};
 __export(schema_exports, {
   classes: () => classes,
   classesRelations: () => classesRelations,
+  consultationStatusEnum: () => consultationStatusEnum,
+  consultations: () => consultations,
+  consultationsRelations: () => consultationsRelations,
+  createConsultationBodySchema: () => createConsultationBodySchema,
+  createPaymentBodySchema: () => createPaymentBodySchema,
   enrollments: () => enrollments,
   enrollmentsRelations: () => enrollmentsRelations,
   insertClassSchema: () => insertClassSchema,
+  insertConsultationSchema: () => insertConsultationSchema,
   insertEnrollmentSchema: () => insertEnrollmentSchema,
   insertLessonLogSchema: () => insertLessonLogSchema,
   insertPaymentSchema: () => insertPaymentSchema,
@@ -29,7 +35,9 @@ __export(schema_exports, {
   insertWaiterSchema: () => insertWaiterSchema,
   lessonLogs: () => lessonLogs,
   lessonLogsRelations: () => lessonLogsRelations,
+  paymentMethodEnum: () => paymentMethodEnum,
   paymentStatusEnum: () => paymentStatusEnum,
+  paymentTypeEnum: () => paymentTypeEnum,
   payments: () => payments,
   paymentsRelations: () => paymentsRelations,
   students: () => students,
@@ -53,6 +61,9 @@ import { z } from "zod";
 var userRoleEnum = pgEnum("user_role", ["owner", "teacher", "superadmin"]);
 var tenantStatusEnum = pgEnum("tenant_status", ["pending", "active", "expired", "suspended"]);
 var paymentStatusEnum = pgEnum("payment_status", ["paid", "overdue", "pending"]);
+var paymentMethodEnum = pgEnum("payment_method", ["\uACC4\uC88C\uC774\uCCB4", "\uCE74\uB4DC", "\uD604\uAE08"]);
+var paymentTypeEnum = pgEnum("payment_type", ["\uC6D0\uBE44", "\uD658\uBD88", "\uC9C0\uCD9C", "\uAE30\uD0C0"]);
+var consultationStatusEnum = pgEnum("consultation_status", ["\uC0C1\uB2F4\uBB38\uC758", "\uB300\uAE30\uB4F1\uB85D", "\uCD5C\uC885\uB4F1\uB85D", "\uBCF4\uB958"]);
 var tenants = pgTable("tenants", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   accountNumber: varchar("account_number").notNull().unique(),
@@ -143,14 +154,45 @@ var enrollments = pgTable("enrollments", {
 var payments = pgTable("payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
-  enrollmentId: varchar("enrollment_id").references(() => enrollments.id, { onDelete: "cascade" }).notNull(),
+  // 원비/환불은 수강 등록에 연결되지만, 학원 운영 지출은 연결할 등록이 없으므로 nullable.
+  enrollmentId: varchar("enrollment_id").references(() => enrollments.id, { onDelete: "cascade" }),
+  // ⚠️ 부호 규칙: 원비는 양수, 환불·지출은 음수로 저장한다.
+  // Payments 화면이 amount를 단순 SUM 하므로, 이렇게 해야 합계가 자동으로 순액이 된다.
   amount: integer("amount").notNull(),
+  type: paymentTypeEnum("type").default("\uC6D0\uBE44").notNull(),
+  method: paymentMethodEnum("method"),
+  // 계좌이체/카드/현금 (모르면 null)
   paymentMonth: text("payment_month").notNull(),
   // YYYY-MM 형식
   paidDate: timestamp("paid_date").notNull(),
   createdBy: varchar("created_by").references(() => users.id).notNull(),
   notes: text("notes"),
+  // 자연어 입력으로 생성된 건지 표시 (원본 문장 보관 → 나중에 오분류 추적용)
+  sourceText: text("source_text"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull()
+});
+var consultations = pgTable("consultations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  phone: text("phone").notNull(),
+  guardianName: text("guardian_name"),
+  // 보호자명
+  studentName: text("student_name"),
+  studentGrade: text("student_grade"),
+  // "중1", "고2" 등
+  status: consultationStatusEnum("status").default("\uC0C1\uB2F4\uBB38\uC758").notNull(),
+  subject: text("subject"),
+  // 문의 과목
+  followUp: text("follow_up"),
+  // 후속 조치 (예: "다음주 화요일 재통화")
+  memo: text("memo"),
+  // 최종등록으로 전환되면 아래 두 필드가 채워진다
+  classId: varchar("class_id").references(() => classes.id, { onDelete: "set null" }),
+  studentId: varchar("student_id").references(() => students.id, { onDelete: "set null" }),
+  sourceText: text("source_text"),
+  createdBy: varchar("created_by").references(() => users.id).notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull()
 });
 var lessonLogs = pgTable("lesson_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -265,6 +307,24 @@ var lessonLogsRelations = relations(lessonLogs, ({ one }) => ({
     references: [users.id]
   })
 }));
+var consultationsRelations = relations(consultations, ({ one }) => ({
+  tenant: one(tenants, {
+    fields: [consultations.tenantId],
+    references: [tenants.id]
+  }),
+  class: one(classes, {
+    fields: [consultations.classId],
+    references: [classes.id]
+  }),
+  student: one(students, {
+    fields: [consultations.studentId],
+    references: [students.id]
+  }),
+  createdBy: one(users, {
+    fields: [consultations.createdBy],
+    references: [users.id]
+  })
+}));
 var waitersRelations = relations(waiters, ({ one }) => ({
   tenant: one(tenants, {
     fields: [waiters.tenantId],
@@ -287,6 +347,15 @@ var insertLessonLogSchema = createInsertSchema(lessonLogs).omit({ id: true, crea
   // 문자열을 자동으로 Date 객체로 변환
 });
 var insertWaiterSchema = createInsertSchema(waiters).omit({ id: true, createdAt: true });
+var insertConsultationSchema = createInsertSchema(consultations).omit({ id: true, createdAt: true, updatedAt: true });
+var createPaymentBodySchema = insertPaymentSchema.omit({ tenantId: true, createdBy: true }).refine(
+  (d) => d.type === "\uC9C0\uCD9C" || d.type === "\uAE30\uD0C0" || !!d.enrollmentId,
+  { message: "\uC6D0\uBE44/\uD658\uBD88\uC740 \uC218\uAC15 \uB4F1\uB85D(enrollmentId)\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.", path: ["enrollmentId"] }
+).refine(
+  (d) => d.type === "\uD658\uBD88" || d.type === "\uC9C0\uCD9C" ? d.amount < 0 : d.amount > 0,
+  { message: "\uD658\uBD88\xB7\uC9C0\uCD9C\uC740 \uC74C\uC218, \uC6D0\uBE44\uB294 \uC591\uC218\uB85C \uC785\uB825\uD574\uC57C \uD569\uB2C8\uB2E4.", path: ["amount"] }
+);
+var createConsultationBodySchema = insertConsultationSchema.omit({ tenantId: true, createdBy: true });
 var updateEnrollmentSchema = z.object({
   studentId: z.string().optional(),
   classId: z.string().optional(),
@@ -300,7 +369,7 @@ var updateEnrollmentSchema = z.object({
 });
 
 // server/storage.ts
-import { eq, and, sql as sql2, desc } from "drizzle-orm";
+import { eq, and, sql as sql2, desc, gt } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
 // server/db.ts
@@ -430,7 +499,9 @@ var DbStorage = class {
       eq(enrollments.isActive, true)
     )).leftJoin(classes, eq(classes.id, enrollments.classId)).leftJoin(payments, and(
       eq(payments.enrollmentId, enrollments.id),
-      eq(payments.paymentMonth, currentMonth)
+      eq(payments.paymentMonth, currentMonth),
+      // 환불(음수)·지출은 납부 실적이 아니므로 제외한다
+      gt(payments.amount, 0)
     )).where(and(
       eq(students.tenantId, tenantId),
       eq(students.isActive, true)
@@ -649,6 +720,65 @@ var DbStorage = class {
   async deleteWaiter(id) {
     await db.delete(waiters).where(eq(waiters.id, id));
   }
+  // Consultation methods
+  async getConsultationsByTenant(tenantId) {
+    return await db.select().from(consultations).where(eq(consultations.tenantId, tenantId)).orderBy(desc(consultations.createdAt));
+  }
+  async getConsultation(id) {
+    const result = await db.select().from(consultations).where(eq(consultations.id, id)).limit(1);
+    return result[0];
+  }
+  async createConsultation(insert) {
+    const result = await db.insert(consultations).values({
+      ...insert,
+      id: randomUUID(),
+      createdAt: /* @__PURE__ */ new Date(),
+      updatedAt: /* @__PURE__ */ new Date()
+    }).returning();
+    return result[0];
+  }
+  async updateConsultation(id, patch) {
+    const result = await db.update(consultations).set({ ...patch, updatedAt: /* @__PURE__ */ new Date() }).where(eq(consultations.id, id)).returning();
+    return result[0];
+  }
+  async deleteConsultation(id) {
+    await db.delete(consultations).where(eq(consultations.id, id));
+  }
+  // 자연어 입력 지원 — 이름으로 학생 찾기
+  /**
+   * 이름이 정확히 일치하는 활성 학생을 찾는다.
+   * 동명이인이 있을 수 있으므로 배열을 반환하고, 판단은 호출자(=원장 확인 UI)에 맡긴다.
+   */
+  async findStudentsByName(tenantId, name) {
+    return await db.select().from(students).where(and(
+      eq(students.tenantId, tenantId),
+      eq(students.name, name),
+      eq(students.isActive, true)
+    ));
+  }
+  /**
+   * 학생의 활성 수강 등록 목록을 반 정보와 함께 반환한다.
+   * 자연어 수납 입력에서 enrollmentId를 확정하기 위해 쓰인다.
+   * 학생이 두 반을 들으면 결과가 2건이 되고, 그때는 원장이 직접 골라야 한다.
+   */
+  async getActiveEnrollmentsWithClass(tenantId, studentId) {
+    const rows = await db.select({
+      enrollment: enrollments,
+      className: classes.name,
+      classSubject: classes.subject,
+      defaultTuition: classes.defaultTuition
+    }).from(enrollments).innerJoin(classes, eq(enrollments.classId, classes.id)).where(and(
+      eq(enrollments.tenantId, tenantId),
+      eq(enrollments.studentId, studentId),
+      eq(enrollments.isActive, true)
+    ));
+    return rows.map((r) => ({
+      ...r.enrollment,
+      className: r.className,
+      classSubject: r.classSubject,
+      defaultTuition: r.defaultTuition
+    }));
+  }
 };
 var storage = new DbStorage();
 
@@ -749,6 +879,347 @@ var roleGuard = (...allowedRoles) => {
     next();
   };
 };
+
+// server/lib/nlpNormalize.ts
+var PHONE_RE = /(?<!\d)(0\d{1,2})[-.\s]?(\d{3,4})[-.\s]?(\d{4})(?!\d)/g;
+function extractPhones(text2) {
+  const out = [];
+  const re = new RegExp(PHONE_RE.source, "g");
+  let m;
+  while ((m = re.exec(text2)) !== null) {
+    const normalized = `${m[1]}-${m[2]}-${m[3]}`;
+    if (out.indexOf(normalized) === -1) out.push(normalized);
+  }
+  return out;
+}
+function normalizePhone(raw) {
+  if (!raw) return null;
+  const found = extractPhones(raw);
+  return found[0] ?? raw.trim() ?? null;
+}
+var UNIT_VALUE = {
+  \uC5B5: 1e8,
+  \uCC9C\uB9CC: 1e7,
+  \uBC31\uB9CC: 1e6,
+  \uC2ED\uB9CC: 1e5,
+  \uB9CC: 1e4,
+  \uCC9C: 1e3,
+  \uBC31: 100,
+  \uC2ED: 10
+};
+var UNIT_PATTERN = "\uC5B5|\uCC9C\uB9CC|\uBC31\uB9CC|\uC2ED\uB9CC|\uB9CC|\uCC9C|\uBC31|\uC2ED";
+function extractAmounts(text2) {
+  const amounts = [];
+  const TOKEN_RE = new RegExp(`(\\d[\\d,]*(?:\\.\\d+)?)\\s*(${UNIT_PATTERN})?\\s*(\uC6D0)?`, "g");
+  let running = 0;
+  let sawUnit = false;
+  let lastUnitValue = Infinity;
+  let lastEnd = -1;
+  const flush = () => {
+    if (running > 0) amounts.push(Math.round(running));
+    running = 0;
+    sawUnit = false;
+    lastUnitValue = Infinity;
+  };
+  let m;
+  while ((m = TOKEN_RE.exec(text2)) !== null) {
+    const full = m[0];
+    const numRaw = m[1];
+    const unit = m[2];
+    const won = m[3];
+    const start = m.index;
+    if (full === "") {
+      TOKEN_RE.lastIndex++;
+      continue;
+    }
+    const contiguous = lastEnd >= 0 && /^[\s]*$/.test(text2.slice(lastEnd, start));
+    if (!contiguous) flush();
+    const value = parseFloat(numRaw.replace(/,/g, ""));
+    if (!Number.isFinite(value)) {
+      lastEnd = start + full.length;
+      continue;
+    }
+    if (unit) {
+      const unitValue = UNIT_VALUE[unit];
+      if (sawUnit && unitValue >= lastUnitValue) flush();
+      running += value * unitValue;
+      sawUnit = true;
+      lastUnitValue = unitValue;
+    } else if (sawUnit) {
+      running += value;
+    } else {
+      running += value;
+    }
+    lastEnd = start + full.length;
+    if (won) flush();
+  }
+  flush();
+  return amounts.filter((a) => a > 0);
+}
+var AMOUNT_MIN = 1e3;
+var AMOUNT_MAX = 1e7;
+function isPlausibleAmount(amount) {
+  return Number.isInteger(amount) && Math.abs(amount) >= AMOUNT_MIN && Math.abs(amount) <= AMOUNT_MAX;
+}
+function ym(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function shiftMonth(base, delta) {
+  return new Date(base.getFullYear(), base.getMonth() + delta, 1);
+}
+function normalizeMonth(raw, text2, now = /* @__PURE__ */ new Date()) {
+  const candidates = [raw ?? "", text2];
+  for (const src of candidates) {
+    if (!src) continue;
+    const iso = src.match(/(20\d{2})[-./](0?[1-9]|1[0-2])(?!\d)/);
+    if (iso) return `${iso[1]}-${String(Number(iso[2])).padStart(2, "0")}`;
+    if (/이번\s*달|이달|당월|금월/.test(src)) return ym(now);
+    if (/지난\s*달|저번\s*달|전월|지난달/.test(src)) return ym(shiftMonth(now, -1));
+    if (/다음\s*달|담달|익월|내달/.test(src)) return ym(shiftMonth(now, 1));
+    const monthOnly = src.match(/(1[0-2]|[1-9])\s*월/);
+    if (monthOnly) {
+      const mm = Number(monthOnly[1]);
+      let year = now.getFullYear();
+      const diff = mm - (now.getMonth() + 1);
+      if (diff <= -6) year += 1;
+      if (diff >= 7) year -= 1;
+      return `${year}-${String(mm).padStart(2, "0")}`;
+    }
+  }
+  return null;
+}
+function cleanStudentName(raw) {
+  if (!raw) return null;
+  let name = raw.trim().replace(/\s+/g, "");
+  name = name.replace(/(학생|어머니|아버지|님|씨)$/, "");
+  name = name.replace(/(이가|이는|이랑|이|가|은|는|의|도)$/, "");
+  if (!/^[가-힣a-zA-Z]{2,5}$/.test(name)) return null;
+  return name;
+}
+
+// server/lib/nlpParser.ts
+var OPENAI_URL = "https://api.openai.com/v1/chat/completions";
+var MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+var SYSTEM_PROMPT = `\uB2F9\uC2E0\uC740 \uD55C\uAD6D \uC601\uC5B4\uD559\uC6D0 \uAD00\uB9AC \uC2DC\uC2A4\uD15C\uC758 \uC790\uC5F0\uC5B4 \uC785\uB825 \uBD84\uC11D\uAE30\uC785\uB2C8\uB2E4.
+\uC6D0\uC7A5\uC774 \uD55C \uC904\uB85C \uC785\uB825\uD55C \uBB38\uC7A5\uC5D0\uC11C \uC815\uBCF4\uB97C \uCD94\uCD9C\uD574 JSON\uC73C\uB85C\uB9CC \uC751\uB2F5\uD558\uC138\uC694.
+
+[\uBD84\uB958 \uADDC\uCE59 \u2014 \uC6B0\uC120\uC21C\uC704 \uC21C]
+1. \uC804\uD654\uBC88\uD638\uAC00 \uD558\uB098\uB77C\uB3C4 \uC5B8\uAE09\uB418\uBA74 category="contact"
+2. \uC804\uD654\uBC88\uD638\uAC00 \uC5C6\uACE0 \uAE08\uC561\uC774 \uC5B8\uAE09\uB418\uBA74 category="accounting"
+3. \uB458 \uB2E4 \uC5C6\uAC70\uB098 \uD310\uB2E8\uC774 \uC5B4\uB824\uC6B0\uBA74 category="unclear" (\uC5B5\uC9C0\uB85C \uCD94\uCE21\uD558\uC9C0 \uB9D0 \uAC83)
+
+[\uC911\uC694]
+- "\uB9CC\uC6D0"\uC740 10000\uC744 \uACF1\uD574 \uC22B\uC790\uB85C \uD658\uC0B0 (35\uB9CC\uC6D0 \u2192 350000)
+- amount\uB294 \uD56D\uC0C1 \uC591\uC218\uB85C \uCD94\uCD9C\uD558\uC138\uC694. \uD658\uBD88/\uC9C0\uCD9C \uC5EC\uBD80\uB294 type \uD544\uB4DC\uB85C\uB9CC \uD45C\uD604\uD569\uB2C8\uB2E4.
+- \uD655\uC2E4\uD558\uC9C0 \uC54A\uC740 \uD544\uB4DC\uB294 \uC808\uB300 \uCD94\uCE21\uD558\uC9C0 \uB9D0\uACE0 null\uC744 \uB123\uC73C\uC138\uC694.
+- \uC774\uB984\uC774 \uBA85\uC2DC\uB418\uC9C0 \uC54A\uC558\uC73C\uBA74 student_name\uC740 null\uC785\uB2C8\uB2E4. \uD754\uD55C \uC774\uB984\uC744 \uC9C0\uC5B4\uB0B4\uC9C0 \uB9C8\uC138\uC694.
+- month\uB294 \uC6D0\uBB38 \uD45C\uD604\uC744 \uADF8\uB300\uB85C \uB123\uC73C\uC138\uC694 ("\uC774\uBC88\uB2EC", "8\uC6D4", "2026-08" \uB4F1). \uACC4\uC0B0\uD558\uC9C0 \uB9C8\uC138\uC694.`;
+var JSON_SCHEMA = {
+  name: "hagwon_input",
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: [
+      "category",
+      "student_name",
+      "amount",
+      "type",
+      "month",
+      "payment_method",
+      "phone",
+      "guardian_name",
+      "student_grade",
+      "status",
+      "subject",
+      "follow_up",
+      "memo"
+    ],
+    properties: {
+      category: { type: "string", enum: ["accounting", "contact", "unclear"] },
+      student_name: { type: ["string", "null"] },
+      amount: { type: ["number", "null"] },
+      type: { type: ["string", "null"], enum: ["\uC6D0\uBE44", "\uD658\uBD88", "\uC9C0\uCD9C", "\uAE30\uD0C0", null] },
+      month: { type: ["string", "null"] },
+      payment_method: { type: ["string", "null"], enum: ["\uACC4\uC88C\uC774\uCCB4", "\uCE74\uB4DC", "\uD604\uAE08", null] },
+      phone: { type: ["string", "null"] },
+      guardian_name: { type: ["string", "null"] },
+      student_grade: { type: ["string", "null"] },
+      status: {
+        type: ["string", "null"],
+        enum: ["\uC0C1\uB2F4\uBB38\uC758", "\uB300\uAE30\uB4F1\uB85D", "\uCD5C\uC885\uB4F1\uB85D", "\uBCF4\uB958", null]
+      },
+      subject: { type: ["string", "null"] },
+      follow_up: { type: ["string", "null"] },
+      memo: { type: ["string", "null"] }
+    }
+  }
+};
+var NlpConfigError = class extends Error {
+};
+async function callOpenAi(text2, signal) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new NlpConfigError(
+      "OPENAI_API_KEY\uAC00 \uC124\uC815\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4. Railway \uB300\uC2DC\uBCF4\uB4DC \u2192 Variables\uC5D0\uC11C \uB4F1\uB85D\uD574\uC8FC\uC138\uC694."
+    );
+  }
+  const res = await fetch(OPENAI_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    signal,
+    body: JSON.stringify({
+      model: MODEL,
+      temperature: 0,
+      // 같은 문장은 항상 같은 결과가 나오도록 고정
+      max_tokens: 400,
+      response_format: { type: "json_schema", json_schema: JSON_SCHEMA },
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: text2 }
+      ]
+    })
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`OpenAI \uD638\uCD9C \uC2E4\uD328 (${res.status}): ${body.slice(0, 300)}`);
+  }
+  const json = await res.json();
+  const content = json?.choices?.[0]?.message?.content;
+  if (!content) throw new Error("OpenAI \uC751\uB2F5\uC774 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.");
+  return JSON.parse(content);
+}
+function arbitrate(ai, sourceText, now = /* @__PURE__ */ new Date()) {
+  const corrections = [];
+  const phones = extractPhones(sourceText);
+  const amounts = extractAmounts(sourceText);
+  if (phones.length > 0) {
+    if (ai.category !== "contact") {
+      corrections.push(`\uC804\uD654\uBC88\uD638(${phones[0]})\uAC00 \uC788\uC5B4 \uC0C1\uB2F4/\uBB38\uC758\uB85C \uBD84\uB958\uD588\uC2B5\uB2C8\uB2E4.`);
+    }
+    const status = ["\uC0C1\uB2F4\uBB38\uC758", "\uB300\uAE30\uB4F1\uB85D", "\uCD5C\uC885\uB4F1\uB85D", "\uBCF4\uB958"].includes(
+      ai.status
+    ) ? ai.status : "\uC0C1\uB2F4\uBB38\uC758";
+    if (ai.status && status !== ai.status) {
+      corrections.push(`\uC0C1\uD0DC\uB97C \uAE30\uBCF8\uAC12 "\uC0C1\uB2F4\uBB38\uC758"\uB85C \uC124\uC815\uD588\uC2B5\uB2C8\uB2E4.`);
+    }
+    return {
+      sourceText,
+      corrections,
+      draft: {
+        category: "contact",
+        phone: normalizePhone(phones[0]),
+        guardianName: ai.guardian_name?.trim() || null,
+        studentName: cleanStudentName(ai.student_name),
+        studentGrade: ai.student_grade?.trim() || null,
+        status,
+        subject: ai.subject?.trim() || null,
+        followUp: ai.follow_up?.trim() || null,
+        memo: ai.memo?.trim() || null
+      }
+    };
+  }
+  if (amounts.length > 0) {
+    const fromText = amounts[0];
+    const fromAi = ai.amount != null ? Math.abs(ai.amount) : null;
+    if (fromAi != null && fromAi !== fromText) {
+      corrections.push(
+        `\uAE08\uC561\uC744 \uC6D0\uBB38 \uAE30\uC900 ${fromText.toLocaleString()}\uC6D0\uC73C\uB85C \uC815\uC815\uD588\uC2B5\uB2C8\uB2E4. (AI \uCD94\uCD9C\uAC12: ${fromAi.toLocaleString()}\uC6D0)`
+      );
+    }
+    if (!isPlausibleAmount(fromText)) {
+      return {
+        sourceText,
+        corrections,
+        draft: {
+          category: "unclear",
+          reason: `\uAE08\uC561 ${fromText.toLocaleString()}\uC6D0\uC774 \uC815\uC0C1 \uBC94\uC704(${AMOUNT_MIN.toLocaleString()}~${AMOUNT_MAX.toLocaleString()}\uC6D0)\uB97C \uBC97\uC5B4\uB0A9\uB2C8\uB2E4.`,
+          question: "\uAE08\uC561\uC744 \uB2E4\uC2DC \uD655\uC778\uD574 \uC8FC\uC138\uC694. \uC790\uB9BF\uC218\uAC00 \uB9DE\uB098\uC694?"
+        }
+      };
+    }
+    if (amounts.length > 1) {
+      corrections.push(
+        `\uAE08\uC561\uC774 \uC5EC\uB7EC \uAC1C(${amounts.map((a) => a.toLocaleString()).join(", ")}) \uBC1C\uACAC\uB418\uC5B4 \uCCAB \uBC88\uC9F8\uB97C \uC0AC\uC6A9\uD588\uC2B5\uB2C8\uB2E4. \uD655\uC778\uD574 \uC8FC\uC138\uC694.`
+      );
+    }
+    const type = ["\uC6D0\uBE44", "\uD658\uBD88", "\uC9C0\uCD9C", "\uAE30\uD0C0"].includes(
+      ai.type
+    ) ? ai.type : "\uC6D0\uBE44";
+    const signed = type === "\uD658\uBD88" || type === "\uC9C0\uCD9C" ? -fromText : fromText;
+    if (signed < 0) {
+      corrections.push(`${type}\uC774\uBBC0\uB85C \uAE08\uC561\uC744 \uC74C\uC218(${signed.toLocaleString()}\uC6D0)\uB85C \uAE30\uB85D\uD569\uB2C8\uB2E4.`);
+    }
+    const paymentMonth = normalizeMonth(ai.month, sourceText, now);
+    if (!paymentMonth) {
+      return {
+        sourceText,
+        corrections,
+        draft: {
+          category: "unclear",
+          reason: "\uBA87 \uC6D4\uBD84 \uC218\uB0A9\uC778\uC9C0 \uBB38\uC7A5\uC5D0\uC11C \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",
+          question: "\uBA87 \uC6D4\uBD84\uC778\uAC00\uC694? (\uC608: \uC774\uBC88\uB2EC, 8\uC6D4)"
+        }
+      };
+    }
+    if (!ai.month) {
+      corrections.push(`\uC6D4 \uC815\uBCF4\uAC00 \uC5C6\uC5B4 \uC6D0\uBB38\uC5D0\uC11C ${paymentMonth}\uB85C \uD574\uC11D\uD588\uC2B5\uB2C8\uB2E4.`);
+    }
+    const studentName = cleanStudentName(ai.student_name);
+    if (!studentName && (type === "\uC6D0\uBE44" || type === "\uD658\uBD88")) {
+      return {
+        sourceText,
+        corrections,
+        draft: {
+          category: "unclear",
+          reason: "\uD559\uC0DD \uC774\uB984\uC744 \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",
+          question: "\uC5B4\uB290 \uD559\uC0DD\uC758 \uC218\uB0A9\uC778\uAC00\uC694?"
+        }
+      };
+    }
+    const method = ["\uACC4\uC88C\uC774\uCCB4", "\uCE74\uB4DC", "\uD604\uAE08"].includes(
+      ai.payment_method
+    ) ? ai.payment_method : null;
+    return {
+      sourceText,
+      corrections,
+      draft: {
+        category: "accounting",
+        studentName,
+        amount: signed,
+        type,
+        paymentMonth,
+        method,
+        memo: ai.memo?.trim() || null
+      }
+    };
+  }
+  const looksLikePayment = /원비|수강료|납부|입금|결제|환불|지출/.test(sourceText);
+  return {
+    sourceText,
+    corrections,
+    draft: {
+      category: "unclear",
+      reason: looksLikePayment ? "\uC218\uB0A9 \uAD00\uB828 \uBB38\uC7A5 \uAC19\uC740\uB370 \uAE08\uC561\uC774 \uC5C6\uC2B5\uB2C8\uB2E4." : "\uC804\uD654\uBC88\uD638\uB3C4 \uAE08\uC561\uB3C4 \uC5C6\uC5B4 \uC5B4\uB290 \uCABD\uC778\uC9C0 \uD310\uB2E8\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",
+      question: looksLikePayment ? "\uAE08\uC561\uC774 \uC5BC\uB9C8\uC778\uAC00\uC694?" : "\uC218\uB0A9 \uAC74\uC774\uBA74 \uAE08\uC561\uC744, \uC0C1\uB2F4 \uBB38\uC758\uBA74 \uC5F0\uB77D\uCC98\uB97C \uD568\uAED8 \uC801\uC5B4\uC8FC\uC138\uC694."
+    }
+  };
+}
+async function parseInput(text2, opts = {}) {
+  const trimmed = text2.trim();
+  if (!trimmed) {
+    return {
+      sourceText: text2,
+      corrections: [],
+      draft: { category: "unclear", reason: "\uC785\uB825\uC774 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.", question: "\uB0B4\uC6A9\uC744 \uC785\uB825\uD574 \uC8FC\uC138\uC694." }
+    };
+  }
+  const ai = await callOpenAi(trimmed, opts.signal);
+  return arbitrate(ai, trimmed, opts.now ?? /* @__PURE__ */ new Date());
+}
 
 // server/routes.ts
 import { z as z2 } from "zod";
@@ -1589,7 +2060,7 @@ async function registerRoutes(app2) {
       }
       next();
     },
-    validateBody(insertPaymentSchema.omit({ tenantId: true, createdBy: true })),
+    validateBody(createPaymentBodySchema),
     async (req, res) => {
       try {
         const paymentData = {
@@ -1712,6 +2183,113 @@ async function registerRoutes(app2) {
       } catch (error) {
         console.error("Delete waiter error:", error);
         res.status(500).json({ error: "\uB300\uAE30\uC790 \uC0AD\uC81C \uC911 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4." });
+      }
+    }
+  );
+  app2.get("/api/consultations", authGuard, tenantGuard, async (req, res) => {
+    try {
+      const rows = await storage.getConsultationsByTenant(req.user.tenantId);
+      res.json(rows);
+    } catch (error) {
+      console.error("Get consultations error:", error);
+      res.status(500).json({ error: "\uC0C1\uB2F4 \uBAA9\uB85D \uC870\uD68C \uC911 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4." });
+    }
+  });
+  app2.post(
+    "/api/consultations",
+    authGuard,
+    tenantGuard,
+    roleGuard("owner", "teacher"),
+    validateBody(createConsultationBodySchema),
+    async (req, res) => {
+      try {
+        const created = await storage.createConsultation({
+          ...req.body,
+          tenantId: req.user.tenantId,
+          createdBy: req.user.id
+        });
+        res.status(201).json(created);
+      } catch (error) {
+        console.error("Create consultation error:", error);
+        res.status(500).json({ error: "\uC0C1\uB2F4 \uB4F1\uB85D \uC911 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4." });
+      }
+    }
+  );
+  app2.patch(
+    "/api/consultations/:id",
+    authGuard,
+    tenantGuard,
+    roleGuard("owner", "teacher"),
+    validateParams(idParamSchema),
+    validateBody(createConsultationBodySchema.partial()),
+    async (req, res) => {
+      try {
+        const existing = await storage.getConsultation(req.params.id);
+        if (!existing) return res.status(404).json({ error: "\uC0C1\uB2F4 \uAE30\uB85D\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4." });
+        if (existing.tenantId !== req.user.tenantId) {
+          return res.status(403).json({ error: "\uC811\uADFC \uAD8C\uD55C\uC774 \uC5C6\uC2B5\uB2C8\uB2E4." });
+        }
+        const updated = await storage.updateConsultation(req.params.id, req.body);
+        res.json(updated);
+      } catch (error) {
+        console.error("Update consultation error:", error);
+        res.status(500).json({ error: "\uC0C1\uB2F4 \uC218\uC815 \uC911 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4." });
+      }
+    }
+  );
+  app2.delete(
+    "/api/consultations/:id",
+    authGuard,
+    tenantGuard,
+    roleGuard("owner"),
+    validateParams(idParamSchema),
+    async (req, res) => {
+      try {
+        const existing = await storage.getConsultation(req.params.id);
+        if (!existing) return res.status(404).json({ error: "\uC0C1\uB2F4 \uAE30\uB85D\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4." });
+        if (existing.tenantId !== req.user.tenantId) {
+          return res.status(403).json({ error: "\uC811\uADFC \uAD8C\uD55C\uC774 \uC5C6\uC2B5\uB2C8\uB2E4." });
+        }
+        await storage.deleteConsultation(req.params.id);
+        res.json({ message: "\uC0C1\uB2F4 \uAE30\uB85D\uC774 \uC0AD\uC81C\uB418\uC5C8\uC2B5\uB2C8\uB2E4." });
+      } catch (error) {
+        console.error("Delete consultation error:", error);
+        res.status(500).json({ error: "\uC0C1\uB2F4 \uC0AD\uC81C \uC911 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4." });
+      }
+    }
+  );
+  app2.post(
+    "/api/nlp/parse",
+    authGuard,
+    tenantGuard,
+    roleGuard("owner", "teacher"),
+    validateBody(z2.object({
+      text: z2.string().min(1, "\uC785\uB825 \uB0B4\uC6A9\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.").max(500, "500\uC790 \uC774\uB0B4\uB85C \uC785\uB825\uD574\uC8FC\uC138\uC694.")
+    })),
+    async (req, res) => {
+      try {
+        const result = await parseInput(req.body.text);
+        let studentMatches = [];
+        if (result.draft.category === "accounting" && result.draft.studentName) {
+          const found = await storage.findStudentsByName(
+            req.user.tenantId,
+            result.draft.studentName
+          );
+          studentMatches = await Promise.all(
+            found.map(async (s) => ({
+              student: { id: s.id, name: s.name, grade: s.grade, school: s.school },
+              enrollments: await storage.getActiveEnrollmentsWithClass(req.user.tenantId, s.id)
+            }))
+          );
+        }
+        res.json({ ...result, studentMatches });
+      } catch (error) {
+        if (error instanceof NlpConfigError) {
+          console.error("NLP config error:", error.message);
+          return res.status(503).json({ error: error.message });
+        }
+        console.error("NLP parse error:", error?.message || error);
+        res.status(502).json({ error: "\uBB38\uC7A5 \uBD84\uC11D \uC911 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4. \uC7A0\uC2DC \uD6C4 \uB2E4\uC2DC \uC2DC\uB3C4\uD574\uC8FC\uC138\uC694." });
       }
     }
   );
@@ -2008,6 +2586,9 @@ app.use((req, res, next) => {
     if (!res.headersSent) {
       res.status(status).json({ message });
     }
+  });
+  app.use("/api", (_req, res) => {
+    res.status(404).json({ error: "\uC874\uC7AC\uD558\uC9C0 \uC54A\uB294 API \uACBD\uB85C\uC785\uB2C8\uB2E4." });
   });
   if (app.get("env") === "development") {
     await setupVite(app, server);

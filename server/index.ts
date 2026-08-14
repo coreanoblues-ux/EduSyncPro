@@ -58,6 +58,13 @@ app.use((req, res, next) => {
     }
   });
 
+  // 등록되지 않은 /api 경로는 여기서 JSON 404로 끊는다.
+  // 아래 SPA 폴백(app.use("*"))은 메서드를 가리지 않아 POST까지 index.html을 200으로
+  // 돌려주고, 클라이언트에서는 "Unexpected token '<'"라는 엉뚱한 오류로 보인다.
+  app.use("/api", (_req: Request, res: Response) => {
+    res.status(404).json({ error: "존재하지 않는 API 경로입니다." });
+  });
+
   // importantly only setup vite in development and after
   // setting up all the other routes so the catch-all route
   // doesn't interfere with the other routes

@@ -66,6 +66,30 @@ interface ContactDraft {
   startDate: string | null; // YYYY-MM-DD
 }
 
+/** 등록과 동시에 받은 돈. 수강 등록이 만들어진 뒤 그 enrollmentId에 붙는다. */
+interface PaymentPart {
+  amount: number;
+  type: PaymentType;
+  method: PaymentMethod | null;
+  paymentMonth: string;
+}
+
+interface RegistrationDraft {
+  category: "registration";
+  studentName: string | null;
+  school: string | null;
+  grade: string | null;
+  /** 없으면 null — 원장이 여기서 채운다. 없다고 등록을 막지 않는다. */
+  parentPhone: string | null;
+  guardianName: string | null;
+  classHint: { scheduleDays: string[] | null; teacherName: string | null; level: string | null };
+  startDate: string | null;
+  dueDay: number | null;
+  payment: PaymentPart | null;
+  subject: string | null;
+  memo: string | null;
+}
+
 interface ClassOption {
   id: string;
   name: string;
@@ -80,19 +104,26 @@ interface UnclearDraft {
 }
 
 interface ParseResponse {
-  draft: AccountingDraft | ContactDraft | UnclearDraft;
+  draft: AccountingDraft | RegistrationDraft | ContactDraft | UnclearDraft;
   sourceText: string;
   corrections: string[];
   studentMatches: StudentMatch[];
   /** 원문에 반 이름이 있으면 서버가 실제 반 목록과 대조해 찾아준 결과 */
   classMatch: { id: string; name: string } | null;
+  /** 요일·강사로 좁혔지만 하나로 확정되지 않은 반들 */
+  classCandidates?: Array<{ id: string; name: string }>;
 }
 
 const EXAMPLES = [
-  "010-1234-5678 김민준 중2 영어 등록, 기준일 13일, 8월 13일부터",
+  "정재현 숭의중1 등록 결제 28만 정우석 선생님 화 목 심화",
   "김민준 35만원 이번달 원비 카드 결제",
   "010-1234-5678 박서연 어머니 중2 영어 문의",
 ];
+
+function today(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 
 export default function QuickInput() {
   const [text, setText] = useState("");
@@ -102,6 +133,8 @@ export default function QuickInput() {
   const [enrollmentId, setEnrollmentId] = useState<string>("");
   // 최종등록으로 저장할 때 새로 만들 수강 등록이 들어갈 반
   const [classId, setClassId] = useState<string>("");
+  // 같은 이름의 학생이 이미 있을 때, 새로 만들지 않고 그 학생에 붙이려면 여기에 id가 들어간다
+  const [existingStudentId, setExistingStudentId] = useState<string>("");
   const { toast } = useToast();
   const qc = useQueryClient();
 
@@ -114,7 +147,11 @@ export default function QuickInput() {
     },
     onSuccess: (data) => {
       setParsed(data);
-      setDraft({ ...data.draft });
+      // 등록일은 enrollments.startDate가 NOT NULL이라 반드시 있어야 한다.
+      // 원장이 등록 직후에 적는 문장이므로 날짜가 없으면 오늘로 두고 화면에서 보여준다.
+      const d: any = { ...data.draft };
+      if (d.category === "registration" && !d.startDate) d.startDate = today();
+      setDraft(d);
       // 수강 등록이 딱 하나면 자동 선택, 여러 개면 원장이 직접 고르게 둔다
       const only = data.studentMatches?.[0];
       setEnrollmentId(
@@ -122,6 +159,7 @@ export default function QuickInput() {
       );
       // 문장에 반 이름을 적었으면 미리 골라둔다 ("김민준 초등A반 등록")
       setClassId(data.classMatch?.id ?? "");
+      setExistingStudentId("");
     },
     onError: (err: Error) => {
       toast({
@@ -147,6 +185,46 @@ export default function QuickInput() {
         });
         return { enrolled: false };
       }
+
+      // 등록 — 학생 → 수강 등록 → (있으면) 수납 순서로 만든다.
+      // payments.enrollmentId가 필수라 순서를 뒤집을 수 없다.
+      if (draft.category === "registration") {
+        let sid = existingStudentId;
+        if (!sid) {
+          const res = await apiRequest("POST", "/api/students", {
+            name: draft.studentName,
+            school: draft.school,
+            grade: draft.grade,
+            parentPhone: draft.parentPhone,
+            notes: draft.memo,
+          });
+          sid = (await res.json()).id as string;
+        }
+
+        // tuition을 비워두면 반의 기본 수강료가 그대로 적용된다
+        const enRes = await apiRequest("POST", "/api/enrollments", {
+          studentId: sid,
+          classId,
+          startDate: draft.startDate,
+          dueDay: draft.dueDay ?? 8,
+        });
+        const newEnrollmentId = (await enRes.json()).id as string;
+
+        if (draft.payment) {
+          await apiRequest("POST", "/api/payments", {
+            enrollmentId: newEnrollmentId,
+            amount: draft.payment.amount,
+            type: draft.payment.type,
+            method: draft.payment.method,
+            paymentMonth: draft.payment.paymentMonth,
+            paidDate: new Date().toISOString(),
+            notes: draft.memo,
+            sourceText: parsed?.sourceText ?? null,
+          });
+        }
+        return { enrolled: true };
+      }
+
       // 최종등록은 상담 기록만 남기고 끝내지 않는다. 학생과 수강 등록을 실제로 만들어야
       // 학생 목록에 뜨고, 납부 기준일이 미납 계산에 반영된다.
       let studentId: string | null = null;
@@ -209,10 +287,12 @@ export default function QuickInput() {
     setDraft(null);
     setEnrollmentId("");
     setClassId("");
+    setExistingStudentId("");
   };
 
   const matches = parsed?.studentMatches ?? [];
   const matchedStudent = matches[0];
+  const classCandidates = parsed?.classCandidates ?? [];
   const needsEnrollment =
     draft?.category === "accounting" && (draft.type === "원비" || draft.type === "환불");
   // 최종등록이면 학생·수강 등록을 만들어야 하므로 반과 등록일이 반드시 있어야 한다
@@ -221,6 +301,8 @@ export default function QuickInput() {
     draft &&
     draft.category !== "unclear" &&
     (!needsEnrollment || !!enrollmentId) &&
+    (draft.category !== "registration" ||
+      (!!classId && !!draft.startDate && !!draft.studentName)) &&
     (!isFinalRegistration || (!!classId && !!draft.startDate && !!draft.studentName));
 
   return (
@@ -406,6 +488,223 @@ export default function QuickInput() {
                 onChange={(e) => setDraft({ ...draft, memo: e.target.value || null })}
               />
             </div>
+          </div>
+        )}
+
+        {/* 등록 초안 확인 폼 — 저장하면 학생·수강 등록(+수납)이 함께 생성된다 */}
+        {draft?.category === "registration" && (
+          <div className="space-y-3 rounded-md border p-3" data-testid="quick-input-registration">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="secondary">신규 등록</Badge>
+              {draft.payment && <Badge variant="secondary">결제 동시</Badge>}
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <Label>학생명</Label>
+                <Input
+                  value={draft.studentName ?? ""}
+                  onChange={(e) => setDraft({ ...draft, studentName: e.target.value || null })}
+                />
+                {!draft.studentName && (
+                  <p className="mt-1 text-xs text-destructive">학생명이 있어야 등록할 수 있습니다</p>
+                )}
+              </div>
+              <div>
+                <Label>학교</Label>
+                <Input
+                  value={draft.school ?? ""}
+                  onChange={(e) => setDraft({ ...draft, school: e.target.value || null })}
+                  placeholder="예) 숭의중"
+                />
+              </div>
+              <div>
+                <Label>학년</Label>
+                <Input
+                  value={draft.grade ?? ""}
+                  onChange={(e) => setDraft({ ...draft, grade: e.target.value || null })}
+                  placeholder="예) 1학년"
+                />
+              </div>
+              <div>
+                {/* 문장에 번호가 없는 것은 흔한 일이다. 빈칸으로 두고 여기서 바로 채운다. */}
+                <Label>학부모 연락처</Label>
+                <Input
+                  value={draft.parentPhone ?? ""}
+                  onChange={(e) => setDraft({ ...draft, parentPhone: e.target.value || null })}
+                  placeholder="010-0000-0000 (없으면 비워두세요)"
+                  data-testid="quick-input-parent-phone"
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <Label>메모</Label>
+                <Input
+                  value={draft.memo ?? ""}
+                  onChange={(e) => setDraft({ ...draft, memo: e.target.value || null })}
+                />
+              </div>
+            </div>
+
+            {/* 같은 이름이 이미 있으면 중복 생성을 막을 기회를 준다 */}
+            {matches.length > 0 && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-sm dark:bg-amber-950/30">
+                <p className="mb-1 font-medium text-amber-900 dark:text-amber-200">
+                  같은 이름의 학생이 이미 {matches.length}명 있습니다
+                </p>
+                <Select
+                  value={existingStudentId || "new"}
+                  onValueChange={(v) => setExistingStudentId(v === "new" ? "" : v)}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="new">새 학생으로 만들기</SelectItem>
+                    {matches.map((m: StudentMatch) => (
+                      <SelectItem key={m.student.id} value={m.student.id}>
+                        기존 학생에 반 추가 — {m.student.name}
+                        {m.student.school ? ` · ${m.student.school}` : ""}
+                        {m.student.grade ? ` ${m.student.grade}` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <Label>반</Label>
+                {classes.length === 0 ? (
+                  <p className="text-sm text-destructive">
+                    등록된 반이 없습니다. 반을 먼저 만들어주세요.
+                  </p>
+                ) : (
+                  <Select value={classId} onValueChange={setClassId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="반을 선택하세요" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {classes.map((c) => (
+                        <SelectItem key={c.id} value={c.id}>
+                          {c.name} · {c.subject} · {c.defaultTuition.toLocaleString()}원
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                {/* 요일·강사·레벨로 좁혔지만 하나로 확정되지 않은 경우 */}
+                {!classId && classCandidates.length > 1 && (
+                  <p className="mt-1 text-xs text-amber-700">
+                    문장의 요일·강사로 {classCandidates.map((c) => c.name).join(", ")} 까지
+                    좁혔습니다. 어느 반인지 골라주세요.
+                  </p>
+                )}
+                {!classId && classCandidates.length === 0 && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    문장만으로는 반을 특정하지 못했습니다.
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <Label>등록일</Label>
+                <Input
+                  type="date"
+                  value={draft.startDate ?? ""}
+                  onChange={(e) => setDraft({ ...draft, startDate: e.target.value || null })}
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  미납 개월 수를 세는 기준입니다
+                </p>
+              </div>
+
+              <div>
+                <Label>납부 기준일 (매월)</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={31}
+                  value={draft.dueDay ?? ""}
+                  placeholder="비우면 8일"
+                  onChange={(e) => {
+                    const n = parseInt(e.target.value, 10);
+                    setDraft({
+                      ...draft,
+                      dueDay: Number.isInteger(n) && n >= 1 && n <= 31 ? n : null,
+                    });
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* 등록과 동시에 받은 돈 */}
+            {draft.payment && (
+              <div className="space-y-3 rounded-md border border-primary/40 bg-primary/5 p-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium">이 등록과 함께 수납도 기록합니다</p>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setDraft({ ...draft, payment: null })}
+                  >
+                    수납 빼기
+                  </Button>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div>
+                    <Label>금액</Label>
+                    <Input
+                      type="number"
+                      value={draft.payment.amount}
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          payment: { ...draft.payment, amount: Number(e.target.value) },
+                        })
+                      }
+                    />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {draft.payment.amount.toLocaleString()}원
+                    </p>
+                  </div>
+
+                  <div>
+                    <Label>납부월</Label>
+                    <Input
+                      value={draft.payment.paymentMonth}
+                      placeholder="YYYY-MM"
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          payment: { ...draft.payment, paymentMonth: e.target.value },
+                        })
+                      }
+                    />
+                  </div>
+
+                  <div>
+                    <Label>결제수단</Label>
+                    <Select
+                      value={draft.payment.method ?? "미지정"}
+                      onValueChange={(v) =>
+                        setDraft({
+                          ...draft,
+                          payment: { ...draft.payment, method: v === "미지정" ? null : v },
+                        })
+                      }
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="미지정">미지정</SelectItem>
+                        {(["계좌이체", "카드", "현금"] as PaymentMethod[]).map((m) => (
+                          <SelectItem key={m} value={m}>{m}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

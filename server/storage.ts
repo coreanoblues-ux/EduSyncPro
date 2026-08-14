@@ -68,6 +68,10 @@ export interface IStorage {
   
   // Class methods
   getClassesByTenant(tenantId: string): Promise<Class[]>;
+  /** 자연어 반 매칭용 — 요일·강사명으로 반을 좁히려면 강사 이름이 함께 필요하다 */
+  getClassesWithTeacher(
+    tenantId: string
+  ): Promise<Array<{ id: string; name: string; schedule: string; teacherName: string | null }>>;
   getClass(id: string): Promise<Class | undefined>;
   createClass(cls: InsertClass): Promise<Class>;
   updateClass(id: string, cls: Partial<InsertClass>): Promise<Class>;
@@ -393,6 +397,21 @@ export class DbStorage implements IStorage {
   // Class methods
   async getClassesByTenant(tenantId: string): Promise<Class[]> {
     return await db.select().from(classes).where(eq(classes.tenantId, tenantId));
+  }
+
+  async getClassesWithTeacher(
+    tenantId: string
+  ): Promise<Array<{ id: string; name: string; schedule: string; teacherName: string | null }>> {
+    return await db
+      .select({
+        id: classes.id,
+        name: classes.name,
+        schedule: classes.schedule,
+        teacherName: teachers.name,
+      })
+      .from(classes)
+      .leftJoin(teachers, eq(classes.teacherId, teachers.id))
+      .where(eq(classes.tenantId, tenantId));
   }
 
   async getClass(id: string): Promise<Class | undefined> {

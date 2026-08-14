@@ -58,13 +58,29 @@ const UNIT_VALUE: Record<string, number> = {
 const UNIT_PATTERN = "억|천만|백만|십만|만|천|백|십";
 
 /**
+ * 숫자 뒤에 붙으면 그 숫자가 돈이 아님을 알려주는 단위들.
+ *
+ * 이게 없으면 "7월 원비 28만원"에서 7이 7원으로, "숭의중1"에서 1이 1원으로
+ * 잡혀 금액 후보 첫 자리를 차지한다. arbitrate()가 amounts[0]을 쓰기 때문에
+ * 그 순간 정상 금액 28만원은 버려지고 "금액이 범위를 벗어남"으로 되물어진다.
+ *
+ * 긴 단위를 먼저 둬야 한다. "학년"이 "년"보다, "개월"이 "월"보다 앞이다.
+ */
+const NON_MONEY_SUFFIX_RE = /^\s*(개월|학년|교시|월|일|년|시|분|명|주|번|호|층|살|차|급|반)/;
+
+/**
  * "35만원", "350,000원", "35만 5천", "1억 2천만원" 같은 표현을 숫자로 환산한다.
  * 규칙 4번("만원은 10000을 곱한다")을 코드로 구현한 것.
  *
+ * 돈이 아닌 숫자(날짜·학년·전화번호)는 후보에서 제외한다.
  * 반환값은 원문에 등장한 순서대로의 금액 후보 목록.
  */
 export function extractAmounts(text: string): number[] {
   const amounts: number[] = [];
+
+  // 전화번호 자릿수가 금액으로 새어 들어가지 않도록 먼저 지운다.
+  // ("010-1234-5678 28만원"에서 010·1234·5678이 금액 후보가 되는 것을 막는다)
+  const src = text.replace(new RegExp(PHONE_RE.source, "g"), " ");
 
   // 숫자 + (선택)단위 토큰을 순서대로 훑는다.
   const TOKEN_RE = new RegExp(`(\\d[\\d,]*(?:\\.\\d+)?)\\s*(${UNIT_PATTERN})?\\s*(원)?`, "g");
@@ -82,7 +98,7 @@ export function extractAmounts(text: string): number[] {
   };
 
   let m: RegExpExecArray | null;
-  while ((m = TOKEN_RE.exec(text)) !== null) {
+  while ((m = TOKEN_RE.exec(src)) !== null) {
     const full = m[0];
     const numRaw = m[1];
     const unit = m[2];
@@ -96,13 +112,33 @@ export function extractAmounts(text: string): number[] {
     }
 
     // 앞 토큰과 떨어져 있으면(사이에 다른 글자가 끼어 있으면) 별개의 금액으로 본다.
-    const contiguous = lastEnd >= 0 && /^[\s]*$/.test(text.slice(lastEnd, start));
+    const contiguous = lastEnd >= 0 && /^[\s]*$/.test(src.slice(lastEnd, start));
     if (!contiguous) flush();
 
     const value = parseFloat(numRaw.replace(/,/g, ""));
     if (!Number.isFinite(value)) {
       lastEnd = start + full.length;
       continue;
+    }
+
+    // ── 돈이 아닌 숫자 걸러내기 ──
+    // "만"·"천" 같은 단위나 "원"이 붙어 있으면 금액이 분명하므로 검사하지 않는다.
+    const numEnd = start + numRaw.length;
+    if (!unit && !won) {
+      // "7월", "13일", "1학년", "3개월" — 뒤에 오는 단위가 돈이 아님을 말해준다
+      if (NON_MONEY_SUFFIX_RE.test(src.slice(numEnd))) {
+        flush();
+        lastEnd = numEnd;
+        continue;
+      }
+      // "숭의중1", "중2" — 한글에 띄어쓰기 없이 붙은 숫자는 학년·식별자이지 금액이 아니다.
+      // 단, "35만 5천"처럼 이미 시작된 금액 표현을 이어가는 중이면 적용하지 않는다.
+      const prev = start > 0 ? src[start - 1] : "";
+      if (!sawUnit && /[가-힣]/.test(prev)) {
+        flush();
+        lastEnd = numEnd;
+        continue;
+      }
     }
 
     if (unit) {
@@ -347,6 +383,68 @@ export function matchClassName<T extends { id: string; name: string }>(
   const best = hits[0].name.replace(/\s+/g, "");
   const ambiguous = hits.some((c) => !best.includes(c.name.replace(/\s+/g, "")));
   return ambiguous ? null : hits[0];
+}
+
+/**
+ * "화요일"·"화" 를 모두 "화"로 통일하고 중복을 없앤다.
+ *
+ * "요일"을 먼저 떼는 것이 중요하다. 안 그러면 "화요일"의 마지막 글자 "일"이
+ * 일요일로 잡혀 화·목 반이 화·목·일 반으로 둔갑한다.
+ */
+function normalizeDays(days: string[] | string): string[] {
+  const raw = (Array.isArray(days) ? days.join(" ") : days).replace(/요일/g, "");
+  const found = raw.match(/[월화수목금토일]/g) ?? [];
+  return Array.from(new Set(found)).sort();
+}
+
+export interface ClassHintInput {
+  scheduleDays: string[] | null;
+  teacherName: string | null;
+  level: string | null;
+}
+
+export interface ClassRow {
+  id: string;
+  name: string;
+  schedule: string;
+  teacherName: string | null;
+}
+
+/**
+ * "정우석 선생님 화 목 심화"처럼 요일·강사·레벨로 지목된 반을 실제 반 목록에서 찾는다.
+ *
+ * 반 이름은 학원마다 제각각이라 AI에게 맡길 수 없다. 문장에서 뽑은 재료 3가지로
+ * 후보를 좁히되, 하나로 확정되지 않으면 match=null로 두고 후보만 돌려준다.
+ * 원장이 화면에서 고르는 편이 잘못된 반에 등록하는 것보다 낫다.
+ */
+export function matchClass(
+  hint: ClassHintInput,
+  classes: ClassRow[]
+): { match: ClassRow | null; candidates: ClassRow[] } {
+  const wantDays = hint.scheduleDays?.length ? normalizeDays(hint.scheduleDays) : null;
+  const wantTeacher = hint.teacherName?.replace(/\s+/g, "") || null;
+  const wantLevel = hint.level?.replace(/\s+/g, "") || null;
+
+  // 재료가 하나도 없으면 추측하지 않는다
+  if (!wantDays && !wantTeacher && !wantLevel) return { match: null, candidates: [] };
+
+  const candidates = classes.filter((c) => {
+    if (wantDays) {
+      const has = normalizeDays(c.schedule);
+      // 요일이 정확히 같아야 한다. "화목"과 "화목토"는 다른 반이다.
+      if (has.join("") !== wantDays.join("")) return false;
+    }
+    if (wantTeacher) {
+      const t = c.teacherName?.replace(/\s+/g, "") ?? "";
+      if (t !== wantTeacher) return false;
+    }
+    if (wantLevel) {
+      if (!c.name.replace(/\s+/g, "").includes(wantLevel)) return false;
+    }
+    return true;
+  });
+
+  return { match: candidates.length === 1 ? candidates[0] : null, candidates };
 }
 
 // ─── 학생 이름 ────────────────────────────────────────────────────────────

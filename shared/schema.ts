@@ -124,7 +124,9 @@ export const payments = pgTable("payments", {
 export const consultations = pgTable("consultations", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
-  phone: text("phone").notNull(),
+  // 원장이 학생 앞에서 급히 적은 등록 건은 연락처가 없을 수 있다.
+  // NOT NULL이던 시절엔 그런 입력이 저장 단계에서 통째로 막혔다.
+  phone: text("phone"),
   guardianName: text("guardian_name"), // 보호자명
   studentName: text("student_name"),
   studentGrade: text("student_grade"), // "중1", "고2" 등

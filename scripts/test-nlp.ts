@@ -18,6 +18,8 @@ import {
   extractPaymentType,
   extractPaymentMethod,
   matchClassName,
+  matchClass,
+  type ClassHintInput,
 } from "../server/lib/nlpNormalize";
 
 const NOW = new Date(2026, 7, 14); // 2026-08-14 고정
@@ -25,19 +27,30 @@ const NOW = new Date(2026, 7, 14); // 2026-08-14 고정
 type Ai = Parameters<typeof arbitrate>[0];
 
 const blank: Ai = {
-  category: "unclear",
+  number_readings: [],
+  enroll: false,
+  payment: false,
+  consultation: false,
   student_name: null,
-  amount: null,
-  type: null,
-  month: null,
-  payment_method: null,
-  phone: null,
+  school: null,
+  grade: null,
+  parent_phone: null,
   guardian_name: null,
-  student_grade: null,
+  schedule_days: null,
+  teacher_name: null,
+  class_level: null,
+  amount: null,
+  payment_type: null,
+  payment_method: null,
+  payment_month: null,
+  due_day: null,
+  start_date: null,
   status: null,
   subject: null,
   follow_up: null,
   memo: null,
+  needs_clarification: false,
+  question: null,
 };
 
 interface Case {
@@ -52,7 +65,7 @@ const cases: Case[] = [
   {
     label: "기본 수납",
     text: "김민준 35만원 이번달 원비 계좌이체",
-    ai: { category: "accounting", student_name: "김민준", amount: 350000, type: "원비", month: "이번달", payment_method: "계좌이체" },
+    ai: { payment: true, student_name: "김민준", amount: 350000, payment_type: "원비", payment_month: "이번달", payment_method: "계좌이체" },
     expect: (r) =>
       r.draft.category === "accounting" &&
       r.draft.amount === 350000 &&
@@ -64,7 +77,7 @@ const cases: Case[] = [
   {
     label: "AI가 만원 환산을 틀림",
     text: "박서연 35만원 8월 원비",
-    ai: { category: "accounting", student_name: "박서연", amount: 35, type: "원비", month: "8월" },
+    ai: { payment: true, student_name: "박서연", amount: 35, payment_type: "원비", payment_month: "8월" },
     expect: (r) =>
       r.draft.category === "accounting" &&
       r.draft.amount === 350000 &&
@@ -72,26 +85,26 @@ const cases: Case[] = [
     why: "AI가 35라고 해도 원문 기준 350000으로 코드가 바로잡아야 한다",
   },
   {
-    label: "전화번호 있는데 AI가 accounting이라 함",
+    label: "문의 전화는 금액이 있어도 상담",
     text: "010-1234-5678 어머니 30만원 문의",
-    ai: { category: "accounting", amount: 300000, type: "원비", month: "이번달", student_name: "김철수" },
+    ai: { consultation: true, amount: 300000, payment_type: "원비", student_name: "김철수" },
     expect: (r) =>
       r.draft.category === "contact" &&
       r.draft.phone === "010-1234-5678" &&
-      r.corrections.some((c) => c.includes("상담")),
-    why: "규칙 1 — 전화번호가 있으면 AI 판단을 무시하고 contact로 강제",
+      r.draft.status === "상담문의",
+    why: "'얼마냐'는 문의를 수납으로 저장하면 받지도 않은 돈이 매출에 잡힌다",
   },
   {
     label: "금액 없는 원비 문장",
     text: "김민준 이번달 원비",
-    ai: { category: "contact", student_name: "김민준" },
+    ai: { student_name: "김민준" },
     expect: (r) => r.draft.category === "unclear" && r.draft.question.includes("금액"),
-    why: "원안대로 contact로 흘리면 회계 누락 — 되물어야 한다",
+    why: "상담으로 흘리면 회계 누락 — 되물어야 한다",
   },
   {
     label: "환불은 음수",
     text: "이지우 20만원 환불 지난달",
-    ai: { category: "accounting", student_name: "이지우", amount: 200000, type: "환불", month: "지난달" },
+    ai: { payment: true, student_name: "이지우", amount: 200000, payment_type: "환불", payment_month: "지난달" },
     expect: (r) =>
       r.draft.category === "accounting" &&
       r.draft.amount === -200000 &&
@@ -101,28 +114,28 @@ const cases: Case[] = [
   {
     label: "자릿수 오타 방어",
     text: "최유나 3500000000원 원비 이번달",
-    ai: { category: "accounting", student_name: "최유나", amount: 3500000000, type: "원비", month: "이번달" },
+    ai: { payment: true, student_name: "최유나", amount: 3500000000, payment_type: "원비", payment_month: "이번달" },
     expect: (r) => r.draft.category === "unclear" && r.draft.reason.includes("범위"),
     why: "35억원 수강료는 오타 — 저장하지 말고 되물어야 한다",
   },
   {
     label: "학생 이름 없는 수납",
     text: "35만원 이번달 원비 입금",
-    ai: { category: "accounting", amount: 350000, type: "원비", month: "이번달", student_name: null },
+    ai: { payment: true, amount: 350000, payment_type: "원비", payment_month: "이번달", student_name: null },
     expect: (r) => r.draft.category === "unclear" && r.draft.question.includes("학생"),
     why: "enrollmentId를 찾을 수 없으므로 저장 불가 — 되물어야 한다",
   },
   {
     label: "지출은 학생 이름 없어도 통과",
     text: "에어컨 수리비 15만원 지출 이번달",
-    ai: { category: "accounting", amount: 150000, type: "지출", month: "이번달", student_name: null },
+    ai: { payment: true, amount: 150000, payment_type: "지출", payment_month: "이번달", student_name: null },
     expect: (r) => r.draft.category === "accounting" && r.draft.amount === -150000,
     why: "학원 운영 지출은 수강 등록과 무관하다",
   },
   {
     label: "AI가 이름을 지어냄",
     text: "35만원 이번달 원비",
-    ai: { category: "accounting", amount: 350000, type: "원비", month: "이번달", student_name: "홍길동" },
+    ai: { payment: true, amount: 350000, payment_type: "원비", payment_month: "이번달", student_name: "홍길동" },
     expect: (r) => r.draft.category === "accounting" && r.draft.studentName === "홍길동",
     why: "여기서는 코드가 막을 수 없다 — 그래서 저장 전 확인 UI가 반드시 필요하다",
   },
@@ -130,10 +143,10 @@ const cases: Case[] = [
     label: "상담 문의 전체 필드",
     text: "010-9876-5432 박지민 어머니 중2 영어 문의, 다음주 화요일 재통화",
     ai: {
-      category: "contact",
-      phone: "01098765432",
+      consultation: true,
+      parent_phone: "01098765432",
       guardian_name: "박지민 어머니",
-      student_grade: "중2",
+      grade: "중2",
       subject: "영어",
       status: "상담문의",
       follow_up: "다음주 화요일 재통화",
@@ -148,14 +161,14 @@ const cases: Case[] = [
   {
     label: "전화번호도 금액도 없음",
     text: "오늘 날씨 좋네",
-    ai: { category: "contact" },
+    ai: {},
     expect: (r) => r.draft.category === "unclear",
     why: "추측해서 저장하느니 되묻는 편이 낫다",
   },
   {
     label: "금액이 두 개",
     text: "김민준 35만원 중 10만원만 입금 이번달 원비",
-    ai: { category: "accounting", student_name: "김민준", amount: 100000, type: "원비", month: "이번달" },
+    ai: { payment: true, student_name: "김민준", amount: 100000, payment_type: "원비", payment_month: "이번달" },
     expect: (r) =>
       r.draft.category === "accounting" && r.corrections.some((c) => c.includes("여러 개")),
     why: "부분 납부는 사람이 확인해야 하므로 경고를 띄운다",
@@ -163,18 +176,19 @@ const cases: Case[] = [
   {
     label: "최종등록 — 기준일·등록일 추출",
     text: "010-9612-4295 홍효서 등록생 기준일 13일, 8월 13일 최초 등록",
-    ai: { category: "contact", phone: "010-9612-4295", student_name: "홍효서", status: "최종등록" },
+    ai: { enroll: true, parent_phone: "010-9612-4295", student_name: "홍효서", status: "최종등록" },
     expect: (r) =>
-      r.draft.category === "contact" &&
-      r.draft.status === "최종등록" &&
+      r.draft.category === "registration" &&
+      r.draft.parentPhone === "010-9612-4295" &&
       r.draft.dueDay === 13 &&
-      r.draft.startDate === "2026-08-13",
+      r.draft.startDate === "2026-08-13" &&
+      r.draft.payment === null,
     why: "수강 등록에 넣을 기준일·등록일을 원문에서 뽑아야 한다",
   },
   {
     label: "상담 — 기준일·등록일이 없으면 지어내지 않는다",
     text: "010-1234-5678 박서연 어머니 중2 영어 문의",
-    ai: { category: "contact", phone: "010-1234-5678", student_name: "박서연", student_grade: "중2", subject: "영어" },
+    ai: { consultation: true, parent_phone: "010-1234-5678", student_name: "박서연", grade: "중2", subject: "영어" },
     expect: (r) =>
       r.draft.category === "contact" && r.draft.dueDay === null && r.draft.startDate === null,
     why: "값이 없으면 null로 두고 원장이 직접 채우게 해야 한다",
@@ -182,17 +196,17 @@ const cases: Case[] = [
   {
     label: "AI가 '등록'을 상담문의로 흘림",
     text: "010-1234-5678 김민준 중2 영어 등록",
-    ai: { category: "contact", phone: "010-1234-5678", student_name: "김민준", student_grade: "중2", subject: "영어", status: "상담문의" },
+    ai: { consultation: true, parent_phone: "010-1234-5678", student_name: "김민준", grade: "중2", subject: "영어", status: "상담문의" },
     expect: (r) =>
-      r.draft.category === "contact" &&
-      r.draft.status === "최종등록" &&
-      r.corrections.some((c) => c.includes("최종등록")),
+      r.draft.category === "registration" &&
+      r.draft.studentName === "김민준" &&
+      r.draft.grade === "중2",
     why: "'등록'이라고 썼는데 상담문의로 남으면 학생이 생성되지 않아 학생 목록에 안 뜬다",
   },
   {
     label: "AI가 '결제'를 환불로 뒤집음",
     text: "김민준 35만원 이번달 카드 결제",
-    ai: { category: "accounting", student_name: "김민준", amount: 350000, type: "환불", month: "이번달" },
+    ai: { payment: true, student_name: "김민준", amount: 350000, payment_type: "환불", payment_month: "이번달" },
     expect: (r) =>
       r.draft.category === "accounting" &&
       r.draft.type === "원비" &&
@@ -203,16 +217,88 @@ const cases: Case[] = [
   {
     label: "환불이라고 쓰면 AI가 뭐라 하든 환불",
     text: "이지우 20만원 환불 지난달",
-    ai: { category: "accounting", student_name: "이지우", amount: 200000, type: "원비", month: "지난달" },
+    ai: { payment: true, student_name: "이지우", amount: 200000, payment_type: "원비", payment_month: "지난달" },
     expect: (r) => r.draft.category === "accounting" && r.draft.amount === -200000,
     why: "코드가 결제 쪽으로 과보정해서 환불을 놓치면 안 된다",
   },
+
+  // ─── 등록(registration) ─────────────────────────────────────────────────
+  // 예전에는 "전화번호가 있으면 상담, 없으면 되묻기"였다. 그 탓에 원장이 학생을
+  // 앞에 두고 급히 적은 등록 문장이 통째로 막혔다.
   {
-    label: "연락처 없는 등록 요청",
+    label: "등록+결제 동시 (지정 예시)",
+    text: "정재현 숭의중1 등록 결제 28만 정우석 선생님 화 목 심화",
+    ai: {
+      enroll: true,
+      payment: true,
+      student_name: "정재현",
+      school: "숭의중",
+      grade: "1학년",
+      schedule_days: ["화", "목"],
+      teacher_name: "정우석 선생님",
+      class_level: "심화",
+      amount: 280000,
+      payment_type: "원비",
+      status: "최종등록",
+    },
+    expect: (r) =>
+      r.draft.category === "registration" &&
+      r.draft.studentName === "정재현" &&
+      r.draft.school === "숭의중" &&
+      r.draft.grade === "1학년" &&
+      r.draft.parentPhone === null &&
+      r.draft.payment?.amount === 280000 &&
+      r.draft.payment?.type === "원비" &&
+      r.draft.payment?.paymentMonth === "2026-08" &&
+      JSON.stringify(r.draft.classHint.scheduleDays) === JSON.stringify(["화", "목"]) &&
+      r.draft.classHint.teacherName === "정우석" &&
+      r.draft.classHint.level === "심화",
+    why: "'숭의중1'의 1을 금액으로 읽으면 28만원이 버려지고 전체가 되물어진다",
+  },
+  {
+    label: "어순이 달라도 같게 읽는다",
+    text: "28만원 결제하고 정재현 신규등록",
+    ai: { enroll: true, payment: true, student_name: "정재현", amount: 280000, payment_type: "원비" },
+    expect: (r) =>
+      r.draft.category === "registration" &&
+      r.draft.studentName === "정재현" &&
+      r.draft.payment?.amount === 280000,
+    why: "'28만원 결제' = '결제 28만원' — 순서가 아니라 뜻으로 읽어야 한다",
+  },
+  {
+    label: "AI가 등록을 놓쳐도 낱말이 살린다",
+    text: "정재현 숭의중1 등록 결제 28만",
+    ai: { payment: true, student_name: "정재현", school: "숭의중", grade: "1학년", amount: 280000 },
+    expect: (r) =>
+      r.draft.category === "registration" && r.draft.payment?.amount === 280000,
+    why: "'등록'이라고 명시했으면 AI가 놓쳐도 수강등록을 만들어야 한다",
+  },
+  {
+    label: "등록만 — 돈 얘기가 없으면 수납을 만들지 않는다",
+    text: "김도윤 다음주부터 다니기로 함",
+    ai: { enroll: true, student_name: "김도윤" },
+    expect: (r) =>
+      r.draft.category === "registration" &&
+      r.draft.payment === null &&
+      r.draft.parentPhone === null,
+    why: "받지도 않은 돈을 수납으로 만들면 미납 집계가 어긋난다",
+  },
+  {
+    label: "연락처 없어도 등록은 등록",
     text: "김민준 초등A반에 넣어줘",
-    ai: { category: "unclear" },
-    expect: (r) => r.draft.category === "unclear" && r.draft.question.includes("연락처"),
-    why: "무엇이 빠졌는지 알려줘야 원장이 다시 칠 수 있다",
+    ai: { enroll: true, student_name: "김민준" },
+    expect: (r) =>
+      r.draft.category === "registration" &&
+      r.draft.parentPhone === null &&
+      r.corrections.some((c) => c.includes("전화번호")),
+    why: "전화번호는 원장이 확인 화면에서 채운다 — 없다고 등록을 막으면 안 된다",
+  },
+  {
+    label: "환불은 등록으로 흘리지 않는다",
+    text: "정재현 등록 취소, 이번달 28만원 환불",
+    ai: { enroll: true, payment: true, student_name: "정재현", amount: 280000, payment_type: "환불", payment_month: "이번달" },
+    expect: (r) => r.draft.category === "accounting" && r.draft.amount === -280000,
+    why: "'등록'이라는 글자에 끌려 환불을 신규 등록으로 만들면 학생이 중복 생성된다",
   },
 ];
 
@@ -242,6 +328,18 @@ const amountCases: Array<[string, number[]]> = [
   // 부분 납부 — 합쳐지면 안 된다
   ["10만원 20만원", [100000, 200000]],
   ["1만 2만 3만", [10000, 20000, 30000]],
+  // ── 단위 오인식 방어 ──
+  // "월"은 날짜다. 7이 금액 후보 첫 자리를 차지하면 28만원이 통째로 버려진다.
+  ["김민준 7월 원비 28만원 결제", [280000]],
+  // 학교명에 붙은 학년 숫자를 금액으로 읽으면 안 된다
+  ["정재현 숭의중1 등록 결제 28만", [280000]],
+  ["박서연 중2 영어 35만원", [350000]],
+  // 기준일·등록일도 금액이 아니다
+  ["기준일 13일 35만원 납부", [350000]],
+  ["8월 13일부터 28만원", [280000]],
+  ["3개월 선납 90만원", [900000]],
+  // 전화번호 자릿수가 금액으로 새면 안 된다
+  ["010-1234-5678 김민준 28만원 입금", [280000]],
 ];
 
 const dueDayCases: Array<[string, number | null]> = [
@@ -318,6 +416,35 @@ const classCases: Array<[string, string | null]> = [
   ["김민준 등록", null],
   ["김민준 고등B반 등록", null], // 없는 반을 지어내지 않는다
 ];
+
+// 요일·강사·레벨로 반을 좁히는 경우. 반 이름은 학원마다 제각각이라
+// "화목 심화"만으로는 이름을 알 수 없고, 반 목록과 대조해야만 확정된다.
+const classRows = [
+  { id: "k1", name: "심화반", schedule: "화목", teacherName: "정우석" },
+  { id: "k2", name: "기초반", schedule: "화목", teacherName: "정우석" },
+  { id: "k3", name: "고등심화", schedule: "월수금", teacherName: "김하늘" },
+];
+const hintCases: Array<[string, ClassHintInput, string | null, number]> = [
+  ["요일+강사+레벨 모두 일치", { scheduleDays: ["화", "목"], teacherName: "정우석", level: "심화" }, "k1", 1],
+  // "화요일"의 "일"이 일요일로 잡히면 후보가 0이 된다
+  ["'화요일' 표기도 같게 읽는다", { scheduleDays: ["화요일", "목요일"], teacherName: "정우석", level: "심화" }, "k1", 1],
+  ["레벨이 없으면 확정 못 함", { scheduleDays: ["화", "목"], teacherName: "정우석", level: null }, null, 2],
+  ["레벨만으론 확정 못 함", { scheduleDays: null, teacherName: null, level: "심화" }, null, 2],
+  // "화목"과 "화목토"는 다른 반이다 — 비슷하다고 붙이면 엉뚱한 반에 등록된다
+  ["요일이 하나라도 다르면 후보 아님", { scheduleDays: ["화", "목", "토"], teacherName: "정우석", level: "심화" }, null, 0],
+  ["강사만으로 확정", { scheduleDays: null, teacherName: "김하늘", level: null }, "k3", 1],
+  ["재료가 없으면 추측하지 않는다", { scheduleDays: null, teacherName: null, level: null }, null, 0],
+];
+
+for (const [label, hint, expectedId, expectedCount] of hintCases) {
+  const got = matchClass(hint, classRows);
+  const ok = (got.match?.id ?? null) === expectedId && got.candidates.length === expectedCount;
+  if (ok) { pass++; console.log(`✅ [반매칭] ${label}`); }
+  else {
+    fail++;
+    console.log(`❌ [반매칭] ${label} → match=${got.match?.id ?? null}, 후보 ${got.candidates.length}건 (기대 ${expectedId}, ${expectedCount}건)`);
+  }
+}
 
 for (const [input, expected] of statusCases) {
   const got = extractConsultationStatus(input);

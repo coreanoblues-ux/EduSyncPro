@@ -25,7 +25,7 @@ import {
   createConsultationBodySchema
 } from "@shared/schema";
 import { parseInput, NlpConfigError } from "./lib/nlpParser";
-import { matchClassName } from "./lib/nlpNormalize";
+import { matchClassName, matchClass } from "./lib/nlpNormalize";
 import { z } from "zod";
 import { db } from "./db";
 import { users } from "@shared/schema";
@@ -1229,32 +1229,54 @@ export async function registerRoutes(app: Express): Promise<Server> {
     async (req: Request, res: Response) => {
       try {
         const result = await parseInput(req.body.text);
+        const tenantId = req.user!.tenantId!;
 
         // 수납 초안이면 학생 이름을 실제 수강 등록으로 해석해 후보를 붙여준다.
         let studentMatches: any[] = [];
         if (result.draft.category === 'accounting' && result.draft.studentName) {
-          const found = await storage.findStudentsByName(
-            req.user!.tenantId!,
-            result.draft.studentName
-          );
+          const found = await storage.findStudentsByName(tenantId, result.draft.studentName);
           studentMatches = await Promise.all(
             found.map(async (s) => ({
               student: { id: s.id, name: s.name, grade: s.grade, school: s.school },
-              enrollments: await storage.getActiveEnrollmentsWithClass(req.user!.tenantId!, s.id),
+              enrollments: await storage.getActiveEnrollmentsWithClass(tenantId, s.id),
             }))
           );
         }
 
-        // "김민준 초등A반 등록"처럼 반 이름을 부르면 그 반을 미리 골라준다.
         // 반 이름은 학원마다 다르므로 AI에게 맡기지 않고 실제 목록과 대조한다.
         let classMatch: { id: string; name: string } | null = null;
-        if (result.draft.category === 'contact') {
-          const classes = await storage.getClassesByTenant(req.user!.tenantId!);
+        let classCandidates: Array<{ id: string; name: string }> = [];
+
+        if (result.draft.category === 'registration') {
+          // "정우석 선생님 화 목 심화" — 요일·강사·레벨 조합으로 반을 좁힌다.
+          const rows = await storage.getClassesWithTeacher(tenantId);
+          const { match, candidates } = matchClass(result.draft.classHint, rows);
+          if (match) classMatch = { id: match.id, name: match.name };
+          classCandidates = candidates.map((c) => ({ id: c.id, name: c.name }));
+
+          // 요일·강사가 안 잡히면 "초등A반"처럼 반 이름을 직접 부른 경우일 수 있다
+          if (!classMatch && classCandidates.length === 0) {
+            const byName = matchClassName(req.body.text, rows);
+            if (byName) classMatch = { id: byName.id, name: byName.name };
+          }
+
+          // 동명이인 확인용 — 이미 있는 학생을 또 만들지 않도록 원장에게 보여준다
+          if (result.draft.studentName) {
+            const found = await storage.findStudentsByName(tenantId, result.draft.studentName);
+            studentMatches = await Promise.all(
+              found.map(async (s) => ({
+                student: { id: s.id, name: s.name, grade: s.grade, school: s.school },
+                enrollments: await storage.getActiveEnrollmentsWithClass(tenantId, s.id),
+              }))
+            );
+          }
+        } else if (result.draft.category === 'contact') {
+          const classes = await storage.getClassesByTenant(tenantId);
           const hit = matchClassName(req.body.text, classes);
           if (hit) classMatch = { id: hit.id, name: hit.name };
         }
 
-        res.json({ ...result, studentMatches, classMatch });
+        res.json({ ...result, studentMatches, classMatch, classCandidates });
       } catch (error: any) {
         if (error instanceof NlpConfigError) {
           console.error('NLP config error:', error.message);

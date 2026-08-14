@@ -5,6 +5,7 @@ var __export = (target, all) => {
 };
 
 // server/index.ts
+import "dotenv/config";
 import express2 from "express";
 
 // server/routes.ts
@@ -2754,8 +2755,7 @@ app.use((req, res, next) => {
   const port = parseInt(process.env.PORT || "3000", 10);
   server.listen({
     port,
-    host: "0.0.0.0",
-    reusePort: true
+    host: "0.0.0.0"
   }, () => {
     log(`serving on port ${port}`);
   });

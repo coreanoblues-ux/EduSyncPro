@@ -235,7 +235,9 @@ function App() {
       <QueryClientProvider client={queryClient}>
         <div className="min-h-screen flex items-center justify-center">
           <div className="text-center">
-            <div className="text-lg font-semibold">시대영재 학원관리</div>
+            <div className="text-lg font-black uppercase tracking-tight">
+              Page<span className="text-orange-500">O</span>ne
+            </div>
             <div className="text-sm text-muted-foreground mt-2">로딩 중...</div>
           </div>
         </div>

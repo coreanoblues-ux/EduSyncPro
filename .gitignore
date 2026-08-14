@@ -1,6 +1,9 @@
 node_modules
-dist/*
-!dist/index.js
+# dist는 통째로 무시한다. 예전에 dist/index.js만 예외로 두고 커밋했더니,
+# Nixpacks가 빌드 뒤에 실행하는 COPY . /app 이 갓 빌드한 번들을 저장소의
+# 낡은 파일로 덮어써서 운영 서버만 몇 커밋 뒤처진 채로 돌았다.
+# (화면은 dist/public이 무시 대상이라 매번 새로 빌드되어 최신처럼 보였다.)
+dist/
 .DS_Store
 server/public
 vite.config.ts.*

@@ -8,6 +8,8 @@
  * 외부 의존성이 없으므로 API 키 없이 단독 테스트할 수 있다.
  */
 
+import { addDays, daysBetween, toYmd } from "@shared/day";
+
 // ─── 전화번호 ──────────────────────────────────────────────────────────────
 
 // 휴대폰(010-1234-5678, 01012345678) 및 지역번호(02-123-4567, 031-123-4567)
@@ -675,24 +677,74 @@ export function extractTaskSlot(text: string): TaskSlotHint {
   return /출근\s*전|아침\s*에|오전\s*중|내일\s*아침/.test(text) ? "출근전" : "퇴근전";
 }
 
+const pad = (n: number) => String(n).padStart(2, "0");
+
 /**
- * "내일", "모레" 같은 말이 있으면 며칠 뒤인지 준다. 없으면 0(오늘).
+ * 문장에 적힌 날짜를 읽고, 그 표현을 걷어낸 나머지 문장을 함께 준다.
  *
- * 원장이 날짜를 안 적는 것이 정상이다. 어차피 오늘 퇴근 전에 할 일이라
- * 기기의 오늘 날짜가 자동으로 들어가야 한다.
+ * "8월 19일 출근전 재현이 엄마한테 전화" → 2026-08-19 + "출근전 재현이 엄마한테 전화"
  *
- * "출근전"은 하루를 더한다. 이미 출근해 있는 사람이 "출근 전에 하자"고 적으면
- * 그건 내일 아침을 뜻하기 때문이다.
+ * 읽기와 걷어내기를 한 함수에서 한다. 정규식을 두 벌로 두면 서로 어긋나
+ * "8월 19일"이 제목에 그대로 남거나, 날짜가 아닌 "3일 결석"의 "3일"이
+ * 제목에서 지워지는 일이 생긴다.
+ *
+ * 날짜가 없으면 오늘이다. 원장이 날짜를 안 적는 것이 정상이고 어차피
+ * 오늘 퇴근 전에 할 일이기 때문이다.
  */
-export function extractTaskDayOffset(text: string): number {
-  if (/모레|내일\s*모레/.test(text)) return 2;
-  if (/내일/.test(text)) return 1;
-  if (/출근\s*전/.test(text)) return 1;
-  return 0;
+export function extractTaskDue(text: string, today: string): { dueDate: string; rest: string } {
+  const cut = (m: RegExpMatchArray, dueDate: string) => ({
+    dueDate,
+    rest: text.slice(0, m.index!) + " " + text.slice(m.index! + m[0].length),
+  });
+
+  // "3일 뒤" — 날짜를 가리키는 "3일"보다 먼저 봐야 한다
+  const rel = text.match(/(\d{1,2})\s*일\s*(뒤|후)/);
+  if (rel) return cut(rel, addDays(today, Number(rel[1])));
+
+  // 해까지 적은 경우: 2026-08-19, 2026.8.19, 2026년 8월 19일
+  const full = text.match(/(20\d{2})\s*[.\-/년]\s*(\d{1,2})\s*[.\-/월]\s*(\d{1,2})\s*일?/);
+  if (full) return cut(full, `${full[1]}-${pad(Number(full[2]))}-${pad(Number(full[3]))}`);
+
+  // "8월 19일", "8/19"
+  const md =
+    text.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/) ??
+    text.match(/(?<![\d:])(\d{1,2})\s*\/\s*(\d{1,2})(?![\d:])/);
+  if (md) {
+    const m = Number(md[1]);
+    const d = Number(md[2]);
+    if (m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      // 해를 안 적었으면 올해다. 다만 반년 넘게 지난 날짜라면 지난 일을 적을
+      // 리가 없으니 내년으로 민다. 12월에 "1월 5일"이라 적는 경우가 그렇다.
+      const y = Number(today.slice(0, 4));
+      const thisYear = `${y}-${pad(m)}-${pad(d)}`;
+      return cut(md, daysBetween(thisYear, today) > 180 ? `${y + 1}-${pad(m)}-${pad(d)}` : thisYear);
+    }
+  }
+
+  // "19일" — 이번 달로 보되 이미 지난 날이면 다음 달
+  const dayOnly = text.match(/(?<![\d:])(\d{1,2})\s*일(?!\s*(전|째|간|동안|치))/);
+  if (dayOnly) {
+    const d = Number(dayOnly[1]);
+    const [y, m, todayDay] = today.split("-").map(Number);
+    if (d >= 1 && d <= 31) {
+      return cut(dayOnly, toYmd(new Date(Date.UTC(y, m - 1 + (d < todayDay ? 1 : 0), d)), true));
+    }
+  }
+
+  const rough = text.match(/모레|내일/);
+  if (rough) return cut(rough, addDays(today, rough[0] === "모레" ? 2 : 1));
+
+  const todayWord = text.match(/오늘/);
+  if (todayWord) return cut(todayWord, today);
+
+  // 이미 출근해 있는 사람이 "출근 전에 하자"고 적으면 그건 내일 아침이다.
+  if (/출근\s*전|아침\s*에/.test(text)) return { dueDate: addDays(today, 1), rest: text };
+
+  return { dueDate: today, rest: text };
 }
 
 /**
- * 원문에서 마커와 날짜 표현을 걷어내 할 일 제목만 남긴다.
+ * 마커를 걷어내 할 일 제목만 남긴다. 날짜는 extractTaskDue가 이미 뺐다.
  *
  * "퇴근전 김민준 어머니 전화" → "김민준 어머니 전화"
  *
@@ -701,8 +753,8 @@ export function extractTaskDayOffset(text: string): number {
  */
 export function extractTaskTitle(text: string): string | null {
   const title = text
-    .replace(TASK_MARKER, " ")
-    .replace(/(오늘|내일|모레|아침에|오전중)/g, " ")
+    .replace(new RegExp(TASK_MARKER.source, "gi"), " ")
+    .replace(/(아침\s*에|오전\s*중)/g, " ")
     .replace(/^[\s,.:;·\-]+|[\s,.:;·\-]+$/g, "")
     .replace(/\s+/g, " ")
     .trim();

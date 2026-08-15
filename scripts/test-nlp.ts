@@ -569,8 +569,56 @@ const cases: Case[] = [
     text: "내일 출근전 교재 주문",
     ai: {},
     expect: (r) =>
-      r.draft.category === "task" && r.draft.dueDate === "2026-08-15" && r.draft.slot === "출근전",
-    why: "출근 전에 할 일은 지금 적어도 내일 아침 몫이다",
+      r.draft.category === "task" &&
+      r.draft.dueDate === "2026-08-15" &&
+      r.draft.slot === "출근전" &&
+      r.draft.title === "출근전 교재 주문",
+    why: "출근 전에 할 일은 지금 적어도 내일 아침 몫이다. 목록에서도 구분돼야 한다",
+  },
+  {
+    label: "날짜를 적으면 그 날짜로 잡는다",
+    text: "8월 19일 출근전 재현이 엄마한테 전화 하기",
+    ai: { consultation: true, student_name: "재현" },
+    expect: (r) =>
+      r.draft.category === "task" &&
+      r.draft.dueDate === "2026-08-19" &&
+      r.draft.slot === "출근전" &&
+      r.draft.title === "출근전 재현이 엄마한테 전화 하기",
+    why: "날짜·시점·내용이 다 맞으면 원장은 확인만 누르면 된다",
+  },
+  {
+    label: "날짜만 적어도 이번 달로 읽는다",
+    text: "19일 퇴근전 교실 에어컨 점검",
+    ai: {},
+    expect: (r) => r.draft.category === "task" && r.draft.dueDate === "2026-08-19",
+    why: "'19일'이라고만 적는 것이 말버릇이다",
+  },
+  {
+    label: "지난 날짜는 다음 달로 민다",
+    text: "3일 퇴근전 학부모 문자",
+    ai: {},
+    expect: (r) => r.draft.category === "task" && r.draft.dueDate === "2026-09-03",
+    why: "8월 14일에 '3일'이라 적었으면 이미 지난 3일이 아니라 다음 달 3일이다",
+  },
+  {
+    label: "'3일 뒤'는 날짜가 아니라 기간이다",
+    text: "3일 뒤 퇴근전 교재비 정산",
+    ai: {},
+    expect: (r) =>
+      r.draft.category === "task" &&
+      r.draft.dueDate === "2026-08-17" &&
+      r.draft.title === "교재비 정산",
+    why: "'3일'을 날짜로 읽으면 9월 3일이 되어 2주 넘게 어긋난다",
+  },
+  {
+    label: "날짜는 제목에서 걷어낸다",
+    text: "2026-08-20 퇴근전 상담실 정리",
+    ai: {},
+    expect: (r) =>
+      r.draft.category === "task" &&
+      r.draft.dueDate === "2026-08-20" &&
+      r.draft.title === "상담실 정리",
+    why: "날짜가 제목에 남으면 목록에서 같은 날짜가 두 번 보인다",
   },
   {
     label: "할 일 문장 속 '미납'은 수납으로 새지 않는다",

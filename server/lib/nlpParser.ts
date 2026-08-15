@@ -42,12 +42,12 @@ import {
   looksLikeTask,
   extractTaskSlot,
   extractTaskTitle,
-  extractTaskDayOffset,
+  extractTaskDue,
   type PersonTarget,
   type PersonAction,
   type TaskSlotHint,
 } from "./nlpNormalize";
-import { addDays, ymdKst } from "@shared/day";
+import { ymdKst } from "@shared/day";
 
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
@@ -819,12 +819,15 @@ export function arbitrate(
     마커 없는 문장까지 할 일로 끌어와 상담 기록이 할 일 목록으로 새어 나간다.
   */
   if (looksLikeTask(sourceText)) {
-    const title = extractTaskTitle(sourceText);
-    if (title) {
-      const offset = extractTaskDayOffset(sourceText);
-      const dueDate = addDays(ymdKst(now), offset);
+    const today = ymdKst(now);
+    const { dueDate, rest } = extractTaskDue(sourceText, today);
+    const body = extractTaskTitle(rest);
+    if (body) {
       const slot = extractTaskSlot(sourceText);
-      if (offset > 0) {
+      // 출근전은 목록에서도 한눈에 보여야 한다. 퇴근전은 이 기능의 기본값이라
+      // 제목마다 붙이면 같은 말이 모든 줄에 반복될 뿐이다.
+      const title = slot === "출근전" ? `출근전 ${body}` : body;
+      if (dueDate !== today) {
         corrections.push(`${dueDate} ${slot} 할 일로 두었습니다.`);
       }
       return { sourceText, corrections, draft: { category: "task", title, dueDate, slot } };

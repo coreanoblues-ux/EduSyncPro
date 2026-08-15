@@ -30,6 +30,8 @@ interface DashboardProps {
 
 /** 대시보드에 한 번에 보여줄 줄 수. 넘치면 해당 페이지로 넘긴다. */
 const PREVIEW_LIMIT = 5;
+/** 미납은 타일이라 한 줄에 여러 개가 들어간다. 3열 × 2줄이 딱 떨어진다. */
+const OVERDUE_PREVIEW_LIMIT = 6;
 
 function formatDate(value: string | Date) {
   return new Date(value).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" });
@@ -208,6 +210,11 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
         </SectionCard>
       </div>
 
+      {/*
+        미납은 폭을 다 쓰되 한 줄에 한 명씩 늘어놓지 않는다. 넓은 화면에서
+        이름과 금액 사이가 한 뼘씩 벌어져 목록이 텅 빈 것처럼 보였다.
+        카드 타일로 접어 두면 같은 자리에 세 배가 들어가고 여백도 사라진다.
+      */}
       <SectionCard
         title="미납"
         count={overdues.length}
@@ -216,32 +223,36 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
         emptyText="미납 건이 없습니다."
         onMore={() => setLocation('/overdues')}
         testId="dashboard-overdues"
+        layout="grid"
       >
-        {overduesBySeverity.slice(0, PREVIEW_LIMIT).map((o) => (
+        {overduesBySeverity.slice(0, OVERDUE_PREVIEW_LIMIT).map((o) => (
           <div
             key={o.enrollment.id}
-            className="flex items-center justify-between gap-3 rounded-md px-2 py-2 hover-elevate"
+            className="rounded-md border px-3 py-2 hover-elevate"
             data-testid={`dashboard-overdue-${o.enrollment.id}`}
           >
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="font-medium">{o.student.name}</span>
-                <Badge variant="destructive" className="text-[10px]">
-                  {o.overdueMonths.length}개월
-                </Badge>
-              </div>
-              <div className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
-                <BookOpen className="h-3 w-3 shrink-0" />
-                {o.class.name}
-                {o.student.parentPhone && <span>· {o.student.parentPhone}</span>}
-              </div>
-            </div>
-            <div className="shrink-0 text-right">
-              <div className="text-sm font-semibold text-red-600 dark:text-red-400">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="truncate font-medium">{o.student.name}</span>
+              <span className="shrink-0 text-sm font-semibold text-red-600 dark:text-red-400">
                 {o.totalOverdueAmount.toLocaleString()}원
-              </div>
-              <div className="text-xs text-muted-foreground">{o.latestOverdueMonth}</div>
+              </span>
             </div>
+            <div className="mt-1 flex items-center gap-1.5 truncate text-xs text-muted-foreground">
+              <BookOpen className="h-3 w-3 shrink-0" />
+              <span className="truncate">{o.class.name}</span>
+              <Badge variant="destructive" className="ml-auto shrink-0 text-[10px]">
+                {o.overdueMonths.length}개월 · {o.latestOverdueMonth}
+              </Badge>
+            </div>
+            {o.student.parentPhone && (
+              <a
+                href={`tel:${o.student.parentPhone}`}
+                className="mt-1 flex items-center gap-1 text-xs text-muted-foreground hover:underline"
+              >
+                <Phone className="h-3 w-3" />
+                {o.student.parentPhone}
+              </a>
+            )}
           </div>
         ))}
       </SectionCard>
@@ -282,6 +293,7 @@ function SectionCard({
   emptyText,
   onMore,
   testId,
+  layout = "list",
   children,
 }: {
   title: string;
@@ -291,6 +303,8 @@ function SectionCard({
   emptyText: string;
   onMore: () => void;
   testId: string;
+  /** 폭이 넓은 카드는 "grid"로 타일을 깔아야 가로 여백이 남지 않는다 */
+  layout?: "list" | "grid";
   children: React.ReactNode;
 }) {
   const shown = Array.isArray(children) ? children.length : count;
@@ -313,7 +327,15 @@ function SectionCard({
           <p className="py-6 text-center text-sm text-muted-foreground">{emptyText}</p>
         ) : (
           <>
-            <div className="divide-y">{children}</div>
+            <div
+              className={
+                layout === "grid"
+                  ? "grid gap-2 sm:grid-cols-2 xl:grid-cols-3"
+                  : "divide-y"
+              }
+            >
+              {children}
+            </div>
             {count > shown && (
               <p className="pt-2 text-center text-xs text-muted-foreground">
                 외 {count - shown}건

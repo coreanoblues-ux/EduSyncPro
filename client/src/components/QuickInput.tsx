@@ -36,6 +36,11 @@ interface EnrollmentOption {
   classSubject: string;
   tuition: number | null;
   defaultTuition: number;
+  dueDay?: number | null;
+  /** 조회(lookup) 응답에만 붙는다 — 이번 달 납부 실적 */
+  paidThisMonth?: boolean;
+  paidAmount?: number;
+  paidDate?: string | null;
 }
 
 interface StudentMatch {
@@ -76,7 +81,8 @@ interface PersonDraft {
 
 interface ContactDraft {
   category: "contact";
-  phone: string;
+  /** 통화 중 입력을 위해 비어 있을 수 있다. 저장 전에 여기서 채운다. */
+  phone: string | null;
   guardianName: string | null;
   studentName: string | null;
   studentGrade: string | null;
@@ -144,6 +150,12 @@ interface ClassDraft {
   memo: string | null;
 }
 
+/** 이름만 친 경우. 저장할 것이 없고 학생 상태만 보여준다. */
+interface LookupDraft {
+  category: "lookup";
+  name: string;
+}
+
 interface UnclearDraft {
   category: "unclear";
   reason: string;
@@ -157,6 +169,7 @@ interface ParseResponse {
     | ContactDraft
     | ClassDraft
     | PersonDraft
+    | LookupDraft
     | UnclearDraft;
   sourceText: string;
   corrections: string[];
@@ -172,6 +185,8 @@ interface ParseResponse {
 }
 
 const EXAMPLES = [
+  "정재현",
+  "수찬이 7월 납부",
   "김민 수납",
   "김민준 35만원 이번달 원비 카드 결제",
   "정재현 숭의중1 등록 결제 28만 정우석 선생님 화 목 심화",
@@ -219,6 +234,8 @@ export default function QuickInput() {
   const [existingStudentId, setExistingStudentId] = useState<string>("");
   // 반 초안에서 고른 담당 강사. classes.teacherId가 NOT NULL이라 반드시 있어야 한다.
   const [teacherId, setTeacherId] = useState<string>("");
+  // 이름만 쳐서 조회했을 때 원장이 고른 학생. 동명이인이면 비어 있다.
+  const [lookupStudentId, setLookupStudentId] = useState<string>("");
   const { toast } = useToast();
   const qc = useQueryClient();
   const [, setLocation] = useLocation();
@@ -255,6 +272,12 @@ export default function QuickInput() {
       // 강사는 이름이 정확히 하나로 맞을 때만 서버가 알려준다. 애매하면 비워 두고 고르게 한다.
       setTeacherId(data.teacherMatch?.id ?? "");
       setExistingStudentId("");
+
+      // 조회는 후보가 한 명이면 고르는 단계를 건너뛰고 바로 카드를 펼친다
+      const matches = data.studentMatches ?? [];
+      setLookupStudentId(
+        d.category === "lookup" && matches.length === 1 ? matches[0].student.id : ""
+      );
 
       // 정보 수정 대상이 한 명뿐이면 바로 고르고, 현재 값을 폼에 채워 둔다
       if (d.category === "person") {
@@ -452,6 +475,7 @@ export default function QuickInput() {
     setClassId("");
     setExistingStudentId("");
     setTeacherId("");
+    setLookupStudentId("");
   };
 
   const matches = parsed?.studentMatches ?? [];
@@ -514,9 +538,13 @@ export default function QuickInput() {
   const canSave =
     draft &&
     draft.category !== "unclear" &&
+    // 조회는 보여주기만 한다. 저장할 대상 자체가 없다.
+    draft.category !== "lookup" &&
     (draft.category !== "class" || canSaveClass) &&
     (draft.category !== "person" || canSavePerson) &&
     (draft.category !== "accounting" || draft.amount != null) &&
+    // 상담·대기는 번호 없이도 폼이 열린다. 연락처가 곧 기록의 전부라 저장은 막는다.
+    (draft.category !== "contact" || !!draft.phone) &&
     (!needsEnrollment || !!enrollmentId) &&
     (draft.category !== "registration" ||
       (!!classId && !!draft.startDate && !!draft.studentName)) &&
@@ -592,6 +620,134 @@ export default function QuickInput() {
             <Button variant="outline" size="sm" className="mt-2" onClick={reset}>
               다시 입력
             </Button>
+          </div>
+        )}
+
+        {/* 이름만 친 경우 — 학생 상태 조회 (저장할 것이 없다) */}
+        {draft?.category === "lookup" && (
+          <div className="space-y-3 rounded-md border p-3" data-testid="quick-input-lookup">
+            <div className="flex items-center justify-between gap-2">
+              <Badge variant="secondary">학생 조회 · {draft.name}</Badge>
+              <Button variant="ghost" size="sm" onClick={reset}>
+                다시 입력
+              </Button>
+            </div>
+
+            {matches.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                "{draft.name}" 과 이름이 겹치는 학생을 찾지 못했습니다.
+              </p>
+            )}
+
+            {/* 동명이인이거나 부분 일치가 여럿이면 먼저 한 명을 고르게 한다 */}
+            {matches.length > 1 && (
+              <div className="space-y-1.5">
+                <Label>{matches.length}명이 검색되었습니다. 한 명을 고르세요</Label>
+                {matches.map((m) => (
+                  <button
+                    key={m.student.id}
+                    type="button"
+                    onClick={() => setLookupStudentId(m.student.id)}
+                    className={`flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2 text-left transition-colors ${
+                      lookupStudentId === m.student.id
+                        ? "border-primary bg-primary/5"
+                        : "hover:bg-accent"
+                    }`}
+                    data-testid={`quick-input-lookup-pick-${m.student.id}`}
+                  >
+                    <span className="min-w-0">
+                      <span className="font-medium">{m.student.name}</span>
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        {[m.student.school, m.student.grade].filter(Boolean).join(" ") || "학교·학년 미입력"}
+                      </span>
+                    </span>
+                    {lookupStudentId === m.student.id && (
+                      <Check className="h-4 w-4 shrink-0 text-primary" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {(() => {
+              const picked = matches.find((m) => m.student.id === lookupStudentId);
+              if (!picked) return null;
+              return (
+                <div className="space-y-3 rounded-md border bg-muted/40 p-3">
+                  <div>
+                    <p className="text-base font-semibold">{picked.student.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {[picked.student.school, picked.student.grade].filter(Boolean).join(" ") ||
+                        "학교·학년 미입력"}
+                    </p>
+                  </div>
+
+                  <div className="grid gap-2 text-sm sm:grid-cols-2">
+                    <div>
+                      <p className="text-xs text-muted-foreground">학부모 연락처</p>
+                      <p className="font-medium">{picked.student.parentPhone || "미입력"}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">수강 중인 반</p>
+                      <p className="font-medium">
+                        {picked.enrollments.length === 0
+                          ? "없음"
+                          : picked.enrollments.map((e) => e.className).join(", ")}
+                      </p>
+                    </div>
+                  </div>
+
+                  {picked.enrollments.length > 0 && (
+                    <div className="space-y-1.5">
+                      <p className="text-xs text-muted-foreground">이번 달 수납</p>
+                      {picked.enrollments.map((en) => (
+                        <div
+                          key={en.id}
+                          className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2 text-sm"
+                        >
+                          <span className="min-w-0">
+                            <span className="block truncate font-medium">{en.className}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {(en.tuition ?? en.defaultTuition).toLocaleString()}원
+                              {en.dueDay ? ` · 매월 ${en.dueDay}일` : ""}
+                            </span>
+                          </span>
+                          <span className="shrink-0 text-right">
+                            <Badge variant={en.paidThisMonth ? "secondary" : "destructive"}>
+                              {en.paidThisMonth ? "납부완료" : "미납"}
+                            </Badge>
+                            {en.paidThisMonth && (
+                              <span className="mt-0.5 block text-xs text-muted-foreground">
+                                {en.paidDate
+                                  ? `${new Date(en.paidDate).toLocaleDateString("ko-KR", {
+                                      month: "numeric",
+                                      day: "numeric",
+                                    })} 결제`
+                                  : "결제일 미상"}
+                                {en.paidAmount ? ` · ${en.paidAmount.toLocaleString()}원` : ""}
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {picked.student.notes && (
+                    <p className="text-xs text-muted-foreground">메모: {picked.student.notes}</p>
+                  )}
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setLocation(`/students/edit/${picked.student.id}`)}
+                    data-testid="quick-input-lookup-edit"
+                  >
+                    학생 정보 열기
+                  </Button>
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -972,9 +1128,17 @@ export default function QuickInput() {
               <div>
                 <Label>연락처</Label>
                 <Input
-                  value={draft.phone}
-                  onChange={(e) => setDraft({ ...draft, phone: e.target.value })}
+                  value={draft.phone ?? ""}
+                  onChange={(e) => setDraft({ ...draft, phone: e.target.value || null })}
+                  placeholder="010-0000-0000"
+                  autoFocus={!draft.phone}
+                  data-testid="quick-input-contact-phone"
                 />
+                {!draft.phone && (
+                  <p className="mt-1 text-xs text-destructive">
+                    연락처를 입력해야 저장할 수 있습니다
+                  </p>
+                )}
               </div>
               <div>
                 <Label>상태</Label>
@@ -1380,7 +1544,7 @@ export default function QuickInput() {
           </div>
         )}
 
-        {draft && draft.category !== "unclear" && (
+        {draft && draft.category !== "unclear" && draft.category !== "lookup" && (
           <div className="flex gap-2">
             <Button
               onClick={() => saveMutation.mutate()}

@@ -347,7 +347,8 @@ export function extractConsultationStatus(
 export function extractPaymentType(text: string): "원비" | "환불" | "지출" | "기타" | null {
   if (/환불|환급|반환|돌려\s*(주|줌|드림|드렸)|결제\s*취소|취소\s*환/.test(text)) return "환불";
   if (/지출|매입|구입|구매|수리|임대료|월세|공과금|급여|인건비|비품|운영비/.test(text)) return "지출";
-  if (/원비|수강료|학원비|교습비|수납|결제|납부|입금|완납|선납/.test(text)) return "원비";
+  if (/원비|수강료|학원비|교습비|수납|결제|납부|납입|입금|완납|선납|지불|냈어|냈습|냄|내셨/.test(text))
+    return "원비";
   return null;
 }
 
@@ -368,8 +369,10 @@ export function extractPaymentMethod(text: string): "계좌이체" | "카드" | 
  * 오해해 엉뚱한 반이 하나 더 생긴다. 그래서 AI가 반 작업이라고 해도 원문에
  * 아래 표현이 실제로 들어 있을 때만 반 초안으로 넘긴다.
  *
- * "반 추가"를 생성 표현에서 뺀 것도 같은 이유다. 학생을 반에 추가하는 말과
- * 구분되지 않는다. 반을 새로 만들 때는 "신설·개설·만들"이라고 쓰게 한다.
+ * "반 추가"·"반 설정"·"반 관리"는 원장이 실제로 가장 많이 쓰는 말이라 받는다.
+ * 다만 "추가"만은 띄어쓰기를 살린 원문으로 본다. 아래 t처럼 공백을 지우면
+ * "국어반 추가"(학생을 국어반에 넣는 말)와 "고은채 선생님 반 추가"(반을 새로
+ * 만드는 말)가 똑같이 "…반추가"가 되어 구분할 근거가 사라지기 때문이다.
  */
 export function extractClassAction(text: string): "create" | "update" | null {
   const t = text.replace(/\s+/g, "");
@@ -381,8 +384,15 @@ export function extractClassAction(text: string): "create" | "update" | null {
   if (/(수강료|원비|정원|시간표|일정|담당|강사|선생님)[^.]{0,8}?(수정|변경|바꿔|바꾸|고쳐|고치|올려|내려)/.test(t)) {
     return "update";
   }
+  if (/(반|클래스)(설정|관리)/.test(t)) return "update";
   if (/(반|클래스)[^.]{0,8}?(신설|개설|생성|만들|만듦|개강)/.test(t)) return "create";
   if (/(신설|개설|새로운|새)(반|클래스)/.test(t)) return "create";
+
+  const spaced = text.replace(/\s+/g, " ");
+  // 교사를 앞세운 "고은채 선생님 반 추가"는 붙여 써도 반 생성이 분명하다.
+  if (/(선생님|쌤|샘|강사|교사)\s*(반|클래스)\s*추가/.test(spaced)) return "create";
+  // 그 외에는 "반"이 홀로 선 경우만 인정한다 — "국어반 추가"는 걸리지 않는다.
+  if (/(^|\s)(반|클래스)\s*추가/.test(spaced)) return "create";
   return null;
 }
 
@@ -504,6 +514,37 @@ export function cleanStudentName(raw: string | null | undefined): string | null 
   name = name.replace(/(이가|이는|이랑|이|가|은|는|의|도)$/, "");
   if (!/^[가-힣a-zA-Z]{2,5}$/.test(name)) return null;
   return name;
+}
+
+/** 이름 자리에 올 수 없는 흔한 낱말들. 문장 첫 낱말을 이름으로 볼지 판단할 때 쓴다. */
+const NOT_A_NAME =
+  /^(오늘|내일|어제|모레|이번|다음|저번|지난|학생|학부모|어머니|아버지|엄마|아빠|선생|강사|교사|수업|수강|원비|학원|납부|납입|결제|수납|입금|환불|지출|상담|등록|대기|신규|문의|전화|번호|현금|카드|이체|계좌|미납|완납|선납)/;
+
+/**
+ * 문장 맨 앞 낱말을 학생 이름으로 본다. ("수찬이 7월 납부" → "수찬")
+ *
+ * AI가 이름 칸을 비웠을 때만 쓰는 최후의 보루다. 원장이 급히 칠 때 이름을
+ * 맨 앞에 두는 습관을 노린 것이라, 앞이 숫자거나 흔한 낱말이면 포기한다.
+ * 지어내느니 비워 두는 편이 낫다.
+ */
+export function extractLeadingName(text: string): string | null {
+  const first = text.trim().match(/^[가-힣]{2,5}/);
+  if (!first || NOT_A_NAME.test(first[0])) return null;
+  return cleanStudentName(first[0]);
+}
+
+/**
+ * 문장이 사람 이름 하나뿐이면 그 이름을 준다. ("재현이" → "재현")
+ *
+ * 원장이 "정재현"만 치는 것은 그 학생이 지금 어떤 상태인지 보고 싶다는 뜻이다.
+ * 조사를 떼되, 떼고 나서 한 글자만 남으면 원문을 그대로 쓴다. "민이"를 "민"으로
+ * 줄이면 이름에 '민'이 든 학생이 전부 걸려 고르기가 더 번거로워진다.
+ */
+export function extractLookupName(text: string): string | null {
+  const t = text.trim();
+  if (!/^[가-힣]{2,6}$/.test(t) || NOT_A_NAME.test(t)) return null;
+  const stripped = t.replace(/(이|아|야|군|양|학생|님)$/, "");
+  return /^[가-힣]{2,5}$/.test(stripped) ? stripped : t;
 }
 
 /**

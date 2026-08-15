@@ -34,6 +34,8 @@ import {
   extractPersonAction,
   extractSubject,
   extractCommandName,
+  extractLeadingName,
+  extractLookupName,
   extractTeacherName,
   extractClassNameFromText,
   looksLikeInquiry,
@@ -123,7 +125,8 @@ export interface RegistrationDraft {
 
 export interface ContactDraft {
   category: "contact";
-  phone: string;
+  /** 통화 중 입력을 위해 비어 있을 수 있다. 저장 전에 화면에서 반드시 채운다. */
+  phone: string | null;
   guardianName: string | null;
   studentName: string | null;
   studentGrade: string | null;
@@ -157,6 +160,17 @@ export interface ClassDraft {
   memo: string | null;
 }
 
+/**
+ * 이름만 덜렁 친 경우. 아무것도 만들지 않고 그 학생의 현재 상태만 보여준다.
+ *
+ * "정재현"만 치는 것은 등록도 수납도 아니고 "쟤 지금 어떤 상태지?"라는 질문이다.
+ * 예전엔 "판단 불가"로 되물었는데, 원장이 가장 자주 하는 일이 이 조회였다.
+ */
+export interface LookupDraft {
+  category: "lookup";
+  name: string;
+}
+
 export interface UnclearDraft {
   category: "unclear";
   reason: string;
@@ -170,6 +184,7 @@ export type Draft =
   | ContactDraft
   | ClassDraft
   | PersonDraft
+  | LookupDraft
   | UnclearDraft;
 
 export type ParseResult = {
@@ -809,6 +824,15 @@ export function arbitrate(
     };
   }
 
+  // ── -0.5. 이름만 친 경우 → 학생 조회 ──
+  // 뒤쪽 분기보다 먼저 본다. AI가 "정재현" 한 낱말을 상담 문의로 넘겨 버리면
+  // 조회하려던 원장에게 빈 상담 폼이 뜬다. 문장 전체가 이름 하나일 때만이라
+  // 다른 분기를 가로챌 여지가 없다.
+  const lookupName = extractLookupName(sourceText);
+  if (lookupName) {
+    return { sourceText, corrections, draft: { category: "lookup", name: lookupName } };
+  }
+
   // ── 0. 반 생성·수정 ──
   // 학생 판정보다 먼저 본다. "반 신설"에는 학생 이름이 없어야 정상이므로
   // 뒤쪽 분기까지 흘러가면 "판단 불가"로 되물어지고 만다.
@@ -857,13 +881,11 @@ export function arbitrate(
 
   // ── 1. 등록 (결제 동반 가능) ──
   if (enroll && !isOutflow) {
+    // 이름이 없어도 폼은 연다. 원장은 "등록"까지만 치고 나머지는 화면을 보며
+    // 채우는 편이 빠르다고 했다. 되물으면 한 번 더 타이핑해야 한다.
+    // 이름 없이 저장되는 일은 없다 — 저장 버튼이 화면에서 막혀 있다.
     if (!studentName) {
-      return unclear(
-        sourceText,
-        corrections,
-        "등록 건으로 보이는데 학생 이름을 찾지 못했습니다.",
-        "어느 학생의 등록인가요? (예: 정재현 숭의중1 등록 결제 28만)"
-      );
+      corrections.push("학생 이름을 찾지 못했습니다. 아래에서 입력해 주세요.");
     }
 
     let payment: PaymentPart | null = null;
@@ -932,10 +954,14 @@ export function arbitrate(
     const amount = resolveAmount(ai, sourceText, corrections);
     const type = resolveType(ai, sourceText, corrections);
 
+    // "수찬이 7월 납부"처럼 이름만 덜렁 앞에 붙은 문장에서 AI가 이름 칸을 비우는
+    // 일이 잦다. 그러면 아래에서 "학생 이름을 찾지 못했습니다"로 튕겨 나간다.
+    const payerName = studentName ?? extractLeadingName(sourceText);
+
     // 금액을 안 적었어도 "누구의 원비인지"만 분명하면 초안까지는 만든다.
     // 급할 때 "김민 수납"만 치고 화면에서 그 학생 수강료를 확인해 누르는 흐름이다.
     // 지어낸 금액이 아니라 빈 칸으로 넘기고, 화면에서 채워지기 전에는 저장할 수 없다.
-    const canDeferAmount = amount === null && type === "원비" && !!studentName;
+    const canDeferAmount = amount === null && type === "원비" && !!payerName;
     if (amount === null && !canDeferAmount) {
       return unclear(
         sourceText,
@@ -977,7 +1003,7 @@ export function arbitrate(
     }
 
     // 원비/환불은 어느 학생인지 모르면 저장할 수 없다 (enrollmentId를 못 찾음)
-    if (!studentName && (type === "원비" || type === "환불")) {
+    if (!payerName && (type === "원비" || type === "환불")) {
       return unclear(
         sourceText,
         corrections,
@@ -991,7 +1017,7 @@ export function arbitrate(
       corrections,
       draft: {
         category: "accounting",
-        studentName,
+        studentName: payerName,
         amount: signed,
         type,
         paymentMonth,
@@ -1002,9 +1028,15 @@ export function arbitrate(
   }
 
   // ── 3. 상담/문의 ──
-  // 상담은 연락처가 기록의 전부라, 번호가 없으면 남길 의미가 없다.
-  if (phone) {
+  // 예전엔 번호가 없으면 "연락처를 적어주세요"로 되물었다. 그런데 원장은 통화
+  // 중에 "신규상담 중1 김찬우"까지만 치고 번호는 화면에서 보며 누르는 편이 빠르다.
+  // 그래서 상담·대기 낱말이 보이면 번호가 없어도 폼까지는 열어 준다.
+  // 저장 자체는 화면에서 번호가 채워질 때까지 막히므로 빈 상담이 쌓이지는 않는다.
+  if (phone || statusFromText || asStatus(ai.status) || ai.consultation) {
     const status: ConsultationStatus = statusFromText ?? asStatus(ai.status) ?? "상담문의";
+    if (!phone) {
+      corrections.push("전화번호가 없어 비워 두었습니다. 아래에서 입력해야 저장됩니다.");
+    }
     if (statusFromText && asStatus(ai.status) && statusFromText !== asStatus(ai.status)) {
       corrections.push(
         `상태를 원문 기준 "${statusFromText}"로 정정했습니다. (AI 판단: "${asStatus(ai.status)}")`
@@ -1039,14 +1071,6 @@ export function arbitrate(
   if (ai.needs_clarification && ai.question) {
     return unclear(sourceText, corrections, "입력 내용을 확실히 이해하지 못했습니다.", ai.question);
   }
-  if (statusFromText !== null) {
-    return unclear(
-      sourceText,
-      corrections,
-      "상담 건으로 보이는데 연락처가 없습니다.",
-      "학부모 연락처를 함께 적어주세요. (예: 010-1234-5678 김민준 중2 영어 문의)"
-    );
-  }
   return unclear(
     sourceText,
     corrections,
@@ -1067,6 +1091,12 @@ export async function parseInput(
       corrections: [],
       draft: { category: "unclear", reason: "입력이 비어 있습니다.", question: "내용을 입력해 주세요." },
     };
+  }
+
+  // 이름 한 낱말은 AI에게 물을 것이 없다. 왕복 한 번을 아끼면 조회가 즉시 뜬다.
+  const lookupName = extractLookupName(trimmed);
+  if (lookupName) {
+    return { sourceText: trimmed, corrections: [], draft: { category: "lookup", name: lookupName } };
   }
 
   const ai = await callOpenAi(trimmed, opts.signal);

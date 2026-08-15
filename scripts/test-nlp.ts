@@ -444,6 +444,26 @@ const cases: Case[] = [
     why: "반 관리가 AI 응답 없이도 동작해야 한다",
   },
   {
+    label: "'고은채 선생님 반 추가'는 그 선생님 반을 새로 만드는 말이다",
+    text: "고은채 선생님 반 추가",
+    ai: {},
+    expect: (r) =>
+      r.draft.category === "class" &&
+      r.draft.action === "create" &&
+      r.draft.teacherName === "고은채",
+    why: "교사 이름을 앞세운 반 만들기는 원장이 가장 자주 쓰는 말이다",
+  },
+  {
+    label: "'고은채 선생님 반 관리'는 반 수정으로 들어간다",
+    text: "고은채 선생님 반 관리",
+    ai: {},
+    expect: (r) =>
+      r.draft.category === "class" &&
+      r.draft.action === "update" &&
+      r.draft.teacherName === "고은채",
+    why: "관리·설정도 결국 기존 반을 고치는 화면이어야 한다",
+  },
+  {
     label: "문의를 옮긴 문장은 반을 바꾸지 않는다",
     text: "수강료 변경 문의 왔어요",
     ai: {},
@@ -476,6 +496,62 @@ const cases: Case[] = [
     ai: { enroll: true, student_name: "강단우", grade: "3학년", class_level: "국어반", parent_phone: "010-1234-5678" },
     expect: (r) => r.draft.category === "registration",
     why: "신규 학생은 반 배정·납부일까지 정하는 등록 흐름을 거쳐야 한다",
+  },
+  {
+    label: "이름만 치면 학생 조회",
+    text: "정재현",
+    ai: { consultation: true },
+    expect: (r) => r.draft.category === "lookup" && r.draft.name === "정재현",
+    why: "AI가 상담으로 넘겨도 이름 한 낱말은 '쟤 지금 어떤 상태지?'라는 질문이다",
+  },
+  {
+    label: "이름 뒤 조사는 떼고 조회",
+    text: "재현이",
+    ai: {},
+    expect: (r) => r.draft.category === "lookup" && r.draft.name === "재현",
+    why: "부분 일치로 찾으므로 '재현'이면 정재현까지 걸린다",
+  },
+  {
+    label: "흔한 낱말은 조회로 보지 않는다",
+    text: "오늘",
+    ai: {},
+    expect: (r) => r.draft.category === "unclear",
+    why: "'오늘'을 학생 이름으로 검색하면 아무것도 안 나오고 되묻지도 못한다",
+  },
+  {
+    label: "금액 없는 '납입'도 수납으로 읽는다",
+    text: "수찬이 7월 납입",
+    ai: {},
+    expect: (r) =>
+      r.draft.category === "accounting" &&
+      r.draft.studentName === "수찬" &&
+      r.draft.amount === null &&
+      r.draft.paymentMonth === "2026-07",
+    why: "AI가 이름 칸을 비워도 문장 맨 앞 낱말로 채운다. 금액은 화면에서 고른다",
+  },
+  {
+    label: "금액 없는 '결제'도 수납으로 읽는다",
+    text: "수찬이 7월 결제",
+    ai: {},
+    expect: (r) => r.draft.category === "accounting" && r.draft.studentName === "수찬",
+    why: "납부·결제·납입은 원장이 섞어 쓰는 같은 말이다",
+  },
+  {
+    label: "번호 없는 신규상담도 폼까지는 연다",
+    text: "신규상담 중학교1학년 김찬우",
+    ai: { consultation: true, student_name: "김찬우", grade: "중1" },
+    expect: (r) =>
+      r.draft.category === "contact" &&
+      r.draft.phone === null &&
+      r.draft.status === "상담문의",
+    why: "통화 중에 번호는 나중에 친다. 저장은 화면에서 번호가 찰 때까지 막힌다",
+  },
+  {
+    label: "번호 없는 대기 등록도 폼까지는 연다",
+    text: "박서연 중2 대기",
+    ai: { consultation: true, student_name: "박서연", grade: "중2" },
+    expect: (r) => r.draft.category === "contact" && r.draft.status === "대기등록",
+    why: "대기도 상담과 같은 흐름이다",
   },
 ];
 
@@ -603,6 +679,12 @@ const classActionCases: Array<[string, string | null]> = [
   ["심화반 시간표 바꿔줘", "update"],
   ["고등반 폐강", "update"],
   ["수강료 35만으로 올려줘", "update"],
+  // 원장이 실제로 가장 많이 치는 말
+  ["고은채 선생님 반 추가", "create"],
+  ["고은채 선생님 반 수정", "update"],
+  ["고은채 선생님 반 관리", "update"],
+  ["반 추가", "create"],
+  ["반 설정", "update"],
   // 학생을 반에 넣는 말은 반 작업이 아니다
   ["강단우 국어반 추가", null],
   ["김민준 초등A반 등록", null],

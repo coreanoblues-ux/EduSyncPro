@@ -1272,6 +1272,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
           studentMatches = await lookupStudents(result.draft.studentName);
         }
 
+        // 이름만 친 조회. 반·수강료만으로는 "지금 상태"를 알 수 없어서
+        // 이번 달 납부 실적까지 붙여 준다. 환불(음수)은 실적이 아니므로 뺀다.
+        if (result.draft.category === 'lookup') {
+          const month = new Date().toISOString().slice(0, 7);
+          const found = await lookupStudents(result.draft.name);
+          studentMatches = await Promise.all(
+            found.map(async (m) => ({
+              ...m,
+              enrollments: await Promise.all(
+                m.enrollments.map(async (en: any) => {
+                  const paid = (await storage.getPaymentsByEnrollment(en.id)).filter(
+                    (p) => p.paymentMonth === month && p.amount > 0
+                  );
+                  return {
+                    ...en,
+                    paidThisMonth: paid.length > 0,
+                    paidAmount: paid.reduce((sum, p) => sum + p.amount, 0),
+                    paidDate: paid[0]?.paidDate ?? null,
+                  };
+                })
+              ),
+            }))
+          );
+        }
+
         // 반 이름은 학원마다 다르므로 AI에게 맡기지 않고 실제 목록과 대조한다.
         let classMatch: { id: string; name: string } | null = null;
         let classCandidates: Array<{ id: string; name: string }> = [];

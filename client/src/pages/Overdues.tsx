@@ -359,7 +359,8 @@ export default function Overdues({ userRole }: OverduesProps) {
                           months: [overdue.overdueMonths[0]],
                           monthlyAmount:
                             overdue.enrollment.tuition || overdue.class.defaultTuition || 0,
-                          method: "계좌이체",
+                          // 학원에서 가장 흔한 결제 수단이 카드다. 손이 덜 가게 기본으로 둔다.
+                          method: "카드",
                         })
                       }
                       data-testid={`button-pay-${overdue.enrollment.id}`}
@@ -504,8 +505,8 @@ export default function Overdues({ userRole }: OverduesProps) {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="계좌이체">계좌이체</SelectItem>
                       <SelectItem value="카드">카드</SelectItem>
+                      <SelectItem value="계좌이체">계좌이체</SelectItem>
                       <SelectItem value="현금">현금</SelectItem>
                     </SelectContent>
                   </Select>

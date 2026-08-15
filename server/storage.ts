@@ -19,6 +19,8 @@ import {
   type InsertWaiter,
   type Consultation,
   type InsertConsultation,
+  type Task,
+  type InsertTask,
   users,
   tenants,
   students,
@@ -28,7 +30,8 @@ import {
   payments,
   lessonLogs,
   waiters,
-  consultations
+  consultations,
+  tasks
 } from "@shared/schema";
 import { eq, and, sql, desc, isNull, gt, ilike } from "drizzle-orm";
 import { randomUUID } from "crypto";
@@ -109,6 +112,13 @@ export interface IStorage {
   createConsultation(consultation: InsertConsultation): Promise<Consultation>;
   updateConsultation(id: string, consultation: Partial<InsertConsultation>): Promise<Consultation>;
   deleteConsultation(id: string): Promise<void>;
+
+  // Task methods (퇴근전 할 일)
+  getTasksByTenant(tenantId: string): Promise<Task[]>;
+  getTask(id: string): Promise<Task | undefined>;
+  createTask(task: InsertTask): Promise<Task>;
+  updateTask(id: string, patch: Partial<InsertTask>): Promise<Task>;
+  deleteTask(id: string): Promise<void>;
 
   // 자연어 입력 지원
   findStudentsByName(tenantId: string, name: string): Promise<Student[]>;
@@ -592,6 +602,38 @@ export class DbStorage implements IStorage {
 
   async deleteConsultation(id: string): Promise<void> {
     await db.delete(consultations).where(eq(consultations.id, id));
+  }
+
+  // Task methods (퇴근전 할 일)
+  async getTasksByTenant(tenantId: string): Promise<Task[]> {
+    return await db.select().from(tasks).where(eq(tasks.tenantId, tenantId));
+  }
+
+  async getTask(id: string): Promise<Task | undefined> {
+    const result = await db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
+    return result[0];
+  }
+
+  async createTask(insert: InsertTask): Promise<Task> {
+    const result = await db.insert(tasks).values({
+      ...insert,
+      id: randomUUID(),
+      createdAt: new Date(),
+      updatedAt: new Date()
+    }).returning();
+    return result[0];
+  }
+
+  async updateTask(id: string, patch: Partial<InsertTask>): Promise<Task> {
+    const result = await db.update(tasks)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(tasks.id, id))
+      .returning();
+    return result[0];
+  }
+
+  async deleteTask(id: string): Promise<void> {
+    await db.delete(tasks).where(eq(tasks.id, id));
   }
 
   // 자연어 입력 지원 — 이름으로 학생 찾기

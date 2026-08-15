@@ -553,6 +553,46 @@ const cases: Case[] = [
     expect: (r) => r.draft.category === "contact" && r.draft.status === "대기등록",
     why: "대기도 상담과 같은 흐름이다",
   },
+  {
+    label: "퇴근전 할 일은 오늘 날짜로 잡힌다",
+    text: "퇴근전 김민준 어머니 전화드리기",
+    ai: { consultation: true, student_name: "김민준" },
+    expect: (r) =>
+      r.draft.category === "task" &&
+      r.draft.dueDate === "2026-08-14" &&
+      r.draft.slot === "퇴근전" &&
+      r.draft.title === "김민준 어머니 전화드리기",
+    why: "당일 기능이라 날짜를 물어보지 않는다. AI가 상담으로 봐도 '퇴근전'이 이긴다",
+  },
+  {
+    label: "출근전 할 일은 다음날로 넘어간다",
+    text: "내일 출근전 교재 주문",
+    ai: {},
+    expect: (r) =>
+      r.draft.category === "task" && r.draft.dueDate === "2026-08-15" && r.draft.slot === "출근전",
+    why: "출근 전에 할 일은 지금 적어도 내일 아침 몫이다",
+  },
+  {
+    label: "할 일 문장 속 '미납'은 수납으로 새지 않는다",
+    text: "퇴근전 미납자 문자 돌리기",
+    ai: { payment: true },
+    expect: (r) => r.draft.category === "task" && r.draft.title === "미납자 문자 돌리기",
+    why: "할 일 문장에는 원비·전화 같은 낱말이 섞인다. 표지가 있으면 할 일이 먼저다",
+  },
+  {
+    label: "'퇴근전'만 치면 무엇을 할지 되묻는다",
+    text: "퇴근전",
+    ai: {},
+    expect: (r) => r.draft.category === "unclear" && r.draft.question.includes("무엇"),
+    why: "제목 없는 할 일은 목록에서 아무 뜻이 없다",
+  },
+  {
+    label: "표지 없는 문장은 할 일이 아니다",
+    text: "김민준 어머니께 전화 010-1234-5678",
+    ai: { consultation: true, student_name: "김민준", parent_phone: "010-1234-5678" },
+    expect: (r) => r.draft.category !== "task",
+    why: "'전화'만으로 할 일이 되면 상담 기록이 전부 투두로 빨려 들어간다",
+  },
 ];
 
 let pass = 0;

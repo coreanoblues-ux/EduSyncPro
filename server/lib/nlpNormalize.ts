@@ -657,6 +657,63 @@ export function looksLikeInquiry(text: string): boolean {
   return /(문의|여쭤|물어|상담\s*(전화|요청|옴|왔)|전화\s*(왔|옴)|왔어요|왔습니다)/.test(text);
 }
 
+// ─── 퇴근전 할 일 ─────────────────────────────────────────────────────────
+
+export type TaskSlotHint = "퇴근전" | "출근전";
+
+/** 이 문장을 할 일 목록에 넣으라는 표시. 없으면 할 일로 보지 않는다. */
+const TASK_MARKER =
+  /(퇴근\s*전|퇴근\s*까지|퇴근\s*하기\s*전|출근\s*전|투두|to\s*-?\s*do|todo|할\s*일|할일|해야\s*(할|함|됨|돼)|잊지\s*(말|않)|챙길\s*것|체크\s*리스트)/i;
+
+/**
+ * "출근전"이라고 적었으면 오전 마감, 아니면 퇴근전이다.
+ *
+ * 기본값을 퇴근전으로 둔 것은 이 기능의 본체가 "오늘 안에 끝내야 하는 일"이기
+ * 때문이다. 애매한 문장이 출근전으로 새면 마감이 슬그머니 다음날로 밀린다.
+ */
+export function extractTaskSlot(text: string): TaskSlotHint {
+  return /출근\s*전|아침\s*에|오전\s*중|내일\s*아침/.test(text) ? "출근전" : "퇴근전";
+}
+
+/**
+ * "내일", "모레" 같은 말이 있으면 며칠 뒤인지 준다. 없으면 0(오늘).
+ *
+ * 원장이 날짜를 안 적는 것이 정상이다. 어차피 오늘 퇴근 전에 할 일이라
+ * 기기의 오늘 날짜가 자동으로 들어가야 한다.
+ *
+ * "출근전"은 하루를 더한다. 이미 출근해 있는 사람이 "출근 전에 하자"고 적으면
+ * 그건 내일 아침을 뜻하기 때문이다.
+ */
+export function extractTaskDayOffset(text: string): number {
+  if (/모레|내일\s*모레/.test(text)) return 2;
+  if (/내일/.test(text)) return 1;
+  if (/출근\s*전/.test(text)) return 1;
+  return 0;
+}
+
+/**
+ * 원문에서 마커와 날짜 표현을 걷어내 할 일 제목만 남긴다.
+ *
+ * "퇴근전 김민준 어머니 전화" → "김민준 어머니 전화"
+ *
+ * 다 걷어내고 아무것도 안 남으면(예: "퇴근전 할일") null을 준다.
+ * 제목 없는 할 일을 만들어 두면 나중에 무슨 일이었는지 알 수 없다.
+ */
+export function extractTaskTitle(text: string): string | null {
+  const title = text
+    .replace(TASK_MARKER, " ")
+    .replace(/(오늘|내일|모레|아침에|오전중)/g, " ")
+    .replace(/^[\s,.:;·\-]+|[\s,.:;·\-]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return title.length >= 2 ? title : null;
+}
+
+/** 이 문장이 할 일 등록인지 판정한다. 마커가 실제로 들어 있을 때만 참이다. */
+export function looksLikeTask(text: string): boolean {
+  return TASK_MARKER.test(text);
+}
+
 /** "담당 과목은 수학", "수학 담당" 처럼 적힌 과목을 뽑는다. */
 export function extractSubject(text: string): string | null {
   const m = text.match(

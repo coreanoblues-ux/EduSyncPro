@@ -156,6 +156,14 @@ interface LookupDraft {
   name: string;
 }
 
+/** 퇴근전 할 일. 날짜는 서버가 오늘(KST)로 채워 온다. */
+interface TaskDraft {
+  category: "task";
+  title: string;
+  dueDate: string;
+  slot: "퇴근전" | "출근전";
+}
+
 interface UnclearDraft {
   category: "unclear";
   reason: string;
@@ -170,6 +178,7 @@ interface ParseResponse {
     | ClassDraft
     | PersonDraft
     | LookupDraft
+    | TaskDraft
     | UnclearDraft;
   sourceText: string;
   corrections: string[];
@@ -192,6 +201,7 @@ const EXAMPLES = [
   "정재현 숭의중1 등록 결제 28만 정우석 선생님 화 목 심화",
   "010-1234-5678 박서연 어머니 중2 영어 문의",
   "중등심화반 신설 정우석 선생님 화목 19:00-21:00 수강료 35만 정원 15명",
+  "퇴근전 김민준 어머니 전화드리기",
   "학생 수정 김민준 학교 숭의중으로",
   "교사 추가 박지훈 수학 010-1111-2222",
 ];
@@ -350,6 +360,17 @@ export default function QuickInput() {
         return { enrolled: false, classSaved: true };
       }
 
+      // 퇴근전 할 일 — 날짜는 초안이 이미 오늘(또는 내일)로 들고 있다.
+      if (draft.category === "task") {
+        await apiRequest("POST", "/api/tasks", {
+          title: draft.title,
+          dueDate: draft.dueDate,
+          slot: draft.slot,
+          sourceText: parsed?.sourceText ?? null,
+        });
+        return { taskSaved: true };
+      }
+
       if (draft.category === "accounting") {
         await apiRequest("POST", "/api/payments", {
           enrollmentId: enrollmentId || null,
@@ -443,12 +464,15 @@ export default function QuickInput() {
       toast({
         title:
           result?.personSaved ??
-          (result?.classSaved
-            ? "반 정보가 저장되었습니다"
-            : result?.enrolled
-              ? "학생 등록까지 완료되었습니다"
-              : "저장되었습니다"),
+          (result?.taskSaved
+            ? "할 일에 추가했습니다"
+            : result?.classSaved
+              ? "반 정보가 저장되었습니다"
+              : result?.enrolled
+                ? "학생 등록까지 완료되었습니다"
+                : "저장되었습니다"),
       });
+      qc.invalidateQueries({ queryKey: ["/api/tasks"] });
       qc.invalidateQueries({ queryKey: ["/api/teachers"] });
       qc.invalidateQueries({ queryKey: ["/api/payments"] });
       qc.invalidateQueries({ queryKey: ["/api/consultations"] });
@@ -540,6 +564,7 @@ export default function QuickInput() {
     draft.category !== "unclear" &&
     // 조회는 보여주기만 한다. 저장할 대상 자체가 없다.
     draft.category !== "lookup" &&
+    (draft.category !== "task" || !!draft.title.trim()) &&
     (draft.category !== "class" || canSaveClass) &&
     (draft.category !== "person" || canSavePerson) &&
     (draft.category !== "accounting" || draft.amount != null) &&
@@ -620,6 +645,59 @@ export default function QuickInput() {
             <Button variant="outline" size="sm" className="mt-2" onClick={reset}>
               다시 입력
             </Button>
+          </div>
+        )}
+
+        {/* 퇴근전 할 일 — 날짜는 오늘로 자동. 시점만 두 갈래로 고르게 한다. */}
+        {draft?.category === "task" && (
+          <div className="space-y-3 rounded-md border p-3" data-testid="quick-input-task">
+            <div className="flex items-center justify-between gap-2">
+              <Badge variant="secondary">할 일 · {draft.dueDate}</Badge>
+              <Button variant="ghost" size="sm" onClick={reset}>
+                다시 입력
+              </Button>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="task-title">할 일</Label>
+              <Input
+                id="task-title"
+                value={draft.title}
+                onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+                data-testid="input-task-title"
+              />
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="task-due">날짜</Label>
+                <Input
+                  id="task-due"
+                  type="date"
+                  value={draft.dueDate}
+                  onChange={(e) => setDraft({ ...draft, dueDate: e.target.value })}
+                  data-testid="input-task-due"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>언제까지</Label>
+                <div className="flex gap-2">
+                  {(["퇴근전", "출근전"] as const).map((s) => (
+                    <Button
+                      key={s}
+                      type="button"
+                      variant={draft.slot === s ? "default" : "outline"}
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => setDraft({ ...draft, slot: s })}
+                      data-testid={`button-task-slot-${s}`}
+                    >
+                      {s === "퇴근전" ? "퇴근 전" : "출근 전"}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
         )}
 

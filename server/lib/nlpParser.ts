@@ -39,9 +39,15 @@ import {
   extractTeacherName,
   extractClassNameFromText,
   looksLikeInquiry,
+  looksLikeTask,
+  extractTaskSlot,
+  extractTaskTitle,
+  extractTaskDayOffset,
   type PersonTarget,
   type PersonAction,
+  type TaskSlotHint,
 } from "./nlpNormalize";
+import { addDays, ymdKst } from "@shared/day";
 
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
@@ -171,6 +177,19 @@ export interface LookupDraft {
   name: string;
 }
 
+/**
+ * 퇴근 전에 끝내야 하는 할 일.
+ *
+ * 날짜는 원장이 적지 않는다. 어차피 오늘 안에 할 일이라 기기의 오늘 날짜가
+ * 자동으로 들어가는 것이 맞고, "내일"이라고 적었을 때만 밀린다.
+ */
+export interface TaskDraft {
+  category: "task";
+  title: string;
+  dueDate: string; // YYYY-MM-DD
+  slot: TaskSlotHint;
+}
+
 export interface UnclearDraft {
   category: "unclear";
   reason: string;
@@ -185,6 +204,7 @@ export type Draft =
   | ClassDraft
   | PersonDraft
   | LookupDraft
+  | TaskDraft
   | UnclearDraft;
 
 export type ParseResult = {
@@ -789,6 +809,34 @@ export function arbitrate(
   const phones = extractPhones(sourceText);
   const phone = phones.length > 0 ? normalizePhone(phones[0]) : null;
   const studentName = cleanStudentName(ai.student_name);
+
+  /*
+    ── -2. 퇴근전 할 일 ──
+    가장 먼저 본다. "퇴근전 미납자 전화 돌리기"에는 '미납'과 '전화'가 들어 있어
+    뒤쪽 수납·상담 분기가 먼저 집어가면 엉뚱한 수납 초안이 뜬다.
+
+    판정 근거는 오직 원문의 마커다. AI에게 맡기면 "김민준 어머니께 전화"처럼
+    마커 없는 문장까지 할 일로 끌어와 상담 기록이 할 일 목록으로 새어 나간다.
+  */
+  if (looksLikeTask(sourceText)) {
+    const title = extractTaskTitle(sourceText);
+    if (title) {
+      const offset = extractTaskDayOffset(sourceText);
+      const dueDate = addDays(ymdKst(now), offset);
+      const slot = extractTaskSlot(sourceText);
+      if (offset > 0) {
+        corrections.push(`${dueDate} ${slot} 할 일로 두었습니다.`);
+      }
+      return { sourceText, corrections, draft: { category: "task", title, dueDate, slot } };
+    }
+    // 마커만 있고 내용이 없으면 되묻는다. 제목 없는 할 일은 나중에 못 알아본다.
+    return unclear(
+      sourceText,
+      corrections,
+      "할 일로 보이는데 무엇을 해야 하는지가 없습니다.",
+      "무엇을 해야 하나요? (예: 퇴근전 김민준 어머니 전화)"
+    );
+  }
 
   // ── -1. 학생·교사 정보 수정 ──
   // 가장 먼저 본다. "학생 수정 …"은 명시적 명령이므로 뒤쪽 분기가 이것을

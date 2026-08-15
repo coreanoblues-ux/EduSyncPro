@@ -15,6 +15,9 @@ export const paymentTypeEnum = pgEnum("payment_type", ["원비", "환불", "지�
 // 상담 진행 상태
 export const consultationStatusEnum = pgEnum("consultation_status", ["상담문의", "대기등록", "최종등록", "보류"]);
 
+// 할 일을 언제까지 끝내야 하는지. 기본값이자 대부분인 "퇴근전"이 이 기능의 본체다.
+export const taskSlotEnum = pgEnum("task_slot", ["퇴근전", "출근전"]);
+
 // Tenant table (학원)
 export const tenants = pgTable("tenants", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -168,6 +171,27 @@ export const waiters = pgTable("waiters", {
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
+// Task table (퇴근전 할 일)
+export const tasks = pgTable("tasks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  title: text("title").notNull(),
+  // YYYY-MM-DD. timestamp를 쓰면 UTC로 저장되어 한국 시각 오후 9시에 적은 할 일이
+  // 전날 것으로 뜬다. 하루 단위 기능이라 날짜 문자열이 맞다.
+  dueDate: text("due_date").notNull(),
+  slot: taskSlotEnum("slot").default("퇴근전").notNull(),
+  // 완료 시각. null이면 아직 안 끝난 일이다.
+  completedAt: timestamp("completed_at"),
+  // 며칠 미뤘는지. 미루기 한 번이 하루이므로 이 값이 곧 밀린 날수다.
+  // 화면에서 숫자가 커질수록 빨갛게 만들어 경고하는 근거가 된다.
+  deferCount: integer("defer_count").default(0).notNull(),
+  notes: text("notes"),
+  sourceText: text("source_text"),
+  createdBy: varchar("created_by").references(() => users.id).notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
 // Relations
 export const tenantsRelations = relations(tenants, ({ many }) => ({
   users: many(users),
@@ -296,6 +320,17 @@ export const waitersRelations = relations(waiters, ({ one }) => ({
   }),
 }));
 
+export const tasksRelations = relations(tasks, ({ one }) => ({
+  tenant: one(tenants, {
+    fields: [tasks.tenantId],
+    references: [tenants.id],
+  }),
+  createdBy: one(users, {
+    fields: [tasks.createdBy],
+    references: [users.id],
+  }),
+}));
+
 // Insert schemas
 export const insertTenantSchema = createInsertSchema(tenants).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true, updatedAt: true });
@@ -328,6 +363,35 @@ export const createPaymentBodySchema = insertPaymentSchema
 export const createConsultationBodySchema = insertConsultationSchema
   .omit({ tenantId: true, createdBy: true });
 
+export const insertTaskSchema = createInsertSchema(tasks).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "날짜는 YYYY-MM-DD 형식이어야 합니다.");
+
+export const createTaskBodySchema = insertTaskSchema
+  .omit({ tenantId: true, createdBy: true, completedAt: true, deferCount: true })
+  .extend({
+    title: z.string().trim().min(1, "할 일 내용이 필요합니다.").max(200),
+    dueDate: ymd,
+  });
+
+/**
+ * 할 일 갱신. 완료 토글과 미루기 두 가지에만 쓴다.
+ *
+ * deferCount를 클라이언트가 정하지 않는다. 미루기를 누른 횟수는 서버가 세야
+ * "3일 밀림"이라는 경고가 화면 조작으로 지워지지 않는다.
+ */
+export const updateTaskBodySchema = z.object({
+  title: z.string().trim().min(1).max(200).optional(),
+  notes: z.string().nullable().optional(),
+  completed: z.boolean().optional(),
+  /** "하루 미루기"(퇴근전) 또는 "출근전 하기" — 둘 다 하루 뒤로 넘긴다 */
+  defer: z.enum(["퇴근전", "출근전"]).optional(),
+});
+
 // Update schemas
 export const updateEnrollmentSchema = z.object({
   studentId: z.string().optional(),
@@ -350,6 +414,8 @@ export type Payment = typeof payments.$inferSelect;
 export type LessonLog = typeof lessonLogs.$inferSelect;
 export type Waiter = typeof waiters.$inferSelect;
 export type Consultation = typeof consultations.$inferSelect;
+export type Task = typeof tasks.$inferSelect;
+export type TaskSlot = Task["slot"];
 
 export type InsertTenant = z.infer<typeof insertTenantSchema>;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -361,3 +427,4 @@ export type InsertPayment = z.infer<typeof insertPaymentSchema>;
 export type InsertLessonLog = z.infer<typeof insertLessonLogSchema>;
 export type InsertWaiter = z.infer<typeof insertWaiterSchema>;
 export type InsertConsultation = z.infer<typeof insertConsultationSchema>;
+export type InsertTask = z.infer<typeof insertTaskSchema>;

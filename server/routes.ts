@@ -22,9 +22,12 @@ import {
   insertWaiterSchema,
   updateEnrollmentSchema,
   createPaymentBodySchema,
-  createConsultationBodySchema
+  createConsultationBodySchema,
+  createTaskBodySchema,
+  updateTaskBodySchema
 } from "@shared/schema";
 import { parseInput, NlpConfigError } from "./lib/nlpParser";
+import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
 import { z } from "zod";
 import { db } from "./db";
@@ -1138,6 +1141,104 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } catch (error) {
         console.error('Delete waiter error:', error);
         res.status(500).json({ error: '대기자 삭제 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
+  // ─── Task Routes (퇴근전 할 일) ─────────────────────────────────────────
+  app.get('/api/tasks', authGuard, tenantGuard, async (req, res) => {
+    try {
+      res.json(await storage.getTasksByTenant(req.user!.tenantId!));
+    } catch (error) {
+      console.error('Get tasks error:', error);
+      res.status(500).json({ error: '할 일 목록 조회 중 오류가 발생했습니다.' });
+    }
+  });
+
+  app.post('/api/tasks',
+    authGuard,
+    tenantGuard,
+    roleGuard('owner', 'teacher'),
+    validateBody(createTaskBodySchema),
+    async (req: Request, res: Response) => {
+      try {
+        const task = await storage.createTask({
+          ...req.body,
+          tenantId: req.user!.tenantId!,
+          createdBy: req.user!.id,
+        });
+        res.status(201).json(task);
+      } catch (error) {
+        console.error('Create task error:', error);
+        res.status(500).json({ error: '할 일 등록 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
+  app.patch('/api/tasks/:id',
+    authGuard,
+    tenantGuard,
+    roleGuard('owner', 'teacher'),
+    validateParams(idParamSchema),
+    validateBody(updateTaskBodySchema),
+    async (req: Request, res: Response) => {
+      try {
+        const existing = await storage.getTask(req.params.id);
+        if (!existing) return res.status(404).json({ error: '할 일을 찾을 수 없습니다.' });
+        if (existing.tenantId !== req.user!.tenantId) {
+          return res.status(403).json({ error: '접근 권한이 없습니다.' });
+        }
+
+        const { completed, defer, ...rest } = req.body;
+        const patch: Record<string, unknown> = { ...rest };
+
+        if (completed !== undefined) {
+          patch.completedAt = completed ? new Date() : null;
+        }
+
+        /*
+          미루기는 "기준일 + 1일"이 아니라 "오늘 + 1일"이다.
+          사흘 밀린 일을 미루면 여전히 이틀 전 날짜가 되어 화면에 그대로 남고,
+          원장은 눌렀는데 안 움직인다고 느낀다.
+
+          날짜 계산에 UTC를 쓰면 한국 시각 자정 근처에서 하루가 어긋나므로,
+          기준일과 오늘 중 늦은 쪽을 문자열로 비교해 고른 뒤 하루를 더한다.
+        */
+        if (defer) {
+          const base = existing.dueDate > todayKst() ? existing.dueDate : todayKst();
+          patch.dueDate = addDays(base, 1);
+          patch.slot = defer;
+          patch.deferCount = existing.deferCount + 1;
+          // 미룬 일은 다시 할 일로 돌아온다. 완료였던 것을 미루는 경우는 없지만,
+          // 실수로 완료를 누른 뒤 미루기를 누르면 상태가 엇갈릴 수 있다.
+          patch.completedAt = null;
+        }
+
+        res.json(await storage.updateTask(req.params.id, patch));
+      } catch (error) {
+        console.error('Update task error:', error);
+        res.status(500).json({ error: '할 일 수정 중 오류가 발생했습니다.' });
+      }
+    }
+  );
+
+  app.delete('/api/tasks/:id',
+    authGuard,
+    tenantGuard,
+    roleGuard('owner', 'teacher'),
+    validateParams(idParamSchema),
+    async (req: Request, res: Response) => {
+      try {
+        const existing = await storage.getTask(req.params.id);
+        if (!existing) return res.status(404).json({ error: '할 일을 찾을 수 없습니다.' });
+        if (existing.tenantId !== req.user!.tenantId) {
+          return res.status(403).json({ error: '접근 권한이 없습니다.' });
+        }
+        await storage.deleteTask(req.params.id);
+        res.json({ message: '할 일이 삭제되었습니다.' });
+      } catch (error) {
+        console.error('Delete task error:', error);
+        res.status(500).json({ error: '할 일 삭제 중 오류가 발생했습니다.' });
       }
     }
   );

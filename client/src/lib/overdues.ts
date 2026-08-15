@@ -40,6 +40,9 @@ export function computeOverdues(
     const student = studentById.get(enrollment.studentId);
     const classItem = classById.get(enrollment.classId);
     if (!student || !classItem) continue;
+    // 휴원한 학생은 수업을 듣지 않으니 수강료가 더 쌓이지 않는다.
+    // 휴원 처리는 students.isActive만 내리므로 여기서 걸러야 목록에서 실제로 빠진다.
+    if (student.isActive === false) continue;
 
     const startDate = new Date(enrollment.startDate);
     const endDate = enrollment.endDate ? new Date(enrollment.endDate) : now;

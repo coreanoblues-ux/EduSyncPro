@@ -1,12 +1,23 @@
 import { useState, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, Phone, Mail, Calendar, DollarSign, User, BookOpen, Filter } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, Phone, Mail, Calendar, DollarSign, User, BookOpen, Filter, PauseCircle, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
 import { Payment, Enrollment, Student, Class } from "@shared/schema";
 import { computeOverdues, type OverdueInfo } from "@/lib/overdues";
 
@@ -14,9 +25,21 @@ interface OverduesProps {
   userRole: 'owner' | 'teacher' | 'superadmin';
 }
 
+/** 수납 처리 창에서 다루는 값. 창을 닫으면 통째로 버린다. */
+interface PayForm {
+  overdue: OverdueInfo;
+  months: string[];
+  monthlyAmount: number;
+  method: "계좌이체" | "카드" | "현금";
+}
+
 export default function Overdues({ userRole }: OverduesProps) {
   const [selectedClassFilter, setSelectedClassFilter] = useState<string>('all');
   const [overdueSeverity, setOverdueSeverity] = useState<string>('all'); // all, recent, severe
+  const [payForm, setPayForm] = useState<PayForm | null>(null);
+  const [suspendTarget, setSuspendTarget] = useState<OverdueInfo | null>(null);
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
 
   // Fetch all required data
   const { data: payments = [], isLoading: paymentsLoading, isError: paymentsError } = useQuery<Payment[]>({
@@ -62,6 +85,60 @@ export default function Overdues({ userRole }: OverduesProps) {
     // Sort by total overdue amount (descending)
     return [...filtered].sort((a, b) => b.totalOverdueAmount - a.totalOverdueAmount);
   }, [overdueList, selectedClassFilter, overdueSeverity]);
+
+  // 미납 월마다 수납 한 건씩 만든다. 미납 판정이 월별 순합계로 돌아가므로
+  // 3개월치를 한 줄로 몰아 넣으면 나머지 두 달은 계속 미납으로 남는다.
+  const payMutation = useMutation({
+    mutationFn: async (form: PayForm) => {
+      for (const month of form.months) {
+        await apiRequest('POST', '/api/payments', {
+          enrollmentId: form.overdue.enrollment.id,
+          amount: form.monthlyAmount,
+          type: '원비',
+          method: form.method,
+          paymentMonth: month,
+          paidDate: new Date().toISOString(),
+          notes: '미납 알림에서 수납 처리',
+        });
+      }
+    },
+    onSuccess: (_data, form) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/payments'] });
+      toast({
+        title: "수납 처리 완료",
+        description: `${form.overdue.student.name} · ${form.months.length}개월 ${formatAmount(form.monthlyAmount * form.months.length)}`,
+      });
+      setPayForm(null);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "수납 처리 실패",
+        description: error.message.replace(/^\d+:\s*/, "") || "수납 처리 중 오류가 발생했습니다.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const suspendMutation = useMutation({
+    mutationFn: async (studentId: string) =>
+      apiRequest('PATCH', `/api/students/${studentId}/deactivate`),
+    onSuccess: (_data, _studentId) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/students'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/enrollments'] });
+      toast({
+        title: "휴원 처리 완료",
+        description: `${suspendTarget?.student.name} 학생을 휴원 처리했습니다. 미납이 더 쌓이지 않습니다.`,
+      });
+      setSuspendTarget(null);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "휴원 처리 실패",
+        description: error.message.replace(/^\d+:\s*/, "") || "휴원 처리 중 오류가 발생했습니다.",
+        variant: "destructive",
+      });
+    },
+  });
 
   const formatAmount = (amount: number) => {
     return `₩${amount.toLocaleString()}`;
@@ -270,9 +347,37 @@ export default function Overdues({ userRole }: OverduesProps) {
                 )}
 
                 {(userRole === 'owner' || userRole === 'teacher') && (
-                  <div className="flex gap-2 pt-3 border-t">
-                    <Button 
-                      size="sm" 
+                  <div className="flex flex-wrap gap-2 pt-3 border-t">
+                    {/* 전화를 걸고 돈을 받으면 그 자리에서 처리해야 한다.
+                        수납 화면까지 옮겨 가면 누가 밀렸는지 다시 찾아야 한다. */}
+                    <Button
+                      size="sm"
+                      onClick={() =>
+                        setPayForm({
+                          overdue,
+                          // 오래된 달부터 채우는 것이 관행이다. 기본은 가장 오래된 한 달.
+                          months: [overdue.overdueMonths[0]],
+                          monthlyAmount:
+                            overdue.enrollment.tuition || overdue.class.defaultTuition || 0,
+                          method: "계좌이체",
+                        })
+                      }
+                      data-testid={`button-pay-${overdue.enrollment.id}`}
+                    >
+                      <Wallet className="h-4 w-4 mr-2" />
+                      수납 처리
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setSuspendTarget(overdue)}
+                      data-testid={`button-suspend-${overdue.enrollment.id}`}
+                    >
+                      <PauseCircle className="h-4 w-4 mr-2" />
+                      휴원 처리
+                    </Button>
+                    <Button
+                      size="sm"
                       variant="outline"
                       data-testid={`button-call-${overdue.enrollment.id}`}
                       disabled={!overdue.student.parentPhone}
@@ -334,6 +439,146 @@ export default function Overdues({ userRole }: OverduesProps) {
           </CardContent>
         </Card>
       )}
+
+      {/* 수납 처리 */}
+      <Dialog open={!!payForm} onOpenChange={(open) => !open && setPayForm(null)}>
+        <DialogContent data-testid="dialog-pay">
+          <DialogHeader>
+            <DialogTitle>수납 처리</DialogTitle>
+            <DialogDescription>
+              {payForm && `${payForm.overdue.student.name} · ${payForm.overdue.class.name}`}
+            </DialogDescription>
+          </DialogHeader>
+
+          {payForm && (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>받은 달 (여러 개 고를 수 있습니다)</Label>
+                <div className="flex flex-wrap gap-2">
+                  {payForm.overdue.overdueMonths.map((month) => {
+                    const on = payForm.months.includes(month);
+                    return (
+                      <Button
+                        key={month}
+                        type="button"
+                        size="sm"
+                        variant={on ? "default" : "outline"}
+                        onClick={() =>
+                          setPayForm({
+                            ...payForm,
+                            months: on
+                              ? payForm.months.filter((m) => m !== month)
+                              : [...payForm.months, month].sort(),
+                          })
+                        }
+                        data-testid={`button-pay-month-${month}`}
+                      >
+                        {month.replace("-", ".")}
+                      </Button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="pay-amount">월 납부액</Label>
+                  <Input
+                    id="pay-amount"
+                    type="number"
+                    min={0}
+                    value={payForm.monthlyAmount}
+                    onChange={(e) =>
+                      setPayForm({ ...payForm, monthlyAmount: Number(e.target.value) })
+                    }
+                    data-testid="input-pay-amount"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>결제 방법</Label>
+                  <Select
+                    value={payForm.method}
+                    onValueChange={(v) => setPayForm({ ...payForm, method: v as PayForm["method"] })}
+                  >
+                    <SelectTrigger data-testid="select-pay-method">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="계좌이체">계좌이체</SelectItem>
+                      <SelectItem value="카드">카드</SelectItem>
+                      <SelectItem value="현금">현금</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="rounded-md bg-muted p-3 text-sm">
+                합계{" "}
+                <span className="font-semibold" data-testid="text-pay-total">
+                  {formatAmount(payForm.monthlyAmount * payForm.months.length)}
+                </span>
+                <span className="text-muted-foreground">
+                  {" "}
+                  ({payForm.months.length}개월 × {formatAmount(payForm.monthlyAmount)})
+                </span>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPayForm(null)}>
+              취소
+            </Button>
+            <Button
+              onClick={() => payForm && payMutation.mutate(payForm)}
+              disabled={
+                !payForm ||
+                payForm.months.length === 0 ||
+                payForm.monthlyAmount <= 0 ||
+                payMutation.isPending
+              }
+              data-testid="button-pay-submit"
+            >
+              {payMutation.isPending ? "처리 중..." : "수납 저장"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 휴원 처리 */}
+      <Dialog open={!!suspendTarget} onOpenChange={(open) => !open && setSuspendTarget(null)}>
+        <DialogContent data-testid="dialog-suspend">
+          <DialogHeader>
+            <DialogTitle>휴원 처리</DialogTitle>
+            <DialogDescription>
+              {suspendTarget?.student.name} 학생을 휴원 처리합니다.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2 text-sm">
+            {/* 휴원은 학생 단위라 다른 반까지 함께 멈춘다. 누르기 전에 알려야 한다. */}
+            <p>휴원하면 이 학생이 듣는 모든 반의 미납이 더 이상 쌓이지 않고, 미납 목록에서 빠집니다.</p>
+            <p className="text-muted-foreground">
+              지금까지 밀린 {formatAmount(suspendTarget?.totalOverdueAmount ?? 0)}은 기록에 그대로
+              남습니다. 학생 화면에서 재등록하면 다시 나타납니다.
+            </p>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSuspendTarget(null)}>
+              취소
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => suspendTarget && suspendMutation.mutate(suspendTarget.student.id)}
+              disabled={suspendMutation.isPending}
+              data-testid="button-suspend-submit"
+            >
+              {suspendMutation.isPending ? "처리 중..." : "휴원 처리"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -10,14 +10,21 @@ import {
   AlertTriangle,
   ArrowRight,
   BookOpen,
+  Check,
   Clock,
+  Flame,
+  ListChecks,
   MessageSquarePlus,
   Phone,
   Settings,
+  Sunrise,
   Users,
 } from "lucide-react";
 import { computeOverdues } from "@/lib/overdues";
-import type { Class, Consultation, Enrollment, Payment, Student } from "@shared/schema";
+import { taskSeverity } from "@/lib/tasks";
+import { apiRequest } from "@/lib/queryClient";
+import { daysBetween, todayKst } from "@shared/day";
+import type { Class, Consultation, Enrollment, Payment, Student, Task } from "@shared/schema";
 
 interface DashboardProps {
   userRole: 'owner' | 'teacher' | 'superadmin';
@@ -30,8 +37,10 @@ interface DashboardProps {
 
 /** 대시보드에 한 번에 보여줄 줄 수. 넘치면 해당 페이지로 넘긴다. */
 const PREVIEW_LIMIT = 5;
-/** 미납은 타일이라 한 줄에 여러 개가 들어간다. 3열 × 2줄이 딱 떨어진다. */
+/** 미납은 타일이라 한 줄에 두 개씩 들어간다. 반 폭에서 2열 × 3줄이 딱 떨어진다. */
 const OVERDUE_PREVIEW_LIMIT = 6;
+/** 할 일은 한 줄씩이라 미납 타일 3줄과 높이를 맞추면 여섯 줄쯤 된다. */
+const TASK_PREVIEW_LIMIT = 6;
 
 function formatDate(value: string | Date) {
   return new Date(value).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" });
@@ -67,6 +76,28 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
     queryKey: ['/api/consultations'],
     enabled: isApproved,
   });
+
+  const { data: tasks = [] } = useQuery<Task[]>({
+    queryKey: ['/api/tasks'],
+    enabled: isApproved,
+  });
+
+  const qc = useQueryClient();
+  const completeTask = useMutation({
+    mutationFn: async (id: string) => apiRequest("PATCH", `/api/tasks/${id}`, { completed: true }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/api/tasks'] }),
+  });
+
+  const today = todayKst();
+
+  // 대시보드는 "지금 손대야 하는 것"만 보여준다. 내일 이후 일정은 탭에서 본다.
+  const openTasks = useMemo(
+    () =>
+      tasks
+        .filter((t) => !t.completedAt && t.dueDate <= today)
+        .sort((a, b) => a.dueDate.localeCompare(b.dueDate)),
+    [tasks, today]
+  );
 
   // 아직 학생이 되지 않은 사람들. 여기가 비면 다음 달 매출이 빈다.
   const newConsultations = useMemo(
@@ -211,51 +242,117 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
       </div>
 
       {/*
-        미납은 폭을 다 쓰되 한 줄에 한 명씩 늘어놓지 않는다. 넓은 화면에서
-        이름과 금액 사이가 한 뼘씩 벌어져 목록이 텅 빈 것처럼 보였다.
-        카드 타일로 접어 두면 같은 자리에 세 배가 들어가고 여백도 사라진다.
+        아래 줄은 왼쪽 미납 · 오른쪽 퇴근전 할 일로 반씩 나눈다.
+        미납이 폭을 다 쓰면 이름과 금액 사이가 한 뼘씩 벌어져 텅 빈 것처럼 보였고,
+        오른쪽이 비어 있느니 퇴근 전에 끝내야 할 일을 같이 띄우는 편이 낫다.
       */}
-      <SectionCard
-        title="미납"
-        count={overdues.length}
-        icon={AlertTriangle}
-        accent="text-red-600 dark:text-red-400"
-        emptyText="미납 건이 없습니다."
-        onMore={() => setLocation('/overdues')}
-        testId="dashboard-overdues"
-        layout="grid"
+      <div className="grid gap-4 lg:grid-cols-2">
+        <SectionCard
+          title="미납"
+          count={overdues.length}
+          icon={AlertTriangle}
+          accent="text-red-600 dark:text-red-400"
+          emptyText="미납 건이 없습니다."
+          onMore={() => setLocation('/overdues')}
+          testId="dashboard-overdues"
+          layout="grid"
+        >
+          {overduesBySeverity.slice(0, OVERDUE_PREVIEW_LIMIT).map((o) => (
+            <div
+              key={o.enrollment.id}
+              className="rounded-md border px-3 py-2 hover-elevate"
+              data-testid={`dashboard-overdue-${o.enrollment.id}`}
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="truncate font-medium">{o.student.name}</span>
+                <span className="shrink-0 text-sm font-semibold text-red-600 dark:text-red-400">
+                  {o.totalOverdueAmount.toLocaleString()}원
+                </span>
+              </div>
+              <div className="mt-1 flex items-center gap-1.5 truncate text-xs text-muted-foreground">
+                <BookOpen className="h-3 w-3 shrink-0" />
+                <span className="truncate">{o.class.name}</span>
+                <Badge variant="destructive" className="ml-auto shrink-0 text-[10px]">
+                  {o.overdueMonths.length}개월 · {o.latestOverdueMonth}
+                </Badge>
+              </div>
+              {o.student.parentPhone && (
+                <a
+                  href={`tel:${o.student.parentPhone}`}
+                  className="mt-1 flex items-center gap-1 text-xs text-muted-foreground hover:underline"
+                >
+                  <Phone className="h-3 w-3" />
+                  {o.student.parentPhone}
+                </a>
+              )}
+            </div>
+          ))}
+        </SectionCard>
+
+        <SectionCard
+          title="퇴근전 할 일"
+          count={openTasks.length}
+          icon={ListChecks}
+          accent="text-emerald-600 dark:text-emerald-400"
+          emptyText="퇴근 전에 할 일이 없습니다."
+          onMore={() => setLocation('/todos')}
+          testId="dashboard-tasks"
+        >
+          {openTasks.slice(0, TASK_PREVIEW_LIMIT).map((t) => (
+            <TaskRow
+              key={t.id}
+              task={t}
+              today={today}
+              onComplete={() => completeTask.mutate(t.id)}
+              disabled={completeTask.isPending}
+            />
+          ))}
+        </SectionCard>
+      </div>
+    </div>
+  );
+}
+
+/** 대시보드에서는 완료만 누를 수 있다. 미루기·삭제는 탭에서 한다. */
+function TaskRow({
+  task,
+  today,
+  onComplete,
+  disabled,
+}: {
+  task: Task;
+  today: string;
+  onComplete: () => void;
+  disabled: boolean;
+}) {
+  const daysLate = Math.max(daysBetween(task.dueDate, today), 0);
+  const s = taskSeverity(daysLate);
+
+  return (
+    <div
+      className={`flex items-center gap-3 rounded-md px-2 py-2 ${daysLate > 0 ? `border ${s.card}` : "hover-elevate"}`}
+      data-testid={`dashboard-task-${task.id}`}
+    >
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onComplete}
+        aria-label="완료"
+        data-testid={`dashboard-task-complete-${task.id}`}
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 border-muted-foreground/40 text-transparent transition-colors hover:border-emerald-600 hover:bg-emerald-600 hover:text-white"
       >
-        {overduesBySeverity.slice(0, OVERDUE_PREVIEW_LIMIT).map((o) => (
-          <div
-            key={o.enrollment.id}
-            className="rounded-md border px-3 py-2 hover-elevate"
-            data-testid={`dashboard-overdue-${o.enrollment.id}`}
-          >
-            <div className="flex items-baseline justify-between gap-2">
-              <span className="truncate font-medium">{o.student.name}</span>
-              <span className="shrink-0 text-sm font-semibold text-red-600 dark:text-red-400">
-                {o.totalOverdueAmount.toLocaleString()}원
-              </span>
-            </div>
-            <div className="mt-1 flex items-center gap-1.5 truncate text-xs text-muted-foreground">
-              <BookOpen className="h-3 w-3 shrink-0" />
-              <span className="truncate">{o.class.name}</span>
-              <Badge variant="destructive" className="ml-auto shrink-0 text-[10px]">
-                {o.overdueMonths.length}개월 · {o.latestOverdueMonth}
-              </Badge>
-            </div>
-            {o.student.parentPhone && (
-              <a
-                href={`tel:${o.student.parentPhone}`}
-                className="mt-1 flex items-center gap-1 text-xs text-muted-foreground hover:underline"
-              >
-                <Phone className="h-3 w-3" />
-                {o.student.parentPhone}
-              </a>
-            )}
-          </div>
-        ))}
-      </SectionCard>
+        <Check className="h-4 w-4" />
+      </button>
+      <span className={`min-w-0 flex-1 truncate text-sm font-medium ${s.title}`}>{task.title}</span>
+      {task.slot === "출근전" && daysLate === 0 && (
+        <Sunrise className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+      )}
+      {daysLate > 0 && (
+        <Badge className={`shrink-0 gap-1 text-[10px] ${s.badge}`}>
+          {s.level >= 3 && <Flame className="h-3 w-3" />}
+          {daysLate}일 밀림
+        </Badge>
+      )}
     </div>
   );
 }
@@ -329,9 +426,7 @@ function SectionCard({
           <>
             <div
               className={
-                layout === "grid"
-                  ? "grid gap-2 sm:grid-cols-2 xl:grid-cols-3"
-                  : "divide-y"
+                layout === "grid" ? "grid gap-2 sm:grid-cols-2" : "divide-y"
               }
             >
               {children}

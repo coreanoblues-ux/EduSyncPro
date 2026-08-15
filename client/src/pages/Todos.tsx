@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { taskSeverity } from "@/lib/tasks";
 import type { Task } from "@shared/schema";
 import { addDays, daysBetween, todayKst } from "@shared/day";
 
@@ -31,35 +32,6 @@ const SLOT_LABEL: Record<Task["slot"], string> = {
   퇴근전: "퇴근 전",
   출근전: "출근 전",
 };
-
-/** 며칠 밀렸는지에 따라 경고 강도를 올린다. 3일이면 눈에 아프게. */
-function severity(daysLate: number) {
-  if (daysLate >= 3) {
-    return {
-      level: 3,
-      card: "border-red-500 bg-red-500/10 dark:bg-red-500/15",
-      badge: "bg-red-600 text-white border-transparent",
-      title: "text-red-700 dark:text-red-300",
-    };
-  }
-  if (daysLate === 2) {
-    return {
-      level: 2,
-      card: "border-orange-500 bg-orange-500/10 dark:bg-orange-500/15",
-      badge: "bg-orange-500 text-white border-transparent",
-      title: "text-orange-700 dark:text-orange-300",
-    };
-  }
-  if (daysLate === 1) {
-    return {
-      level: 1,
-      card: "border-amber-500 bg-amber-400/10 dark:bg-amber-500/15",
-      badge: "bg-amber-500 text-white border-transparent",
-      title: "text-amber-700 dark:text-amber-300",
-    };
-  }
-  return { level: 0, card: "border-border bg-card", badge: "", title: "" };
-}
 
 export default function Todos() {
   const today = todayKst();
@@ -123,7 +95,7 @@ export default function Todos() {
 
   function TaskRow({ task }: { task: Task }) {
     const daysLate = Math.max(daysBetween(task.dueDate, today), 0);
-    const s = severity(daysLate);
+    const s = taskSeverity(daysLate);
     const done = !!task.completedAt;
     const busy = patchTask.isPending || removeTask.isPending;
 

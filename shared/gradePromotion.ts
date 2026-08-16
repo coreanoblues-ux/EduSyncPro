@@ -127,6 +127,38 @@ export function changesSchoolLevel(p: ParsedGrade): boolean {
 }
 
 /**
+ * 자유 입력 학년을 "중1" 꼴로 통일한다. 못 읽으면 null이라 원문을 그대로 둔다.
+ *
+ * AI는 "숭의중1"을 school="숭의중", grade="1학년"으로 쪼개 준다. 그런데 "1학년"만
+ * 저장해 두면 나중에 학교 정보가 바뀌었을 때 초1인지 중1인지 알 수 없어 자동 진급이
+ * 이 학생을 건너뛴다. 들어올 때 "중1"로 굳혀 두면 그 문제가 생기지 않는다.
+ */
+export function canonicalGrade(
+  grade?: string | null,
+  school?: string | null
+): string | null {
+  const p = parseGrade(grade, school);
+  if (!p) return null;
+  return formatGrade(p);
+}
+
+/**
+ * 줄여 쓴 학교 이름을 정식 명칭으로 편다. "숭의중" → "숭의중학교".
+ *
+ * 같은 학교가 "숭의중"과 "숭의중학교"로 따로 쌓이면 학교별로 묶어 보기가 안 된다.
+ * 이미 "학교"로 끝나거나 초·중·고로 끝나지 않으면 손대지 않는다.
+ */
+export function expandSchoolName(school?: string | null): string | null {
+  const s = (school ?? "").trim();
+  if (!s) return null;
+  if (s.endsWith("학교")) return s;
+  if (s.endsWith("초")) return s + "등학교";
+  if (s.endsWith("중")) return s + "학교";
+  if (s.endsWith("고")) return s + "등학교";
+  return s;
+}
+
+/**
  * "YYYY-MM-DD"가 속한 학년도. 3월 1일부터 새 학년도다.
  * 2027-02-28 → 2026, 2027-03-01 → 2027.
  */

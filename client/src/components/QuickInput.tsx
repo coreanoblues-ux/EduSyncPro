@@ -7,7 +7,7 @@
  *    AI가 학생 이름을 지어내거나 금액을 잘못 읽어도 저장 전에 사람이 막을 수 있어야 한다.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Sparkles, AlertTriangle, Loader2, Check, X } from "lucide-react";
@@ -96,7 +96,8 @@ interface ContactDraft {
 
 /** 등록과 동시에 받은 돈. 수강 등록이 만들어진 뒤 그 enrollmentId에 붙는다. */
 interface PaymentPart {
-  amount: number;
+  /** "결제완료"라고만 적고 금액이 없으면 null. 반을 고르면 그 반 수강료로 채운다. */
+  amount: number | null;
   type: PaymentType;
   method: PaymentMethod | null;
   paymentMonth: string;
@@ -536,6 +537,19 @@ export default function QuickInput() {
     setDraft(next);
   };
 
+  /*
+    "신규등록 정재현 숭의중1 결제완료"처럼 금액 없이 결제만 적었을 때, 반을 고르는
+    순간 그 반의 수강료를 채운다. 반마다 수강료가 다르니 반이 정해지기 전에는
+    채울 수 없고, 원장이 직접 고친 값은 덮어쓰지 않으려고 null일 때만 넣는다.
+  */
+  useEffect(() => {
+    if (draft?.category !== "registration") return;
+    if (!draft.payment || draft.payment.amount != null) return;
+    const cls = classes.find((c) => c.id === classId);
+    if (!cls) return;
+    setDraft({ ...draft, payment: { ...draft.payment, amount: cls.defaultTuition } });
+  }, [classId, classes, draft]);
+
   const needsEnrollment =
     draft?.category === "accounting" && (draft.type === "원비" || draft.type === "환불");
   // 최종등록이면 학생·수강 등록을 만들어야 하므로 반과 등록일이 반드시 있어야 한다
@@ -573,7 +587,11 @@ export default function QuickInput() {
     (draft.category !== "contact" || !!draft.phone) &&
     (!needsEnrollment || !!enrollmentId) &&
     (draft.category !== "registration" ||
-      (!!classId && !!draft.startDate && !!draft.studentName)) &&
+      (!!classId &&
+        !!draft.startDate &&
+        !!draft.studentName &&
+        // 결제까지 같이 적었으면 금액이 정해져야 한다. 0원 수납이 남는 것보다 낫다.
+        (!draft.payment || draft.payment.amount != null))) &&
     (!isFinalRegistration || (!!classId && !!draft.startDate && !!draft.studentName));
 
   return (
@@ -1145,16 +1163,22 @@ export default function QuickInput() {
                     <Label>금액</Label>
                     <Input
                       type="number"
-                      value={draft.payment.amount}
+                      value={draft.payment.amount ?? ""}
+                      placeholder="반을 고르면 채워집니다"
                       onChange={(e) =>
                         setDraft({
                           ...draft,
-                          payment: { ...draft.payment, amount: Number(e.target.value) },
+                          payment: {
+                            ...draft.payment!,
+                            amount: e.target.value === "" ? null : Number(e.target.value),
+                          },
                         })
                       }
                     />
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {draft.payment.amount.toLocaleString()}원
+                      {draft.payment.amount == null
+                        ? "금액이 정해져야 저장됩니다"
+                        : `${draft.payment.amount.toLocaleString()}원`}
                     </p>
                   </div>
 

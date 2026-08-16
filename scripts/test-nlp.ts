@@ -265,8 +265,8 @@ const cases: Case[] = [
     expect: (r) =>
       r.draft.category === "registration" &&
       r.draft.studentName === "정재현" &&
-      r.draft.school === "숭의중" &&
-      r.draft.grade === "1학년" &&
+      r.draft.school === "숭의중학교" &&
+      r.draft.grade === "중1" &&
       r.draft.parentPhone === null &&
       r.draft.payment?.amount === 280000 &&
       r.draft.payment?.type === "원비" &&
@@ -275,6 +275,59 @@ const cases: Case[] = [
       r.draft.classHint.teacherName === "정우석" &&
       r.draft.classHint.level === "심화",
     why: "'숭의중1'의 1을 금액으로 읽으면 28만원이 버려지고 전체가 되물어진다",
+  },
+  {
+    label: "'숭의중1'은 학교와 학년으로 갈라 적는다",
+    text: "신규등록 정재현 숭의중1, 010-1111-1111",
+    ai: {
+      enroll: true,
+      student_name: "정재현",
+      school: "숭의중",
+      grade: "1학년",
+      parent_phone: "010-1111-1111",
+    },
+    expect: (r) =>
+      r.draft.category === "registration" &&
+      r.draft.school === "숭의중학교" &&
+      r.draft.grade === "중1" &&
+      r.draft.parentPhone === "010-1111-1111",
+    why:
+      "'1학년'만 저장하면 초1인지 중1인지 알 수 없어 3월 자동 진급이 이 학생을 건너뛴다. " +
+      "학교 이름도 '숭의중'과 '숭의중학교'로 갈라지면 학교별로 묶어 볼 수 없다",
+  },
+  {
+    label: "금액 없는 '결제완료'도 수납으로 남긴다",
+    text: "신규등록 정재현 숭의중1, 010-1111-1111, 결제완료",
+    ai: {
+      enroll: true,
+      payment: true,
+      student_name: "정재현",
+      school: "숭의중",
+      grade: "1학년",
+      parent_phone: "010-1111-1111",
+    },
+    expect: (r) =>
+      r.draft.category === "registration" &&
+      r.draft.payment !== null &&
+      r.draft.payment?.amount === null &&
+      r.draft.payment?.type === "원비" &&
+      r.draft.payment?.paymentMonth === "2026-08",
+    why:
+      "예전에는 금액이 없으면 수납 자체를 만들지 않아, 분명 '결제완료'라고 썼는데도 " +
+      "조용히 미납으로 남았다. 금액은 반을 고를 때 그 반 수강료로 채운다",
+  },
+  {
+    label: "결제 얘기가 없으면 미납으로 남긴다",
+    text: "신규등록 정재현 숭의중1, 010-1111-1111",
+    ai: {
+      enroll: true,
+      student_name: "정재현",
+      school: "숭의중",
+      grade: "1학년",
+      parent_phone: "010-1111-1111",
+    },
+    expect: (r) => r.draft.category === "registration" && r.draft.payment === null,
+    why: "안 낸 돈이 수납으로 찍히면 미납 명단에서 이 학생이 빠진다",
   },
   {
     label: "어순이 달라도 같게 읽는다",
@@ -387,7 +440,7 @@ const cases: Case[] = [
       r.draft.target === "student" &&
       r.draft.action === "update" &&
       r.draft.name === "김민준" &&
-      r.draft.school === "숭의중",
+      r.draft.school === "숭의중학교",
     why: "명시적 수정 명령이 등록이나 상담으로 새면 엉뚱한 레코드가 하나 더 생긴다",
   },
   {

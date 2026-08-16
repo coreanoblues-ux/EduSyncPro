@@ -48,9 +48,31 @@ import {
   type TaskSlotHint,
 } from "./nlpNormalize";
 import { ymdKst } from "@shared/day";
+import { canonicalGrade, expandSchoolName } from "@shared/gradePromotion";
 
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+
+/**
+ * "숭의중1"은 AI가 school="숭의중", grade="1학년"으로 쪼개 준다. 그대로 두면
+ * 학교는 줄임말로, 학년은 급을 알 수 없는 "1학년"으로 쌓인다. 들어오는 길목에서
+ * 정식 학교명과 "중1" 꼴로 통일한다.
+ */
+function normalizedSchool(ai: { school?: string | null }): string | null {
+  return expandSchoolName(ai.school) || null;
+}
+
+/**
+ * 학년을 "중1" 꼴로 굳힌다. 학교 이름이 급을 알려주므로 같이 넘긴다
+ * ("1학년" + "숭의중" → "중1"). 못 읽으면 원문을 그대로 둔다.
+ */
+function normalizedGrade(ai: {
+  grade?: string | null;
+  school?: string | null;
+}): string | null {
+  const raw = ai.grade?.trim() || null;
+  return canonicalGrade(raw, ai.school) ?? raw;
+}
 
 export type PaymentType = "원비" | "환불" | "지출" | "기타";
 export type PaymentMethod = "계좌이체" | "카드" | "현금";
@@ -58,7 +80,14 @@ export type ConsultationStatus = "상담문의" | "대기등록" | "최종등록
 
 /** 등록과 동시에 받은 돈. 수강등록이 만들어진 뒤 그 enrollmentId에 붙는다. */
 export interface PaymentPart {
-  amount: number;
+  /**
+   * null은 "결제완료라고만 적고 금액은 안 적었다"는 뜻이다.
+   *
+   * 예전에는 금액이 없으면 이 객체 자체를 만들지 않았는데, 그러면 원장이 분명
+   * "결제완료"라고 썼는데도 조용히 미납으로 남았다. 화면에서 고른 반의 수강료로
+   * 채워 준 뒤에야 저장되므로 지어낸 금액이 회계에 들어갈 일은 없다.
+   */
+  amount: number | null;
   type: PaymentType;
   method: PaymentMethod | null;
   paymentMonth: string; // YYYY-MM
@@ -863,8 +892,8 @@ export function arbitrate(
         target: person.target,
         action: person.action,
         name,
-        school: person.target === "student" ? ai.school?.trim() || null : null,
-        grade: person.target === "student" ? ai.grade?.trim() || null : null,
+        school: person.target === "student" ? normalizedSchool(ai) : null,
+        grade: person.target === "student" ? normalizedGrade(ai) : null,
         phone,
         subject:
           person.target === "teacher"
@@ -942,29 +971,32 @@ export function arbitrate(
     let payment: PaymentPart | null = null;
     if (hasPayment) {
       const amount = resolveAmount(ai, sourceText, corrections);
-      if (amount !== null) {
-        if (!isPlausibleAmount(amount)) {
-          return unclear(
-            sourceText,
-            corrections,
-            `금액 ${amount.toLocaleString()}원이 정상 범위(${AMOUNT_MIN.toLocaleString()}~${AMOUNT_MAX.toLocaleString()}원)를 벗어납니다.`,
-            "금액을 다시 확인해 주세요. 자릿수가 맞나요?"
-          );
-        }
-        // 등록과 함께 낸 돈은 등록한 달의 원비로 보는 것이 자연스럽다.
-        // 여기서 되물으면 "정재현 등록 결제 28만"처럼 월을 안 적은 문장이 전부 막힌다.
-        const month = normalizeMonth(ai.payment_month, sourceText, now);
-        const paymentMonth = month ?? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-        if (!month) {
-          corrections.push(`납부월이 없어 이번달(${paymentMonth})로 두었습니다. 다르면 고쳐주세요.`);
-        }
-        payment = {
-          amount,
-          type: resolveType(ai, sourceText, corrections),
-          method: asPaymentMethod(ai.payment_method) ?? extractPaymentMethod(sourceText),
-          paymentMonth,
-        };
+      if (amount !== null && !isPlausibleAmount(amount)) {
+        return unclear(
+          sourceText,
+          corrections,
+          `금액 ${amount.toLocaleString()}원이 정상 범위(${AMOUNT_MIN.toLocaleString()}~${AMOUNT_MAX.toLocaleString()}원)를 벗어납니다.`,
+          "금액을 다시 확인해 주세요. 자릿수가 맞나요?"
+        );
       }
+      // 등록과 함께 낸 돈은 등록한 달의 원비로 보는 것이 자연스럽다.
+      // 여기서 되물으면 "정재현 등록 결제 28만"처럼 월을 안 적은 문장이 전부 막힌다.
+      const month = normalizeMonth(ai.payment_month, sourceText, now);
+      const paymentMonth = month ?? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      if (!month) {
+        corrections.push(`납부월이 없어 이번달(${paymentMonth})로 두었습니다. 다르면 고쳐주세요.`);
+      }
+      // 금액이 없어도 수납 자체는 살려 둔다. "결제완료"만 적은 문장을 등록만으로
+      // 처리해 버리면 낸 돈이 미납으로 남는다. 금액은 화면에서 반 수강료로 채운다.
+      if (amount === null) {
+        corrections.push("결제했다고 적혀 있는데 금액이 없습니다. 반을 고르면 그 반 수강료로 채웁니다.");
+      }
+      payment = {
+        amount,
+        type: resolveType(ai, sourceText, corrections),
+        method: asPaymentMethod(ai.payment_method) ?? extractPaymentMethod(sourceText),
+        paymentMonth,
+      };
     }
 
     const dueDay = extractDueDay(sourceText) ?? (Number.isInteger(ai.due_day) ? ai.due_day : null);
@@ -981,8 +1013,8 @@ export function arbitrate(
       draft: {
         category: "registration",
         studentName,
-        school: ai.school?.trim() || null,
-        grade: ai.grade?.trim() || null,
+        school: normalizedSchool(ai),
+        grade: normalizedGrade(ai),
         parentPhone: phone,
         guardianName: ai.guardian_name?.trim() || null,
         classHint: {
@@ -1107,7 +1139,7 @@ export function arbitrate(
         phone,
         guardianName: ai.guardian_name?.trim() || null,
         studentName,
-        studentGrade: ai.grade?.trim() || null,
+        studentGrade: normalizedGrade(ai),
         status,
         subject: ai.subject?.trim() || null,
         followUp: ai.follow_up?.trim() || null,

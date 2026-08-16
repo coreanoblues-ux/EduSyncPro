@@ -96,9 +96,26 @@ railway.app → EduSyncPro 서비스 → Variables → DATABASE_URL 의 @ 뒤 �
 
 지금은 `ep-wild-sound-a6bv7505.us-west-2.aws.neon.tech`일 것으로 보인다 → 이관 대상.
 
-### B단계 — 백업 (최우선. 구독이 살아 있는 지금 해야 한다)
+### B단계 — 백업 ✅ 2026-08-16 완료
 
-✅ 이 PC에는 `pg_dump`/`psql` 17.10이 이미 깔려 있다. 추가 설치 불필요.
+```
+C:\Users\Administrator\Documents\edusync-backups\
+  edusync-backup-20260816.dump   77KB — 로컬 테스트 DB에 복원해 검증까지 마침
+  backup-before.txt              이관 후 대조 기준값
+```
+
+떠온 시점의 운영 DB 상태 (이관 후 이 숫자와 같아야 한다):
+
+| 테넌트 | 사용자 | 교사 | 반 | 학생 | 등록 | 결제 | 상담 | 수업일지 | 대기 | 할일 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5 | 8 | 7 | 23 | 118 (재원 95) | 112 | 658 | 16 | 2 | 0 | 8 |
+
+결제 합계 **188,254,000원**, 마지막 결제일 **2026-08-16 05:25:21 KST**.
+
+> 덤프를 빈 로컬 DB에 실제로 복원해 `db:verify` 출력을 대조했고 **차이가 0**이었다.
+> "덤프 파일은 받았는데 정작 복원이 안 되는" 최악의 경우는 배제됐다.
+
+다시 떠야 할 때의 명령 (이 PC에는 `pg_dump` 17.10이 이미 깔려 있다):
 
 ```bash
 # 1) 옮기기 전 상태를 숫자로 남긴다. 이 출력을 파일로 저장해 둘 것.
@@ -109,13 +126,13 @@ pg_dump -Fc --no-owner --no-acl \
   -d "<현재_운영_DATABASE_URL>" \
   -f edusync-backup-$(date +%Y%m%d).dump
 
-# 3) 파일이 진짜 들어찼는지 확인 (몇 KB짜리면 실패한 것이다)
-ls -lh edusync-backup-*.dump
+# 3) 11개 테이블이 다 들어갔는지 목차로 확인한다
+pg_restore -l edusync-backup-*.dump | grep -c "TABLE DATA"   # → 11
 ```
 
 > 💡 이 `.dump` 파일을 클라우드 드라이브 등 PC 밖에도 한 벌 복사해 둘 것.
-> 그리고 `.gitignore`에 이미 `*.tar.gz`가 있지만 `.dump`는 없으니,
-> **저장소 폴더 밖에 두거나 커밋하지 말 것** — 학생 개인정보가 통째로 들어 있다.
+> 저장소 폴더 밖에 두고 커밋하지 말 것 — 학생 개인정보가 통째로 들어 있다.
+> (`.gitignore`에 `*.dump`를 넣어 두긴 했다.)
 
 ### C단계 — 새 DB로 이관
 
@@ -144,15 +161,13 @@ console.neon.tech에서 직접 가입 후 New Project → Connection string 사�
 복원:
 
 ```bash
-# 1) 빈 DB에 스키마를 만든다
-DATABASE_URL="<새_DATABASE_URL>" npm run db:push
-
-# 2) 데이터 복원. 스키마가 이미 있으므로 --data-only.
-pg_restore --no-owner --no-acl --data-only --disable-triggers \
+# 1) 빈 DB에 그대로 복원한다. 덤프에 스키마가 들어 있으므로 db:push는 필요 없다.
+#    (2026-08-16에 로컬 테스트 DB로 이 명령을 실제로 돌려 검증했다.)
+pg_restore --no-owner --no-acl \
   -d "<새_DATABASE_URL>" \
   edusync-backup-YYYYMMDD.dump
 
-# 3) 옮기기 전 숫자와 한 줄씩 대조한다. 이 단계를 건너뛰지 말 것.
+# 2) 옮기기 전 숫자와 한 줄씩 대조한다. 이 단계를 건너뛰지 말 것.
 DATABASE_URL="<새_DATABASE_URL>" npm run db:verify | tee backup-after.txt
 diff backup-before.txt backup-after.txt
 ```

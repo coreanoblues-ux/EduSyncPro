@@ -145,16 +145,23 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 ```
 Railway 대시보드 → Settings → Domains → Generate Domain
-→ 생성된 URL 복사 (예: edusyncpro-production.up.railway.app)
 ```
+
+현재 운영 주소는 **`https://edusyncpro-production-dcfe.up.railway.app`** 이다.
+
+> ⚠️ 뒤의 `-dcfe`를 빼면 안 된다. Railway가 붙여 주는 무작위 접미사이고, 뺀 주소는
+> 남의 것도 아니고 그냥 없는 주소라 Railway 엣지가 `404 + x-railway-fallback: true`를
+> 돌려준다. 이게 "서비스가 죽었다"와 응답이 똑같아서, 2026-08-16에 멀쩡히 돌아가는
+> 앱을 10분 동안 장애로 오진했다. **주소를 의심하기 전에 대시보드에서 실제 도메인을
+> 먼저 확인할 것.**
 
 터미널에서 확인:
 ```bash
 # 앱 응답 확인
-curl -I https://edusyncpro-production.up.railway.app
+curl -I https://edusyncpro-production-dcfe.up.railway.app
 
 # 로그인 API 테스트
-curl -X POST https://edusyncpro-production.up.railway.app/api/auth/signin \
+curl -X POST https://edusyncpro-production-dcfe.up.railway.app/api/auth/signin \
   -H "Content-Type: application/json" \
   -d '{"email":"your@email.com","password":"yourpassword"}' \
   -c cookies_test.txt \

@@ -255,8 +255,12 @@ docker run -p 3000:3000 --env-file .env edusync
 ### 4-3. 결정적 검증 — Replit 로그아웃 상태로 운영 사이트 쓰기
 
 1. 브라우저 시크릿 창을 연다 (Replit 세션이 전혀 없는 상태).
-2. Railway 운영 주소로 접속해 4-1의 체크리스트를 그대로 반복한다.
+2. 운영 주소 <https://edusyncpro-production-dcfe.up.railway.app> 로 접속해
+   4-1의 체크리스트를 그대로 반복한다.
 3. 전부 되면 **운영 서비스는 Replit과 무관하게 살아 있다**.
+
+> ⚠️ 주소의 `-dcfe`를 빠뜨리면 Railway 엣지가 `404 + x-railway-fallback: true`를
+> 준다. 서비스가 죽었을 때와 응답이 구별되지 않으니 장애로 오해하지 말 것.
 
 ### 4-4. 코드 검증
 

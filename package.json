@@ -9,8 +9,10 @@
     "start": "NODE_ENV=production node dist/index.js",
     "check": "tsc",
     "test:nlp": "tsx scripts/test-nlp.ts",
+    "test:grade": "tsx scripts/test-grade-promotion.ts",
     "db:push": "drizzle-kit push",
-    "db:verify": "tsx scripts/db-verify.ts"
+    "db:verify": "tsx scripts/db-verify.ts",
+    "grades:preview": "tsx scripts/preview-grades.ts"
   },
   "engines": {
     "node": ">=20"

@@ -27,6 +27,11 @@ export const tenants = pgTable("tenants", {
   ownerPhone: text("owner_phone").notNull(), // 대표자 연락처
   status: tenantStatusEnum("status").default("pending").notNull(),
   activeUntil: timestamp("active_until"),
+  // 학년 자동 진급을 어느 학년도까지 반영했는가. 3월이 지나 이 값보다 학년도가
+  // 커지면 한 번 올리고 갱신한다. 이게 없으면 서버가 재시작될 때마다 학년이
+  // 계속 올라간다. NULL이면 "아직 한 번도 안 돌았다"는 뜻이고, 이때는 올리지
+  // 않고 현재 학년도를 적어 두기만 한다 (기능을 켠 날 전원이 진급해 버리는 사고 방지).
+  lastGradePromotionYear: integer("last_grade_promotion_year"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });

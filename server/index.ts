@@ -2,6 +2,7 @@ import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import { startGradePromotionScheduler } from "./lib/gradePromotion";
 
 const app = express();
 
@@ -100,5 +101,8 @@ app.use((req, res, next) => {
     host: "0.0.0.0",
   }, () => {
     log(`serving on port ${port}`);
+    // 3월이 지났으면 학년을 올린다. 서버가 뜬 뒤에 걸어야 DB가 느릴 때도
+    // 응답 대기가 포트 열림을 막지 않는다.
+    startGradePromotionScheduler();
   });
 })();

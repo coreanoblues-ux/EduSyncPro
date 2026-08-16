@@ -134,57 +134,72 @@ pg_restore -l edusync-backup-*.dump | grep -c "TABLE DATA"   # → 11
 > 저장소 폴더 밖에 두고 커밋하지 말 것 — 학생 개인정보가 통째로 들어 있다.
 > (`.gitignore`에 `*.dump`를 넣어 두긴 했다.)
 
-### C단계 — 새 DB로 이관
+### C단계 — Railway Postgres로 복원 ✅ 2026-08-16 완료
 
-**Railway PostgreSQL로 간다.** 홈페이지에서 이미 이 경로로 해결했으니 검증된 길이고,
-새 계정을 만들 필요도 없다(Neon 계정이 없다는 게 지금 문제의 원인이었다).
-앱과 DB가 한 대시보드에 모이고, Neon 무료 티어의 자동 절전으로 첫 요청이
-느려지는 일도 없다.
+**Railway PostgreSQL로 갔다.** 홈페이지에서 이미 이 경로로 해결했으니 검증된 길이고,
+새 계정도 필요 없다(Neon 계정이 없다는 게 애초에 이 사달의 원인이었다).
 
-```
-railway.app → EduSyncPro 프로젝트 → New → Database → Add PostgreSQL
-→ 생성된 Postgres 서비스 → Variables → DATABASE_PUBLIC_URL 복사
-   (내 PC에서 pg_restore로 밀어 넣어야 하므로 내부 주소가 아닌 PUBLIC 주소가 필요하다.
-    홈페이지의 autorack.proxy.rlwy.net:27021 이 이 형태다.)
-```
+알고 보니 Railway 프로젝트에 **Postgres 서비스가 이미 있었다.** 2025-09에 이관을
+시도하다 만 흔적으로, `railway` DB에 학생 3·결제 3·교사 7건이 들어 있었다.
+운영 데이터(학생 118)와는 ID가 하나도 겹치지 않는 완전히 별개의 테스트 데이터였다.
 
-> 앱 서비스의 `DATABASE_URL`에는 나중에 **내부 주소**(`postgres.railway.internal`)를 넣는 게
-> 더 빠르고 안전하다. 공개 주소는 내 PC에서 복원할 때만 쓴다.
-
-<details>
-<summary>대안 — Neon을 직접 계정 만들어 쓰고 싶다면</summary>
-
-console.neon.tech에서 직접 가입 후 New Project → Connection string 사용.
-무료 티어가 있지만 관리할 곳이 하나 더 늘어난다. 굳이 권하지 않는다.
-</details>
-
-복원:
+**그걸 지우고 덮어쓰는 대신 같은 서버에 `edusync` DB를 새로 만들어 복원했다.**
+지우면 되돌릴 수 없고, 지워서 얻는 것도 없다. `railway` DB는 그대로 남아 있다.
 
 ```bash
-# 1) 빈 DB에 그대로 복원한다. 덤프에 스키마가 들어 있으므로 db:push는 필요 없다.
-#    (2026-08-16에 로컬 테스트 DB로 이 명령을 실제로 돌려 검증했다.)
-pg_restore --no-owner --no-acl \
-  -d "<새_DATABASE_URL>" \
-  edusync-backup-YYYYMMDD.dump
+# 1) 새 DB 생성 (기존 railway DB는 건드리지 않는다)
+psql "<PUBLIC_URL>/railway" -c "CREATE DATABASE edusync WITH ENCODING 'UTF8';"
 
-# 2) 옮기기 전 숫자와 한 줄씩 대조한다. 이 단계를 건너뛰지 말 것.
-DATABASE_URL="<새_DATABASE_URL>" npm run db:verify | tee backup-after.txt
+# 2) 복원. 덤프에 스키마가 들어 있어 db:push는 필요 없다.
+pg_restore --no-owner --no-acl -d "<PUBLIC_URL>/edusync" edusync-backup-20260816.dump
+
+# 3) 숫자 대조
+DATABASE_URL="<PUBLIC_URL>/edusync" npm run db:verify | tee backup-after.txt
 diff backup-before.txt backup-after.txt
 ```
 
-`diff`가 시각 표시 줄 말고는 아무것도 뱉지 않아야 정상이다.
-건수·결제 합계·마지막 결제일·학생 수가 전부 같아야 한다.
+> 💡 복원에는 **공개 주소**(`hopper.proxy.rlwy.net:28766`)를 쓴다. 내 PC에서 접속해야
+> 하기 때문이다. 앱이 쓸 `DATABASE_URL`에는 **내부 주소**(`postgres.railway.internal:5432`)를
+> 넣는 게 더 빠르고 외부로 나가지 않는다.
+
+**검증 결과 — 건수만 보고 넘어가지 않았다:**
+
+| 항목 | 결과 |
+|------|------|
+| 11개 테이블 행 수 | 일치 |
+| **전 테이블 ID 대조** (학생 118, 결제 658 등 전 행) | 완전 일치 |
+| 결제 합계 / 마지막 결제일 | 188,254,000원 / 2026-08-16 05:25 일치 |
+| 외래키 23 · 인덱스 13 · enum 7 | 양쪽 동일 |
+| 한글 인코딩 | 정상 |
+
+건수가 같아도 내용이 뒤바뀔 수 있으므로 ID까지 맞춰 봤다. `pg_dump`가 만든
+`-Fc` 덤프는 스키마·제약조건·enum을 다 물고 오므로 `db:push`를 먼저 돌릴 필요가 없었다.
+
+> ⚠️ **전환 직전에 한 번 더 떠야 한다.** 이 복원은 2026-08-16 21:12 KST 시점 스냅샷이다.
+> 그 뒤 원장이 앱에 입력한 수납·상담은 아직 Neon에만 있다. `DATABASE_URL`을 바꾸기
+> 직전에 B·C단계를 다시 한 번 돌려 최신 상태로 맞춘 뒤 전환할 것.
 
 ### D단계 — 전환
 
+학원이 한가한 시간에 한다. 전환하는 순간부터 앱이 새 DB에 쓰기 시작하므로,
+그 전에 Neon에 들어온 마지막 입력까지 옮겨져 있어야 한다.
+
 ```
-Railway → EduSyncPro → Variables → DATABASE_URL 을 새 주소로 교체 → Save
-→ 자동 재배포 (2~3분)
-→ Deployments → Logs 에서 "✅ Database connection verified" 확인
+1. 옛 DATABASE_URL(Neon 주소)을 메모장에 복사해 둔다  ← 되돌리기용
+2. B·C단계를 다시 돌려 최신 데이터를 edusync DB에 맞춘다
+3. Railway → EduSyncPro(앱) 서비스 → Variables → DATABASE_URL 을
+   postgresql://postgres:<비밀번호>@postgres.railway.internal:5432/edusync
+   로 교체 → Save
+4. 자동 재배포 (2~3분)
+5. Deployments → Logs 에서 "✅ Database connection verified" 확인
+6. 로그인 → 학생 목록 → 수납 1건 넣어보고 목록 반영 확인
 ```
 
-> 🛟 되돌리기: 옛 `DATABASE_URL` 값을 메모장에 남겨 두면 문제 시 변수만 되돌리면 된다.
-> 옛 DB는 **최소 2주는 지우지 말 것.**
+> `railway.toml`의 `preDeployCommand = "npm run db:push"` 가 배포 때 먼저 돈다.
+> 스키마를 통째로 복원해 뒀으니 바꿀 게 없어 그냥 지나간다.
+
+> 🛟 되돌리기: 문제가 생기면 `DATABASE_URL`을 1번에서 적어 둔 Neon 주소로 되돌리면
+> 끝이다. 옛 Neon DB는 **최소 2주는 지우지 말고 Replit 구독도 그동안 유지할 것.**
 
 ---
 

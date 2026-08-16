@@ -230,12 +230,17 @@ npm run dev               # → http://localhost:3000
 ### 4-2. 도커로 (Node조차 안 깔린 새 PC에서도 도는지)
 
 ```bash
-docker build -t edusync .
+docker build -f docker/Dockerfile -t edusync .
 docker run -p 3000:3000 --env-file .env edusync
 ```
 
-컨테이너 안에는 Replit 관련 파일이 하나도 안 들어간다(`.dockerignore`).
-여기서 뜨면 "Replit 없이 어디서든 실행 가능"이 증명된 것이다.
+컨테이너 안에는 Replit 관련 파일이 하나도 안 들어간다
+(`docker/Dockerfile.dockerignore`). 여기서 뜨면 "Replit 없이 어디서든 실행 가능"이
+증명된 것이다.
+
+> Dockerfile이 루트가 아니라 `docker/` 아래 있는 이유가 있다. 루트에 두면 Railway가
+> `railway.toml`의 `builder = "NIXPACKS"`를 제치고 그 Dockerfile로 빌드해 버리고,
+> 그 런타임 이미지에는 drizzle-kit이 없어 `preDeployCommand`가 죽는다.
 
 ### 4-3. 결정적 검증 — Replit 로그아웃 상태로 운영 사이트 쓰기
 
@@ -307,7 +312,7 @@ npm run test:nlp          # 자연어 파서 167케이스 통과
 | `.local/**` (188개) | 추적 해제 |
 | `replit.md` → `ARCHITECTURE.md` | 개명 |
 | `railway.env.example` → `.env.example` | 개명 + 설명 보강 |
-| `Dockerfile`, `.dockerignore` | 신규 — 아무 도커 환경에서 실행 |
+| `docker/Dockerfile`, `docker/Dockerfile.dockerignore` | 신규 — 아무 도커 환경에서 실행. 루트에 두면 Railway 배포가 깨져서 `docker/` 아래 둔다 |
 | `package.json` | `engines.node >=20`, `db:verify` 스크립트 |
 | `scripts/db-verify.ts` | 신규 — 이관 전후 데이터 대조 |
 | `DEPLOY_RAILWAY.md` | Replit Secrets 안내 → Neon 콘솔 안내 |

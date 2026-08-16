@@ -1,10 +1,16 @@
 # EduSyncPro — 어디서든 도는 표준 Node 컨테이너.
+# "Railway마저 못 쓰게 됐을 때 옮길 수 있다"는 보험이다. 저장소 루트에서:
 #
-# Railway는 railway.toml에서 NIXPACKS를 쓰라고 지정해 두었으므로 이 파일을
-# 무시한다. 이건 "Railway마저 못 쓰게 됐을 때 다른 곳으로 옮길 수 있다"는
-# 보험이다. 아무 도커 환경에서나:
-#   docker build -t edusync .
+#   docker build -f docker/Dockerfile -t edusync .
 #   docker run -p 3000:3000 --env-file .env edusync
+#
+# ⚠️ 이 파일을 저장소 루트로 옮기지 말 것.
+# railway.toml에 builder = "NIXPACKS"라고 써 두면 Railway가 이 파일을 무시할
+# 줄 알았는데 아니었다. 루트에 Dockerfile이 있으면 Railway가 그걸 먼저 쓴다.
+# 그러면 아래 런타임 스테이지가 배포되는데, 여기엔 devDependencies도
+# drizzle.config.ts도 shared/schema.ts도 없어서 railway.toml의
+# preDeployCommand("npm run db:push")가 죽는다. 실제로 2026-08-16에 배포가
+# 네 번 연속 Pre-deploy에서 실패했다. (직전 빌드가 계속 떠 있어 운영은 무사했다.)
 
 # ── 1단계: 빌드 ────────────────────────────────────────────────────────────
 FROM node:20-slim AS build

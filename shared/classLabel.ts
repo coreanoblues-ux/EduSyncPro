@@ -103,6 +103,26 @@ export function classLabel(className: string, prefix: string | undefined): strin
   return `[${prefix}]${n}`;
 }
 
+/**
+ * 시간표 칸처럼 자리가 좁을 때 쓸 짧은 이름. `[정]월 수 심화A` → `심화A`.
+ *
+ * 저녁 시간대는 한 요일에 대여섯 반이 겹쳐서 칸 하나가 40px도 안 된다. 거기에
+ * 전체 이름을 넣으면 `[정]월…`만 보여 어느 반인지 알 수 없다. 교사는 칸 색으로,
+ * 요일은 칸이 놓인 세로줄로 이미 드러나므로 둘 다 뗀다.
+ *
+ * 전체 이름은 칸에 마우스를 올리면 나온다. 여기서 떼는 건 화면 표시뿐이다.
+ */
+export function shortClassLabel(label: string): string {
+  const withoutPrefix = label.trim().replace(/^\[[^\]]*\]\s*/, "");
+  // 요일 뒤에 띄어쓰기가 있을 때만 뗀다. `토익반`의 '토'를 요일로 보고 떼면
+  // `익반`이 되어 반 이름이 망가진다.
+  const withoutDays = withoutPrefix.replace(/^(?:[월화수목금토일]\s+)+/, "").trim();
+  // 요일 말고는 적힌 게 없는 이름(`월 수 금`)은 떼면 `금`만 남아 금요일 반처럼
+  // 보인다. 남길 게 없으면 그냥 원래 이름을 쓴다.
+  if (!withoutDays || !/[^월화수목금토일\s]/.test(withoutDays)) return withoutPrefix;
+  return withoutDays;
+}
+
 /** 정렬용 키. 앞에 붙은 대괄호 표기를 떼고 남은 이름으로만 비교한다. */
 function sortKey(className: string): string {
   return className.trim().replace(/^\[[^\]]*\]\s*/, "").replace(/\s/g, "");

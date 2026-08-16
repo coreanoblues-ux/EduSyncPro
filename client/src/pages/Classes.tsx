@@ -17,6 +17,7 @@ import { z } from "zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Class, Teacher } from "@shared/schema";
 import { groupClassesByTeacher } from "@shared/classLabel";
+import WeeklyTimetable from "@/components/WeeklyTimetable";
 
 const classFormSchema = z.object({
   teacherId: z.string().min(1, "담당 교사를 선택해주세요"),
@@ -480,6 +481,9 @@ export default function Classes({ userRole }: ClassesProps) {
           })}
         </div>
       )}
+
+      {/* 한눈에 보는 주간 시간표 */}
+      {classes.length > 0 && <WeeklyTimetable classes={classes} teachers={teachers} />}
 
       {/* Edit Dialog */}
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>

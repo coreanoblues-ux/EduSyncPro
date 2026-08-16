@@ -10,6 +10,7 @@ import {
   classLabel,
   groupClassesByTeacher,
   labelClassesByTeacher,
+  shortClassLabel,
 } from "@shared/classLabel";
 
 const T = {
@@ -183,6 +184,35 @@ check(
   orphaned[orphaned.length - 1].teacher === null &&
     orphaned[orphaned.length - 1].classes[0].label === "옛날반",
   "교사를 지워도 반이 목록에서 사라지면 그 반 학생들의 수강 등록을 손댈 수 없다"
+);
+
+// ─── 시간표 칸에 쓸 짧은 이름 ──────────────────────────────────────────────
+check(
+  "교사 표기와 요일을 뗀다",
+  shortClassLabel("[정]월 수 심화A") === "심화A" &&
+    shortClassLabel("[란]화 목 중1 기본") === "중1 기본",
+  `칸이 좁아 "[정]월…"만 보이면 어느 반인지 알 수 없다 — ` +
+    `${shortClassLabel("[정]월 수 심화A")} / ${shortClassLabel("[란]화 목 중1 기본")}`
+);
+check(
+  "'토익반'의 '토'를 요일로 보지 않는다",
+  shortClassLabel("[고]토익반") === "토익반",
+  `요일 뒤에 띄어쓰기가 없으면 반 이름의 일부다. 떼면 "익반"이 된다 — ${shortClassLabel("[고]토익반")}`
+);
+check(
+  "뒤에 붙은 요일은 그대로 둔다",
+  shortClassLabel("[란]중1 기본 - 월수금") === "중1 기본 - 월수금",
+  shortClassLabel("[란]중1 기본 - 월수금")
+);
+check(
+  "다 떼면 빈 이름이 되는 반은 떼지 않는다",
+  shortClassLabel("[정]월 수 금") === "월 수 금",
+  `칸이 이름 없이 비어 버리면 무슨 수업인지 알 수 없다 — "${shortClassLabel("[정]월 수 금")}"`
+);
+check(
+  "'주말'은 요일 글자가 아니다",
+  shortClassLabel("[정]주말 고1 오후") === "주말 고1 오후",
+  shortClassLabel("[정]주말 고1 오후")
 );
 
 console.log(`\n${pass}건 통과 / ${fail}건 실패`);

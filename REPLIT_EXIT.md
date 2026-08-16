@@ -179,27 +179,37 @@ diff backup-before.txt backup-after.txt
 > 그 뒤 원장이 앱에 입력한 수납·상담은 아직 Neon에만 있다. `DATABASE_URL`을 바꾸기
 > 직전에 B·C단계를 다시 한 번 돌려 최신 상태로 맞춘 뒤 전환할 것.
 
-### D단계 — 전환
+### D단계 — 전환 ✅ 2026-08-16 21:30경 완료
 
-학원이 한가한 시간에 한다. 전환하는 순간부터 앱이 새 DB에 쓰기 시작하므로,
-그 전에 Neon에 들어온 마지막 입력까지 옮겨져 있어야 한다.
+앱 서비스의 `DATABASE_URL`을 내부 주소로 교체했다.
 
 ```
-1. 옛 DATABASE_URL(Neon 주소)을 메모장에 복사해 둔다  ← 되돌리기용
-2. B·C단계를 다시 돌려 최신 데이터를 edusync DB에 맞춘다
-3. Railway → EduSyncPro(앱) 서비스 → Variables → DATABASE_URL 을
-   postgresql://postgres:<비밀번호>@postgres.railway.internal:5432/edusync
-   로 교체 → Save
-4. 자동 재배포 (2~3분)
-5. Deployments → Logs 에서 "✅ Database connection verified" 확인
-6. 로그인 → 학생 목록 → 수납 1건 넣어보고 목록 반영 확인
+postgresql://postgres:<비밀번호>@postgres.railway.internal:5432/edusync
 ```
 
-> `railway.toml`의 `preDeployCommand = "npm run db:push"` 가 배포 때 먼저 돈다.
-> 스키마를 통째로 복원해 뒀으니 바꿀 게 없어 그냥 지나간다.
+전환 직전에 B·C단계를 다시 돌려 최신 상태로 맞췄다(그 사이 신규 입력은 없었다).
 
-> 🛟 되돌리기: 문제가 생기면 `DATABASE_URL`을 1번에서 적어 둔 Neon 주소로 되돌리면
-> 끝이다. 옛 Neon DB는 **최소 2주는 지우지 말고 Replit 구독도 그동안 유지할 것.**
+**전환됐는지 확인한 방법.** 화면만 보고 "된 것 같다"로 넘어가지 않았다.
+운영 앱에 없는 계정으로 로그인 요청을 한 번 보내 DB 조회를 유발한 뒤,
+양쪽 DB의 `pg_stat_activity`를 봤다.
+
+```sql
+SELECT datname, client_addr, state FROM pg_stat_activity WHERE backend_type='client backend';
+```
+
+- Railway: `edusync` DB에 `fd12:...`(Railway 내부망 IPv6)에서 붙은 세션 → **앱이 여기 붙어 있다**
+- Neon: 내가 방금 던진 psql 세션 하나뿐 → **앱은 더 이상 Neon을 보지 않는다**
+
+로그인 응답도 DB 오류가 아니라 정상적인 "이메일 또는 비밀번호가 올바르지 않습니다"였다.
+`users` 테이블 조회가 성공했다는 뜻이다.
+
+> `railway.toml`의 `preDeployCommand = "npm run db:push"` 가 배포 때 먼저 도는데,
+> 스키마를 통째로 복원해 뒀으니 바꿀 게 없어 그냥 지나갔다.
+
+> 🛟 되돌리기: 문제가 생기면 `DATABASE_URL`을 옛 Neon 주소로 되돌리면 된다. 단
+> **전환 이후 입력된 데이터는 `edusync`에만 있으므로** 되돌릴 거면 반대 방향으로
+> 다시 옮겨야 한다. 옛 Neon DB는 **최소 2주(2026-08-30경)는 지우지 말고 Replit
+> 구독도 그동안 유지할 것.**
 
 ---
 

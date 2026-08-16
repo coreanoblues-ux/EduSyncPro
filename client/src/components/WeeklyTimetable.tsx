@@ -6,9 +6,12 @@
  *
  * 일정 칸이 자유 입력이라 시각을 못 읽는 반이 있다. 그런 반은 격자에 그리지 않고
  * 아래에 따로 모아 둔다. 아무 데나 그려 넣으면 시간표를 믿을 수 없게 된다.
+ *
+ * 범례의 선생님을 누르면 그 선생님 시간표만 남는다. 제목을 누르면 다시 전체로
+ * 돌아온다. 기본값은 늘 전체다.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CalendarDays, AlertTriangle } from "lucide-react";
 import {
@@ -57,6 +60,8 @@ interface Block extends Slot {
   label: string;
   /** 칸 안에 적는 짧은 이름. 앞의 [표기]는 색이 이미 말해 주므로 뗀다. */
   short: string;
+  /** 범례에서 고른 선생님과 맞춰 보는 값. 담당이 없으면 빈 문자열. */
+  teacherKey: string;
   teacherName: string;
   color: (typeof PALETTE)[number];
   /** 같은 시간에 겹친 수업 중 몇 번째인가. 나란히 놓으려고 쓴다. */
@@ -67,27 +72,86 @@ interface Block extends Slot {
 /** 한 시간 칸의 높이(px). 30분이면 절반이 된다. */
 const HOUR_PX = 56;
 
+/**
+ * 같은 요일에 시간이 겹치는 수업을 나란히 놓는다.
+ *
+ * 겹친 걸 위아래로 쌓으면 뒤엣것이 완전히 가려져 시간표에서 사라진 것처럼 보인다.
+ * 서로 겹치는 것끼리 한 무리로 묶고, 그 무리 안에서만 자리를 나눈다 — 하루치를
+ * 통째로 나누면 겹치지도 않는 수업까지 얇아진다.
+ *
+ * 한 선생님만 남겨 놓고 보면 겹치는 수업이 줄어드니 자리도 다시 나눈다. 그래야
+ * 칸이 넓어져 반 이름이 다 보인다.
+ */
+function assignLanes(blocks: Block[]): Block[] {
+  const out = blocks.map((b) => ({ ...b }));
+  for (const day of DAYS) {
+    const sameDay = out
+      .filter((b) => b.day === day)
+      .sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin);
+
+    let cluster: Block[] = [];
+    let clusterEnd = -1;
+    const flush = () => {
+      if (cluster.length === 0) return;
+      const laneEnds: number[] = [];
+      for (const b of cluster) {
+        let lane = laneEnds.findIndex((end) => end <= b.startMin);
+        if (lane === -1) {
+          lane = laneEnds.length;
+          laneEnds.push(0);
+        }
+        laneEnds[lane] = b.endMin;
+        b.lane = lane;
+      }
+      for (const b of cluster) b.lanes = laneEnds.length;
+      cluster = [];
+    };
+    for (const b of sameDay) {
+      if (cluster.length > 0 && b.startMin >= clusterEnd) flush();
+      cluster.push(b);
+      clusterEnd = Math.max(clusterEnd, b.endMin);
+    }
+    flush();
+  }
+  return out;
+}
+
 export default function WeeklyTimetable({ classes, teachers }: Props) {
-  const { blocks, unplaced, legend, startHour, endHour } = useMemo(() => {
+  /** 범례에서 고른 선생님. null이면 전체를 본다(기본값). */
+  const [only, setOnly] = useState<string | null>(null);
+
+  const { allBlocks, allUnplaced, legend, startHour, endHour } = useMemo(() => {
     const groups = groupClassesByTeacher(
       classes.filter((c) => c.isActive),
       teachers
     );
 
-    const legend: Array<{ name: string; prefix: string | null; color: typeof PALETTE[number]; count: number }> = [];
+    const legend: Array<{
+      key: string;
+      name: string;
+      prefix: string | null;
+      color: typeof PALETTE[number];
+      count: number;
+    }> = [];
     const raw: Block[] = [];
-    const unplaced: Array<{ label: string; schedule: string; teacherName: string }> = [];
+    const unplaced: Array<{ label: string; schedule: string; teacherKey: string; teacherName: string }> = [];
 
     groups.forEach((g, gi) => {
       const color = g.teacher ? PALETTE[gi % PALETTE.length] : NO_TEACHER;
       const teacherName = g.teacher?.name ?? "담당 미지정";
-      legend.push({ name: teacherName, prefix: g.prefix, color, count: g.classes.length });
+      const teacherKey = g.teacher?.id ?? "";
+      legend.push({ key: teacherKey, name: teacherName, prefix: g.prefix, color, count: g.classes.length });
 
       for (const c of g.classes) {
         // 요일이 일정에 없으면 반 이름에서 찾는다("[정]주말 고1 오후" → 토·일)
         const slots = parseSchedule(c.schedule, c.label);
         if (slots.length === 0) {
-          unplaced.push({ label: c.label, schedule: c.schedule || "(비어 있음)", teacherName });
+          unplaced.push({
+            label: c.label,
+            schedule: c.schedule || "(비어 있음)",
+            teacherKey,
+            teacherName,
+          });
           continue;
         }
         for (const s of slots) {
@@ -96,6 +160,7 @@ export default function WeeklyTimetable({ classes, teachers }: Props) {
             classId: c.id,
             label: c.label,
             short: shortClassLabel(c.label),
+            teacherKey,
             teacherName,
             color,
             lane: 0,
@@ -105,45 +170,25 @@ export default function WeeklyTimetable({ classes, teachers }: Props) {
       }
     });
 
-    // 같은 요일에 시간이 겹치는 수업은 나란히 놓는다. 겹친 걸 위아래로 쌓으면
-    // 뒤엣것이 완전히 가려져 시간표에서 사라진 것처럼 보인다.
-    for (const day of DAYS) {
-      const sameDay = raw
-        .filter((b) => b.day === day)
-        .sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin);
-
-      // 서로 겹치는 것끼리 한 무리로 묶고, 그 무리 안에서 자리를 나눠 준다.
-      let cluster: Block[] = [];
-      let clusterEnd = -1;
-      const flush = () => {
-        if (cluster.length === 0) return;
-        const laneEnds: number[] = [];
-        for (const b of cluster) {
-          let lane = laneEnds.findIndex((end) => end <= b.startMin);
-          if (lane === -1) {
-            lane = laneEnds.length;
-            laneEnds.push(0);
-          }
-          laneEnds[lane] = b.endMin;
-          b.lane = lane;
-        }
-        for (const b of cluster) b.lanes = laneEnds.length;
-        cluster = [];
-      };
-      for (const b of sameDay) {
-        if (cluster.length > 0 && b.startMin >= clusterEnd) flush();
-        cluster.push(b);
-        clusterEnd = Math.max(clusterEnd, b.endMin);
-      }
-      flush();
-    }
-
     // 격자 범위는 실제 수업에 맞춘다. 새벽 0시부터 그리면 빈 칸만 길어진다.
+    // 한 선생님만 볼 때도 이 범위를 그대로 쓴다 — 선생님을 바꿔 누를 때마다
+    // 눈금이 움직이면 같은 시각이 다른 높이에 그려져 견주어 볼 수가 없다.
     const startHour = raw.length ? Math.floor(Math.min(...raw.map((b) => b.startMin)) / 60) : 9;
     const endHour = raw.length ? Math.ceil(Math.max(...raw.map((b) => b.endMin)) / 60) : 22;
 
-    return { blocks: raw, unplaced, legend, startHour, endHour };
+    return { allBlocks: raw, allUnplaced: unplaced, legend, startHour, endHour };
   }, [classes, teachers]);
+
+  // 고른 선생님이 반을 다 잃으면(반 삭제·담당 변경) 아무것도 없는 시간표가 남는다.
+  const selected = only !== null && legend.some((l) => l.key === only) ? only : null;
+
+  const blocks = useMemo(
+    () => assignLanes(selected === null ? allBlocks : allBlocks.filter((b) => b.teacherKey === selected)),
+    [allBlocks, selected]
+  );
+  const unplaced =
+    selected === null ? allUnplaced : allUnplaced.filter((u) => u.teacherKey === selected);
+  const selectedName = legend.find((l) => l.key === selected)?.name ?? null;
 
   const hours = Array.from({ length: endHour - startHour }, (_, i) => startHour + i);
   const gridHeight = hours.length * HOUR_PX;
@@ -152,25 +197,54 @@ export default function WeeklyTimetable({ classes, teachers }: Props) {
   return (
     <Card data-testid="weekly-timetable">
       <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <CalendarDays className="h-4 w-4" />
-          학원 주간 시간표
+        <CardTitle className="text-base">
+          <button
+            type="button"
+            onClick={() => setOnly(null)}
+            className="flex items-center gap-2 rounded-sm hover-elevate active-elevate-2 -mx-1 px-1"
+            title="전체 시간표로 돌아갑니다"
+            data-testid="timetable-show-all"
+          >
+            <CalendarDays className="h-4 w-4" />
+            학원 주간 시간표
+            {selectedName && (
+              <span className="text-xs font-normal text-muted-foreground">
+                — {selectedName} 선생님만 보는 중 (누르면 전체)
+              </span>
+            )}
+          </button>
         </CardTitle>
-        <div className="flex flex-wrap gap-x-4 gap-y-1 pt-1">
-          {legend.map((l) => (
-            <span key={l.name} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <span className={`h-2.5 w-2.5 rounded-sm ${l.color.dot}`} />
-              {l.name}
-              {l.prefix && <span className="font-mono">[{l.prefix}]</span>}
-            </span>
-          ))}
+        <div className="flex flex-wrap gap-x-2 gap-y-1 pt-1">
+          {legend.map((l) => {
+            const dimmed = selected !== null && selected !== l.key;
+            return (
+              <button
+                key={l.key || "none"}
+                type="button"
+                // 누른 선생님을 다시 누르면 전체로 돌아온다
+                onClick={() => setOnly(selected === l.key ? null : l.key)}
+                aria-pressed={selected === l.key}
+                title={`${l.name} 선생님 수업만 봅니다`}
+                className={`flex items-center gap-1.5 rounded-sm px-1.5 py-0.5 text-xs hover-elevate active-elevate-2 ${
+                  dimmed ? "text-muted-foreground/50" : "text-muted-foreground"
+                } ${selected === l.key ? "bg-accent font-medium text-accent-foreground" : ""}`}
+                data-testid={`timetable-legend-${l.key || "none"}`}
+              >
+                <span className={`h-2.5 w-2.5 rounded-sm ${l.color.dot} ${dimmed ? "opacity-40" : ""}`} />
+                {l.name}
+                {l.prefix && <span className="font-mono">[{l.prefix}]</span>}
+              </button>
+            );
+          })}
         </div>
       </CardHeader>
 
       <CardContent>
         {blocks.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
-            시간이 적힌 반이 없어 시간표를 그릴 수 없습니다.
+            {selectedName
+              ? `${selectedName} 선생님 반은 일정에 시각이 적혀 있지 않아 그릴 수 없습니다.`
+              : "시간이 적힌 반이 없어 시간표를 그릴 수 없습니다."}
           </p>
         ) : (
           <div className="overflow-x-auto">

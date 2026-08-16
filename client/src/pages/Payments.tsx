@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, User, BookOpen, CheckCircle, XCircle, CreditCard, Calendar, AlertTriangle } from "lucide-react";
+import { ChevronDown, ChevronRight, User, BookOpen, CheckCircle, XCircle, CreditCard, Calendar, AlertTriangle, PauseCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +31,8 @@ interface ClassWithStudents {
   id: string;
   name: string;
   students: StudentWithPaymentStatus[];
+  /** 휴원 처리된 학생. 접어 두되 버리지는 않는다. 아래 onLeave 주석 참고. */
+  onLeave: StudentWithPaymentStatus[];
   schedule?: string;
 }
 
@@ -69,6 +71,8 @@ function formatMonthLabel(month: string): string {
 export default function Payments({ userRole }: PaymentsProps) {
   const [expandedTeachers, setExpandedTeachers] = useState<Set<string>>(new Set());
   const [expandedClasses, setExpandedClasses] = useState<Set<string>>(new Set());
+  /** 휴원 학생 명단을 펼쳐 둔 반. 기본은 접힘 — 수납할 대상이 아니기 때문이다. */
+  const [expandedOnLeave, setExpandedOnLeave] = useState<Set<string>>(new Set());
   const [paymentDialog, setPaymentDialog] = useState<{
     isOpen: boolean;
     student?: StudentWithPaymentStatus;
@@ -142,9 +146,15 @@ export default function Payments({ userRole }: PaymentsProps) {
       
       teacherClasses.forEach(classItem => {
         const classEnrollments = enrollments.filter(e => e.classId === classItem.id && e.isActive);
-        
+
+        const onLeaveIds = new Set<string>();
         const studentsWithStatus: StudentWithPaymentStatus[] = classEnrollments.map(enrollment => {
           const student = students.find(s => s.id === enrollment.studentId);
+          // 휴원 처리는 students.isActive만 내리고 수강 등록은 그대로 살려 둔다
+          // (재원하면 다시 이어서 다녀야 하므로). 그래서 여기서 걸러 주지 않으면
+          // 휴원한 학생이 반 명단에 그대로 남아 다달이 미납이 쌓인다.
+          // 대시보드 미납 목록(lib/overdues.ts)은 이미 같은 기준으로 거른다.
+          if (student && student.isActive === false) onLeaveIds.add(enrollment.id);
           const tuition = enrollment.tuition || classItem.defaultTuition || 0;
 
           const allMonths = getMonthsBetween(enrollment.startDate, enrollment.endDate, now);
@@ -190,7 +200,8 @@ export default function Payments({ userRole }: PaymentsProps) {
         classesWithStudents.push({
           id: classItem.id,
           name: classItem.name,
-          students: studentsWithStatus,
+          students: studentsWithStatus.filter(s => !onLeaveIds.has(s.enrollment.id)),
+          onLeave: studentsWithStatus.filter(s => onLeaveIds.has(s.enrollment.id)),
           schedule: classItem.schedule,
         });
       });
@@ -231,6 +242,16 @@ export default function Payments({ userRole }: PaymentsProps) {
       newExpanded.add(classId);
     }
     setExpandedClasses(newExpanded);
+  };
+
+  const handleOnLeaveToggle = (classId: string) => {
+    const newExpanded = new Set(expandedOnLeave);
+    if (newExpanded.has(classId)) {
+      newExpanded.delete(classId);
+    } else {
+      newExpanded.add(classId);
+    }
+    setExpandedOnLeave(newExpanded);
   };
 
   const handlePaymentClick = (student: StudentWithPaymentStatus, month: string) => {
@@ -368,6 +389,7 @@ export default function Payments({ userRole }: PaymentsProps) {
                   <CardContent className="pt-0 space-y-3">
                     {teacher.classes.map((classItem: ClassWithStudents) => {
                       const isExpanded = expandedClasses.has(classItem.id);
+                      const isOnLeaveExpanded = expandedOnLeave.has(classItem.id);
                       const paidCount = classItem.students.filter((s: StudentWithPaymentStatus) => s.isPaid).length;
                       const totalCount = classItem.students.length;
                       
@@ -413,7 +435,9 @@ export default function Payments({ userRole }: PaymentsProps) {
                             <div className="p-2 space-y-2">
                               {classItem.students.length === 0 && (
                                 <div className="py-4 text-center text-sm text-muted-foreground">
-                                  등록된 수강생이 없습니다
+                                  {classItem.onLeave.length > 0
+                                    ? "수업을 듣는 학생이 없습니다 (휴원 학생만 남아 있습니다)"
+                                    : "등록된 수강생이 없습니다"}
                                 </div>
                               )}
                               {classItem.students.map((student: StudentWithPaymentStatus) => (
@@ -498,6 +522,65 @@ export default function Payments({ userRole }: PaymentsProps) {
                                   )}
                                 </div>
                               ))}
+
+                              {/* 휴원 학생은 수납 대상이 아니라 접어 두지만, 명단에서 통째로
+                                  지우면 원장이 "얘 어디 갔지" 하게 되므로 여기 남겨 둔다. */}
+                              {classItem.onLeave.length > 0 && (
+                                <div className="rounded-md border border-dashed">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOnLeaveToggle(classItem.id)}
+                                    className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover-elevate"
+                                    data-testid={`on-leave-toggle-${classItem.id}`}
+                                  >
+                                    {isOnLeaveExpanded ? (
+                                      <ChevronDown className="h-4 w-4" />
+                                    ) : (
+                                      <ChevronRight className="h-4 w-4" />
+                                    )}
+                                    <PauseCircle className="h-4 w-4" />
+                                    휴원 {classItem.onLeave.length}명은 수납 명단에서 뺐습니다
+                                  </button>
+
+                                  {isOnLeaveExpanded && (
+                                    <div className="space-y-1 px-3 pb-3">
+                                      <p className="pb-1 text-xs text-muted-foreground">
+                                        휴원 중에는 수업을 듣지 않으니 수강료가 더 쌓이지 않습니다.
+                                        다시 수납하려면 학생 관리에서 재원 처리하세요.
+                                      </p>
+                                      {classItem.onLeave.map((student: StudentWithPaymentStatus) => {
+                                        const lastPaid = student.paidMonths[student.paidMonths.length - 1];
+                                        return (
+                                          <div
+                                            key={student.enrollment.id}
+                                            className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm"
+                                            data-testid={`on-leave-row-${student.id}`}
+                                          >
+                                            <div className="flex items-center gap-2">
+                                              <span className="font-medium text-muted-foreground">
+                                                {student.name}
+                                              </span>
+                                              {student.grade && (
+                                                <Badge variant="outline" className="text-xs">
+                                                  {student.grade}
+                                                </Badge>
+                                              )}
+                                              <Badge variant="secondary" className="text-xs">
+                                                휴원
+                                              </Badge>
+                                            </div>
+                                            <span className="text-xs text-muted-foreground">
+                                              {lastPaid
+                                                ? `마지막 납부 ${formatMonthLabel(lastPaid)}`
+                                                : "납부 기록 없음"}
+                                            </span>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>

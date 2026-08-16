@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Plus, Edit, Trash2, BookOpen, Users, Calendar, DollarSign, Info } from "lucide-react";
+import { Plus, Edit, Trash2, BookOpen, Users, Calendar, DollarSign, Info, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +16,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Class, Teacher } from "@shared/schema";
+import { groupClassesByTeacher } from "@shared/classLabel";
 
 const classFormSchema = z.object({
   teacherId: z.string().min(1, "담당 교사를 선택해주세요"),
@@ -36,6 +37,8 @@ export default function Classes({ userRole }: ClassesProps) {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [editingClass, setEditingClass] = useState<Class | null>(null);
+  /** 펼쳐 놓은 교사. 처음엔 다 접혀 있어서 선생님 목록만 한눈에 들어온다. */
+  const [openTeachers, setOpenTeachers] = useState<Set<string>>(new Set());
   const { toast } = useToast();
 
   // Fetch classes
@@ -171,9 +174,16 @@ export default function Classes({ userRole }: ClassesProps) {
     setIsEditDialogOpen(true);
   };
 
-  const getTeacherName = (teacherId: string) => {
-    const teacher = teachers.find(t => t.id === teacherId);
-    return teacher?.name || "담당교사 미지정";
+  // 선생님별로 묶는다. 반이 많은 선생님이 위로 온다.
+  const groups = useMemo(() => groupClassesByTeacher(classes, teachers), [classes, teachers]);
+
+  const toggleTeacher = (key: string) => {
+    setOpenTeachers((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   };
 
   if (isLoading) {
@@ -196,7 +206,7 @@ export default function Classes({ userRole }: ClassesProps) {
         <div>
           <h1 className="text-2xl font-bold">반 관리</h1>
           <p className="text-muted-foreground">
-            반 {classes.length}개가 등록되어 있습니다
+            선생님 {groups.length}분 · 반 {classes.length}개 — 선생님 이름을 누르면 개설 강의가 펼쳐집니다
           </p>
         </div>
         
@@ -341,7 +351,7 @@ export default function Classes({ userRole }: ClassesProps) {
         )}
       </div>
 
-      {/* Classes Grid */}
+      {/* 선생님별 개설 강의 */}
       {classes.length === 0 ? (
         <div className="text-center py-12 border-2 border-dashed border-muted-foreground/25 rounded-lg">
           <BookOpen className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
@@ -349,86 +359,125 @@ export default function Classes({ userRole }: ClassesProps) {
           <p className="text-muted-foreground mt-2">첫 번째 반을 등록해보세요.</p>
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {classes.map((classItem) => (
-            <Card key={classItem.id} className="hover-elevate" data-testid={`class-card-${classItem.id}`}>
-              <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-2">
-                <div className="flex items-center gap-2">
-                  <CardTitle className="text-lg">{classItem.name}</CardTitle>
-                  <Badge 
-                    variant={classItem.isActive ? "default" : "secondary"}
-                    data-testid={`class-status-${classItem.id}`}
-                  >
-                    {classItem.isActive ? "활성" : "비활성"}
-                  </Badge>
-                </div>
-                {(userRole === 'owner' || userRole === 'superadmin') && (
-                  <div className="flex items-center gap-1">
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      onClick={() => openEditDialog(classItem)}
-                      data-testid={`button-edit-class-${classItem.id}`}
-                    >
-                      <Edit className="h-4 w-4" />
-                    </Button>
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          data-testid={`button-delete-class-${classItem.id}`}
-                        >
-                          <Trash2 className="h-4 w-4 text-destructive" />
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>반 삭제</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            정말로 {classItem.name} 반을 삭제하시겠습니까?
-                            이 작업은 되돌릴 수 없습니다.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel data-testid={`button-cancel-delete-class-${classItem.id}`}>
-                            취소
-                          </AlertDialogCancel>
-                          <AlertDialogAction
-                            onClick={() => handleDeleteClass(classItem.id)}
-                            data-testid={`button-confirm-delete-class-${classItem.id}`}
-                          >
-                            삭제
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
+        <div className="space-y-3">
+          {groups.map((group) => {
+            const key = group.teacher?.id ?? "미지정";
+            const isOpen = openTeachers.has(key);
+            const activeCount = group.classes.filter((c) => c.isActive).length;
+            return (
+              <div key={key} className="rounded-lg border" data-testid={`teacher-group-${key}`}>
+                <button
+                  type="button"
+                  onClick={() => toggleTeacher(key)}
+                  aria-expanded={isOpen}
+                  className="hover-elevate flex w-full items-center gap-3 rounded-lg px-4 py-3 text-left"
+                  data-testid={`button-teacher-${key}`}
+                >
+                  {isOpen ? (
+                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className="font-medium">
+                    {group.teacher ? `${group.teacher.name} 선생님` : "담당교사 미지정"}
+                  </span>
+                  {group.prefix && (
+                    <Badge variant="outline" className="font-mono">[{group.prefix}]</Badge>
+                  )}
+                  <span className="ml-auto text-sm text-muted-foreground">
+                    개설 강의 {group.classes.length}개
+                    {activeCount !== group.classes.length && ` (활성 ${activeCount}개)`}
+                  </span>
+                </button>
+
+                {isOpen && (
+                  <div className="grid gap-4 border-t p-4 md:grid-cols-2 lg:grid-cols-3">
+                    {group.classes.map((classItem) => (
+                      <Card
+                        key={classItem.id}
+                        className="hover-elevate"
+                        data-testid={`class-card-${classItem.id}`}
+                      >
+                        <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-2">
+                          <div className="flex items-center gap-2">
+                            <CardTitle className="text-lg">{classItem.label}</CardTitle>
+                            <Badge
+                              variant={classItem.isActive ? "default" : "secondary"}
+                              data-testid={`class-status-${classItem.id}`}
+                            >
+                              {classItem.isActive ? "활성" : "비활성"}
+                            </Badge>
+                          </div>
+                          {(userRole === 'owner' || userRole === 'superadmin') && (
+                            <div className="flex items-center gap-1">
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                onClick={() => openEditDialog(classItem)}
+                                data-testid={`button-edit-class-${classItem.id}`}
+                              >
+                                <Edit className="h-4 w-4" />
+                              </Button>
+                              <AlertDialog>
+                                <AlertDialogTrigger asChild>
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    data-testid={`button-delete-class-${classItem.id}`}
+                                  >
+                                    <Trash2 className="h-4 w-4 text-destructive" />
+                                  </Button>
+                                </AlertDialogTrigger>
+                                <AlertDialogContent>
+                                  <AlertDialogHeader>
+                                    <AlertDialogTitle>반 삭제</AlertDialogTitle>
+                                    <AlertDialogDescription>
+                                      정말로 {classItem.label} 반을 삭제하시겠습니까?
+                                      이 작업은 되돌릴 수 없습니다.
+                                    </AlertDialogDescription>
+                                  </AlertDialogHeader>
+                                  <AlertDialogFooter>
+                                    <AlertDialogCancel data-testid={`button-cancel-delete-class-${classItem.id}`}>
+                                      취소
+                                    </AlertDialogCancel>
+                                    <AlertDialogAction
+                                      onClick={() => handleDeleteClass(classItem.id)}
+                                      data-testid={`button-confirm-delete-class-${classItem.id}`}
+                                    >
+                                      삭제
+                                    </AlertDialogAction>
+                                  </AlertDialogFooter>
+                                </AlertDialogContent>
+                              </AlertDialog>
+                            </div>
+                          )}
+                        </CardHeader>
+                        <CardContent className="space-y-2">
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <BookOpen className="h-4 w-4" />
+                            <span>{classItem.subject}</span>
+                          </div>
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <Calendar className="h-4 w-4" />
+                            <span>{classItem.schedule}</span>
+                          </div>
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <DollarSign className="h-4 w-4" />
+                            <span>
+                              ₩{classItem.defaultTuition.toLocaleString()} (최대 {classItem.maxStudents}명)
+                            </span>
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            생성일: {new Date(classItem.createdAt).toLocaleDateString()}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
                   </div>
                 )}
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <BookOpen className="h-4 w-4" />
-                  <span>{classItem.subject}</span>
-                </div>
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Users className="h-4 w-4" />
-                  <span>담당: {getTeacherName(classItem.teacherId)}</span>
-                </div>
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Calendar className="h-4 w-4" />
-                  <span>{classItem.schedule}</span>
-                </div>
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <DollarSign className="h-4 w-4" />
-                  <span>₩{classItem.defaultTuition.toLocaleString()} (최대 {classItem.maxStudents}명)</span>
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  생성일: {new Date(classItem.createdAt).toLocaleDateString()}
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+              </div>
+            );
+          })}
         </div>
       )}
 

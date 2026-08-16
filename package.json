@@ -10,6 +10,7 @@
     "check": "tsc",
     "test:nlp": "tsx scripts/test-nlp.ts",
     "test:grade": "tsx scripts/test-grade-promotion.ts",
+    "test:class": "tsx scripts/test-class-label.ts",
     "db:push": "drizzle-kit push",
     "db:verify": "tsx scripts/db-verify.ts",
     "grades:preview": "tsx scripts/preview-grades.ts"

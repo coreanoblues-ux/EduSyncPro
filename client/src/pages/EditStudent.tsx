@@ -12,6 +12,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ArrowLeft } from 'lucide-react';
 import { apiRequest, queryClient } from '@/lib/queryClient';
+import { labelClassesByTeacher } from '@shared/classLabel';
 import { useEffect } from 'react';
 
 // 학생 수정 스키마 (학생 등록과 완전히 동일)
@@ -53,6 +54,16 @@ export default function EditStudent() {
   const { data: classes = [] } = useQuery({
     queryKey: ['/api/classes']
   });
+
+  const { data: teachers = [] } = useQuery({
+    queryKey: ['/api/teachers']
+  });
+
+  // 반은 담당 교사끼리 붙여서 보여준다. 원장이 "누구 반"으로 찾기 때문이다.
+  const classOptions = labelClassesByTeacher(
+    (Array.isArray(classes) ? classes : []).filter((c: any) => c.isActive !== false),
+    Array.isArray(teachers) ? teachers : []
+  );
 
   // 수강 정보 조회
   const { data: enrollments } = useQuery({
@@ -262,15 +273,9 @@ export default function EditStudent() {
                           </FormControl>
                           <SelectContent>
                             <SelectItem value="none">반을 선택하지 않음</SelectItem>
-                            {Array.isArray(classes) && classes
-                              .filter((c: any) => c.isActive !== false)
-                              .sort((a: any, b: any) => {
-                                const norm = (s: string) => s.replace(/[\[\]\s]/g, '');
-                                return norm(a.name).localeCompare(norm(b.name), 'ko');
-                              })
-                              .map((classItem: any) => (
+                            {classOptions.map((classItem: any) => (
                               <SelectItem key={classItem.id} value={classItem.id}>
-                                {classItem.name} (기본 ₩{classItem.defaultTuition?.toLocaleString()})
+                                {classItem.label} (기본 ₩{classItem.defaultTuition?.toLocaleString()})
                               </SelectItem>
                             ))}
                           </SelectContent>

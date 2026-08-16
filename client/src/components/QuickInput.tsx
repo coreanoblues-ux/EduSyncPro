@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Sparkles, AlertTriangle, Loader2, Check, X } from "lucide-react";
+import { labelClassesByTeacher } from "@shared/classLabel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -124,6 +125,7 @@ interface ClassOption {
   name: string;
   subject: string;
   defaultTuition: number;
+  teacherId: string;
 }
 
 interface TeacherOption {
@@ -254,6 +256,8 @@ export default function QuickInput() {
 
   const { data: classes = [] } = useQuery<ClassOption[]>({ queryKey: ["/api/classes"] });
   const { data: teachers = [] } = useQuery<TeacherOption[]>({ queryKey: ["/api/teachers"] });
+  // 원장은 "누구 반이냐"로 찾는다. 같은 선생님 반끼리 붙여 놓고 이름 앞에 [성]을 붙인다.
+  const classOptions = labelClassesByTeacher(classes, teachers);
 
   const parseMutation = useMutation({
     mutationFn: async (input: string) => {
@@ -1091,9 +1095,9 @@ export default function QuickInput() {
                       <SelectValue placeholder="반을 선택하세요" />
                     </SelectTrigger>
                     <SelectContent>
-                      {classes.map((c) => (
+                      {classOptions.map((c) => (
                         <SelectItem key={c.id} value={c.id}>
-                          {c.name} · {c.subject} · {c.defaultTuition.toLocaleString()}원
+                          {c.label} · {c.subject} · {c.defaultTuition.toLocaleString()}원
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -1328,9 +1332,9 @@ export default function QuickInput() {
                           <SelectValue placeholder="반을 선택하세요" />
                         </SelectTrigger>
                         <SelectContent>
-                          {classes.map((c) => (
+                          {classOptions.map((c) => (
                             <SelectItem key={c.id} value={c.id}>
-                              {c.name} · {c.subject} · {c.defaultTuition.toLocaleString()}원
+                              {c.label} · {c.subject} · {c.defaultTuition.toLocaleString()}원
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -1394,9 +1398,9 @@ export default function QuickInput() {
                       <SelectValue placeholder="반을 선택하세요" />
                     </SelectTrigger>
                     <SelectContent>
-                      {classes.map((c) => (
+                      {classOptions.map((c) => (
                         <SelectItem key={c.id} value={c.id}>
-                          {c.name} · {c.subject}
+                          {c.label} · {c.subject}
                         </SelectItem>
                       ))}
                     </SelectContent>

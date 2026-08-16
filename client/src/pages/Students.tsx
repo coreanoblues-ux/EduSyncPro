@@ -16,7 +16,8 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Student, Class, InsertEnrollment } from "@shared/schema";
+import { Student, Class, Teacher, InsertEnrollment } from "@shared/schema";
+import { labelClassesByTeacher } from "@shared/classLabel";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 /**
@@ -89,9 +90,15 @@ export default function Students({ userRole }: StudentsProps) {
   });
 
   // Fetch teachers for search functionality
-  const { data: teachers = [] } = useQuery({
+  const { data: teachers = [] } = useQuery<Teacher[]>({
     queryKey: ['/api/teachers'],
   });
+
+  // 반은 담당 교사끼리 붙여서 보여준다. 원장이 "누구 반"으로 찾기 때문이다.
+  const classOptions = useMemo(
+    () => labelClassesByTeacher(classes.filter((c) => c.isActive !== false), teachers),
+    [classes, teachers]
+  );
 
   /**
    * 카드 한 장 = 수강 한 건.
@@ -472,12 +479,9 @@ export default function Students({ userRole }: StudentsProps) {
                           </FormControl>
                           <SelectContent>
                             <SelectItem value="none">반을 선택하지 않음</SelectItem>
-                            {classes.filter(c => c.isActive !== false).sort((a, b) => {
-                                const norm = (s: string) => s.replace(/[\[\]\s]/g, '');
-                                return norm(a.name).localeCompare(norm(b.name), 'ko');
-                              }).map((classItem) => (
+                            {classOptions.map((classItem) => (
                               <SelectItem key={classItem.id} value={classItem.id}>
-                                {classItem.name} (기본 ₩{classItem.defaultTuition?.toLocaleString()})
+                                {classItem.label} (기본 ₩{classItem.defaultTuition?.toLocaleString()})
                               </SelectItem>
                             ))}
                           </SelectContent>

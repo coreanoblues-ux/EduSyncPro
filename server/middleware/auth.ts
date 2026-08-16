@@ -1,14 +1,18 @@
 import { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { storage } from '../storage';
 
 // ─── JWT Secret ────────────────────────────────────────────────────────────
-// Using a hardcoded fallback is insecure but prevents a crash when the env var
-// is missing.  A loud warning is logged so the problem is obvious in Railway logs.
-const JWT_SECRET = process.env.JWT_SECRET || 'INSECURE_DEFAULT_CHANGE_IN_RAILWAY_VARIABLES';
+// 예전에는 문자열 상수를 기본값으로 뒀는데, 이 저장소는 공개라 그 값을 아는
+// 사람은 누구나 원장 토큰을 위조할 수 있었다. 그렇다고 없을 때 죽게 만들면
+// 변수 하나 빠뜨린 배포가 운영을 통째로 내리므로, 부팅할 때마다 무작위 키를
+// 만들어 쓴다. 서버는 살아 있고, 대신 재시작마다 전원 재로그인이라
+// 문제가 조용히 묻히지 않는다.
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 if (!process.env.JWT_SECRET) {
-  console.warn('⚠️  JWT_SECRET not set! Using insecure default — set JWT_SECRET in Railway Variables NOW!');
+  console.warn('⚠️  JWT_SECRET 미설정 — 이번 부팅에만 쓸 임시 키를 만들었습니다. 재시작하면 모두 로그아웃됩니다. 환경변수에 JWT_SECRET을 넣으세요.');
 }
 
 export interface AuthUser {

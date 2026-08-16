@@ -77,7 +77,7 @@ app.use((req, res, next) => {
 
   // ─── Startup environment check (warnings only, never crash) ─────────────
   if (!process.env.JWT_SECRET) {
-    console.warn("⚠️  JWT_SECRET not set — using insecure default. Set it in Railway Variables!");
+    console.warn("⚠️  JWT_SECRET 미설정 — 부팅할 때마다 임시 키가 바뀌어 재시작하면 전원 로그아웃됩니다.");
   }
   if (!process.env.ADMIN_PASSWORD) {
     console.warn("⚠️  ADMIN_PASSWORD not set — admin login will be disabled.");

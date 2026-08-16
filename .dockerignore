@@ -1,0 +1,12 @@
+node_modules
+dist
+.git
+.env
+.env.*
+.local
+.replit
+replit.nix
+attached_assets
+*.log
+*.tar.gz
+cookies*.txt

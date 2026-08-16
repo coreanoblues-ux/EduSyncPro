@@ -9,6 +9,10 @@ server/public
 vite.config.ts.*
 *.tar.gz
 
+# DB 덤프 — 학생 개인정보와 결제 기록이 통째로 들어 있다. 절대 커밋 금지.
+*.dump
+*.sql.gz
+
 # 환경변수 (절대 커밋 금지)
 .env
 .env.local
@@ -19,9 +23,12 @@ cookies.txt
 cookies_secure.txt
 cookies_test.txt
 
-# Replit 전용 파일
+# Replit 잔재. 이 앱은 Railway에서 도는 평범한 Node 서버라 Replit이 없어도 되지만,
+# Replit 에디터로 한 번이라도 열면 이 파일들이 되살아난다. 저장소에는 못 들어오게 막는다.
+# (.local은 Replit 에이전트 상태 27MB/188개짜리인데 예전에 통째로 커밋돼 있었다.)
 .replit
 replit.nix
+.local/
 .upm/
 .cache/
 

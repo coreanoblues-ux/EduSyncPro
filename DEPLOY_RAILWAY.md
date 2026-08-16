@@ -35,7 +35,7 @@ Railway 배포 시 `NeonDbError: fetch failed / getaddrinfo ENOTFOUND api.railwa
 | `vite.config.ts` | Replit 전용 플러그인 2개 제거 |
 | `package.json` | `@replit/vite-plugin-*` devDependencies 2개 제거 |
 | `.gitignore` | `.env`, `cookies*.txt`, Replit 파일 추가 |
-| `railway.env.example` | Railway에 등록할 환경변수 목록 |
+| `.env.example` | 등록할 환경변수 목록 (예전 이름: `railway.env.example`) |
 
 > ✅ Port(`process.env.PORT`), Host(`0.0.0.0`), Build/Start 명령어는 이미 완벽히 설정되어 있었음.  
 > ✅ DB는 NeonDB(외부 PostgreSQL)라 데이터 마이그레이션 불필요.
@@ -69,11 +69,15 @@ Railway → Deployments → 최신 배포 클릭 → Logs 탭
 
 ---
 
-## STEP 1 — DATABASE_URL 복사 (Replit → 메모장)
+## STEP 1 — DATABASE_URL 확보
 
 ```
-Replit 프로젝트 → Tools → Secrets → DATABASE_URL 값 복사해두기
+https://console.neon.tech → 본인 계정 프로젝트 → Connection string 복사
 ```
+
+> ⚠️ 이 문서를 처음 쓸 때는 이 값을 **Replit → Tools → Secrets**에서 복사해 왔다.
+> 그렇게 가져온 주소는 Replit이 만들어준 DB를 가리키므로 구독이 끊기면 같이 잠긴다.
+> Replit에서 완전히 벗어나는 절차는 [REPLIT_EXIT.md](REPLIT_EXIT.md)를 볼 것.
 
 ---
 

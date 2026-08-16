@@ -54,7 +54,24 @@ Replit이 붙여준 Neon 프로젝트는 **Replit 계정 소유**다. 구독이 
 그러면 Railway의 서버는 멀쩡히 살아 있어도 로그인 시 사용자 조회 쿼리가 실패하고,
 화면에는 "로그인이 안 된다"로 보인다. 증상이 정확히 일치한다.
 
-> **이건 확인이 필요한 추정이다.** 3장의 A단계에서 30초 안에 확실히 판별할 수 있다.
+### 확정됨 (2026-08-16)
+
+두 가지가 추가로 확인되면서 추정이 아니라 사실이 됐다.
+
+1. **원장은 Neon 계정을 만든 적이 없다.** 그런데 DB는 존재한다 → 누군가 대신 만들어 준 것이고,
+   그 누군가는 Replit이다.
+2. **같은 일이 홈페이지(`sidae-homepage`)에서 먼저 터졌고, 이미 해결했다.**
+   그 저장소에 증거가 그대로 남아 있다:
+   - `.env.txt` (옛날 것을 메모처럼 남겨둔 파일) → `ep-royal-frost-ae6oiurv.c-2.us-east-2.aws.neon.tech` = Replit이 붙여준 Neon
+   - `.env` (현재 쓰는 것) → `autorack.proxy.rlwy.net:27021` = **Railway PostgreSQL**
+   - 커밋 `af36bed refactor(db): Neon serverless 드라이버 → pg 표준 드라이버로 교체`
+
+   즉 **홈페이지는 Neon → Railway Postgres로 DB를 옮겨서 해결했다.**
+   학원관리 앱만 그 작업을 안 해서 이번에 혼자 끊긴 것이다.
+   (학원관리 앱도 드라이버는 이미 `pg`로 바꿔뒀다 — 커밋 `c085369`. DB 주소만 안 옮겼다.)
+
+> 🔥 **지금 당장 해야 할 일: 재구독으로 DB가 살아 있는 동안 백업을 받아 둘 것.**
+> 크레딧이 다시 만료되면 데이터를 꺼내는 것 자체가 불가능해진다.
 
 ---
 
@@ -63,23 +80,25 @@ Replit이 붙여준 Neon 프로젝트는 **Replit 계정 소유**다. 구독이 
 ⚠️ **원칙: 백업 → 검증 → 이관 → 대조 → 그 다음에야 전환.**
 학생·결제 기록이 걸린 작업이므로 순서를 건너뛰지 말 것.
 
-### A단계 — 지금 DB가 누구 것인지 판별 (먼저 이것부터)
+### A단계 — 현재 DB 주소 확인
 
-1. https://console.neon.tech 에 **본인 이메일 계정으로** 로그인한다.
-2. Railway → EduSyncPro 서비스 → Variables → `DATABASE_URL` 값을 연다.
-   `@ep-xxxx-yyyy.한지역.aws.neon.tech` 부분의 **`ep-` 호스트 이름**을 확인한다.
-3. Neon 콘솔의 내 프로젝트 목록에 그 호스트가 있는가?
+Neon 콘솔에 로그인할 필요 없다 (애초에 계정이 없다 = Replit 소유라는 뜻이다).
+Railway에서 값만 확인하면 된다.
 
-| 결과 | 의미 | 할 일 |
-|------|------|-------|
-| **있다** | DB는 이미 내 것. Replit과 무관 | B단계 백업만 받아두고 **C단계(이관)는 건너뛴다** |
-| **없다** | DB는 Replit 소유 → 해지하면 데이터가 잠긴다 | B → C → D 전부 진행. **이관 전에는 절대 해지 금지** |
+```
+railway.app → EduSyncPro 서비스 → Variables → DATABASE_URL 의 @ 뒤 호스트
+```
 
-### B단계 — 백업 (어느 경우든 무조건)
+| 호스트 | 의미 | 할 일 |
+|--------|------|-------|
+| `...neon.tech` | Replit이 붙여준 DB. **해지하면 잠긴다** | B → C → D 전부 진행 |
+| `...rlwy.net` | 이미 Railway Postgres로 옮긴 상태 | B단계 백업만 받고 끝 |
 
-로컬 PC에 PostgreSQL 클라이언트 도구가 필요하다 (`psql`, `pg_dump`).
-없으면 https://www.postgresql.org/download/windows/ 에서 설치하고 설치 중
-"Command Line Tools"를 체크한다.
+지금은 `ep-wild-sound-a6bv7505.us-west-2.aws.neon.tech`일 것으로 보인다 → 이관 대상.
+
+### B단계 — 백업 (최우선. 구독이 살아 있는 지금 해야 한다)
+
+✅ 이 PC에는 `pg_dump`/`psql` 17.10이 이미 깔려 있다. 추가 설치 불필요.
 
 ```bash
 # 1) 옮기기 전 상태를 숫자로 남긴다. 이 출력을 파일로 저장해 둘 것.
@@ -98,19 +117,29 @@ ls -lh edusync-backup-*.dump
 > 그리고 `.gitignore`에 이미 `*.tar.gz`가 있지만 `.dump`는 없으니,
 > **저장소 폴더 밖에 두거나 커밋하지 말 것** — 학생 개인정보가 통째로 들어 있다.
 
-### C단계 — 새 DB로 이관 (A단계가 "없다"일 때만)
+### C단계 — 새 DB로 이관
 
-**선택지 1 — Neon 유지 (권장).** 지금과 동작이 같아 바뀌는 게 주소뿐이다.
+**Railway PostgreSQL로 간다.** 홈페이지에서 이미 이 경로로 해결했으니 검증된 길이고,
+새 계정을 만들 필요도 없다(Neon 계정이 없다는 게 지금 문제의 원인이었다).
+앱과 DB가 한 대시보드에 모이고, Neon 무료 티어의 자동 절전으로 첫 요청이
+느려지는 일도 없다.
 
 ```
-console.neon.tech → 본인 계정 → New Project
-→ 이름: edusync-prod / 리전: 기존과 같은 곳(가급적)
-→ 생성 후 Connection string 복사 (?sslmode=require 포함된 것)
+railway.app → EduSyncPro 프로젝트 → New → Database → Add PostgreSQL
+→ 생성된 Postgres 서비스 → Variables → DATABASE_PUBLIC_URL 복사
+   (내 PC에서 pg_restore로 밀어 넣어야 하므로 내부 주소가 아닌 PUBLIC 주소가 필요하다.
+    홈페이지의 autorack.proxy.rlwy.net:27021 이 이 형태다.)
 ```
 
-**선택지 2 — Railway Postgres.** 앱과 같은 곳에 두어 관리 지점을 하나로 줄인다.
-Railway 프로젝트 → New → Database → PostgreSQL → 생성되면 Variables의
-`DATABASE_URL`을 쓴다. (Neon의 자동 절전이 없어 첫 요청이 느려지는 일도 없다.)
+> 앱 서비스의 `DATABASE_URL`에는 나중에 **내부 주소**(`postgres.railway.internal`)를 넣는 게
+> 더 빠르고 안전하다. 공개 주소는 내 PC에서 복원할 때만 쓴다.
+
+<details>
+<summary>대안 — Neon을 직접 계정 만들어 쓰고 싶다면</summary>
+
+console.neon.tech에서 직접 가입 후 New Project → Connection string 사용.
+무료 티어가 있지만 관리할 곳이 하나 더 늘어난다. 굳이 권하지 않는다.
+</details>
 
 복원:
 

@@ -243,13 +243,21 @@ export const TOOL_DEFINITIONS: Array<{
     type: "function",
     function: {
       name: "get_unpaid_students",
-      description: "해당 월에 미납인 학생 목록. 반명, 강사명, 예상 금액 포함.",
+      description: "해당 월에 미납인 학생 목록. 반명, 강사명, 예상 금액 포함. teacher_name이나 class_name을 주면 해당 강사/반만 필터링한다.",
       parameters: {
         type: "object",
         properties: {
           month: {
             type: "string",
             description: "조회 월 (YYYY-MM, 기본 이번 달)",
+          },
+          teacher_name: {
+            type: "string",
+            description: "강사 이름으로 필터 (부분 일치)",
+          },
+          class_name: {
+            type: "string",
+            description: "반 이름으로 필터 (부분 일치)",
           },
         },
         required: [],
@@ -910,13 +918,47 @@ async function getClassRoster(
 // ── Payment tools ──
 
 async function getUnpaidStudents(
-  args: { month?: string },
+  args: { month?: string; teacher_name?: string; class_name?: string },
   ctx: ToolContext
 ) {
   const month = normalizeMonth(args.month);
 
+  const allStudents = await storage.getStudentsByTenant(ctx.tenantId);
+  const studentMap = new Map(allStudents.map((s) => [s.id, s]));
+  const allClasses = await storage.getClassesByTenant(ctx.tenantId);
+  const classMap = new Map(allClasses.map((c) => [c.id, c]));
+  const allTeachers = await storage.getTeachersByTenant(ctx.tenantId);
+  const teacherMap = new Map(allTeachers.map((t) => [t.id, t]));
+
   const allEnrollments = await storage.getEnrollmentsByTenant(ctx.tenantId);
-  const activeEnrollments = allEnrollments.filter((e) => e.isActive);
+  let activeEnrollments = allEnrollments.filter((e) => e.isActive);
+
+  // 강사 필터: 해당 강사의 반에 속한 수강만
+  if (args.teacher_name) {
+    const tName = args.teacher_name.trim();
+    const teacherIds = new Set(
+      allTeachers
+        .filter((t) => fuzzyMatch(t.name, tName))
+        .map((t) => t.id)
+    );
+    const teacherClassIds = new Set(
+      allClasses
+        .filter((c) => teacherIds.has(c.teacherId))
+        .map((c) => c.id)
+    );
+    activeEnrollments = activeEnrollments.filter((e) => teacherClassIds.has(e.classId));
+  }
+
+  // 반 이름 필터
+  if (args.class_name) {
+    const cName = args.class_name.trim();
+    const matchingClassIds = new Set(
+      allClasses
+        .filter((c) => fuzzyMatch(c.name, cName))
+        .map((c) => c.id)
+    );
+    activeEnrollments = activeEnrollments.filter((e) => matchingClassIds.has(e.classId));
+  }
 
   // 조회 월 이후에 시작한 수강은 제외 (7월 미납 조회 시 8월 등록 학생 배제)
   const relevantEnrollments = activeEnrollments.filter((e) => {
@@ -927,7 +969,6 @@ async function getUnpaidStudents(
 
   const allPayments = await storage.getPaymentsByTenant(ctx.tenantId);
   // 해당 월 납부 기록: 순액이 양수인 enrollment만 납부 완료로 처리
-  // (같은 달에 수납 + 환불이 있으면 합산해서 판단)
   const netByEnrollment = new Map<string, number>();
   for (const p of allPayments) {
     if (p.paymentMonth !== month) continue;
@@ -944,13 +985,6 @@ async function getUnpaidStudents(
   const unpaidEnrollments = relevantEnrollments.filter(
     (e) => !paidEnrollmentIds.has(e.id)
   );
-
-  const allStudents = await storage.getStudentsByTenant(ctx.tenantId);
-  const studentMap = new Map(allStudents.map((s) => [s.id, s]));
-  const allClasses = await storage.getClassesByTenant(ctx.tenantId);
-  const classMap = new Map(allClasses.map((c) => [c.id, c]));
-  const allTeachers = await storage.getTeachersByTenant(ctx.tenantId);
-  const teacherMap = new Map(allTeachers.map((t) => [t.id, t]));
 
   const unpaid = unpaidEnrollments
     .map((e) => {
@@ -971,8 +1005,16 @@ async function getUnpaidStudents(
     })
     .filter(Boolean);
 
+  // 필터가 적용됐는데 미납자가 0명이면 명확히 알려준다
+  const filterLabel = args.teacher_name
+    ? `${args.teacher_name} 선생님`
+    : args.class_name
+      ? `${args.class_name} 반`
+      : "전체";
+
   return {
     month,
+    filter: filterLabel,
     unpaidCount: unpaid.length,
     students: unpaid,
   };

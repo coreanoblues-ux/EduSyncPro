@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useLocation } from "wouter";
 import DashboardCard from "./DashboardCard";
+import PhoneSearch from "./PhoneSearch";
 import QuickInput from "./QuickInput";
 import {
   AlertTriangle,
@@ -24,7 +25,7 @@ import { computeOverdues } from "@/lib/overdues";
 import { taskSeverity } from "@/lib/tasks";
 import { apiRequest } from "@/lib/queryClient";
 import { daysBetween, todayKst } from "@shared/day";
-import type { Class, Consultation, Enrollment, Payment, Student, Task } from "@shared/schema";
+import type { Class, Consultation, Enrollment, Payment, Student, Task, Teacher } from "@shared/schema";
 
 interface DashboardProps {
   userRole: 'owner' | 'teacher' | 'superadmin';
@@ -74,6 +75,11 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
 
   const { data: consultations = [] } = useQuery<Consultation[]>({
     queryKey: ['/api/consultations'],
+    enabled: isApproved,
+  });
+
+  const { data: teachers = [] } = useQuery<Teacher[]>({
+    queryKey: ['/api/teachers'],
     enabled: isApproved,
   });
 
@@ -193,6 +199,18 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
 
       {/* 자연어 AI 입력 — 승인된 학원에서만 노출 */}
       {userRole !== 'superadmin' && <QuickInput />}
+
+      {/* 수신 전화 빠른 조회 — 번호 뒷자리만 치면 학생 정보가 즉시 뜬다 */}
+      {userRole !== 'superadmin' && (
+        <PhoneSearch
+          students={students}
+          enrollments={enrollments}
+          classes={classes}
+          payments={payments}
+          consultations={consultations}
+          teachers={teachers}
+        />
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {summaryCards.map((card) => (

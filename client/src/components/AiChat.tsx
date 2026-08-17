@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Loader2, RefreshCw, Send, Sparkles } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
+import type { Class, Teacher } from "@shared/schema";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -25,36 +25,48 @@ interface ChatContext {
 }
 
 const ALL_EXAMPLES = [
-  // 조회
   "김민준 요즘 어때?",
   "이번달 미납자 알려줘",
   "중1 학생 목록 보여줘",
   "화목 5시반 학생 누구야?",
   "정쌤 반 학생 보여줘",
-  // 수납·매출
   "김민준 35만원 계좌이체 수납",
   "이번달 매출 지난달이랑 비교",
-  // 등록·수정
   "새 학생 등록: 이서연 중2 숭의중",
   "김민준 전화번호 010-1234-5678로 변경",
-  // 상담·할일
   "상담 기록: 이서연 엄마 수학 보충 문의",
   "할 일: 내일까지 학부모 안내문 발송",
 ];
 
-function pickRandomExamples(count: number): string[] {
-  const shuffled = [...ALL_EXAMPLES].sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, count);
+function pickRandomExample(): string {
+  return ALL_EXAMPLES[Math.floor(Math.random() * ALL_EXAMPLES.length)];
+}
+
+/** AI 응답에서 번호 매겨진 선택지를 추출한다. "1. 수학A반 ..." → ["1", "2", ...] */
+function extractNumberedOptions(text: string): string[] {
+  const lines = text.split("\n");
+  const options: string[] = [];
+  for (const line of lines) {
+    const m = line.match(/^(\d+)\.\s+(.+)/);
+    if (m) options.push(m[1]);
+  }
+  // 선택지가 2개 이상일 때만 (단일 항목 나열은 선택지가 아님)
+  return options.length >= 2 ? options : [];
 }
 
 export default function AiChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [context, setContext] = useState<ChatContext>({});
+  const [enrollTarget, setEnrollTarget] = useState<{ studentId: string; studentName: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const qc = useQueryClient();
 
-  const examples = useMemo(() => pickRandomExamples(4), []);
+  const example = useMemo(() => pickRandomExample(), []);
+
+  // 반 목록과 강사 목록 (수강 등록 선택 UI용)
+  const { data: classes = [] } = useQuery<Class[]>({ queryKey: ["/api/classes"] });
+  const { data: teachers = [] } = useQuery<Teacher[]>({ queryKey: ["/api/teachers"] });
 
   const chatMutation = useMutation({
     mutationFn: async (allMessages: { role: string; content: string }[]) => {
@@ -74,6 +86,12 @@ export default function AiChat() {
       if (data.context) {
         setContext((prev) => ({ ...prev, ...data.context }));
       }
+
+      // 학생이 새로 등록됐고 수강 등록이 아직 안 됐으면 → 반 선택 UI 표시
+      if (data.toolsUsed?.includes("create_student") && data.context?.studentId) {
+        setEnrollTarget({ studentId: data.context.studentId, studentName: data.context.studentName ?? "" });
+      }
+
       // 데이터 변경이 있었을 수 있으므로 관련 쿼리를 무효화
       const writes = data.toolsUsed?.filter((t) =>
         t.startsWith("create_") || t.startsWith("update_") || t.startsWith("record_") || t.startsWith("enroll_")
@@ -105,6 +123,7 @@ export default function AiChat() {
       const updated = [...messages, userMsg];
       setMessages(updated);
       setInput("");
+      setEnrollTarget(null);
 
       chatMutation.mutate(
         updated.map((m) => ({ role: m.role, content: m.content })),
@@ -113,10 +132,25 @@ export default function AiChat() {
     [input, messages, chatMutation],
   );
 
+  const handleEnrollClass = useCallback(
+    (cls: Class) => {
+      if (!enrollTarget) return;
+      const teacher = teachers.find((t) => t.id === cls.teacherId);
+      const teacherLabel = teacher ? `${teacher.name} 선생님` : "";
+      handleSend(
+        `${enrollTarget.studentName} ${cls.name}에 수강 등록해줘` +
+        (teacherLabel ? ` (${teacherLabel})` : "")
+      );
+      setEnrollTarget(null);
+    },
+    [enrollTarget, teachers, handleSend],
+  );
+
   const handleReset = useCallback(() => {
     setMessages([]);
     setContext({});
     setInput("");
+    setEnrollTarget(null);
   }, []);
 
   const handleKeyDown = useCallback(
@@ -129,7 +163,7 @@ export default function AiChat() {
     [handleSend],
   );
 
-  // Auto-scroll to bottom on new messages or loading state change
+  // Auto-scroll to bottom on new messages
   useEffect(() => {
     const el = scrollRef.current;
     if (el) {
@@ -144,6 +178,18 @@ export default function AiChat() {
     if (context.teacherName) items.push({ label: "선생님", value: context.teacherName });
     return items;
   }, [context]);
+
+  // AI가 번호 선택지를 보여줬을 때 마지막 메시지에서 추출
+  const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
+  const quickReplies = lastMsg?.role === "assistant" && !chatMutation.isPending
+    ? extractNumberedOptions(lastMsg.content)
+    : [];
+
+  // 활성 반 목록 (수강 등록 선택 UI)
+  const activeClasses = useMemo(
+    () => classes.filter((c) => c.isActive),
+    [classes],
+  );
 
   return (
     <Card className="flex flex-col">
@@ -177,68 +223,118 @@ export default function AiChat() {
           </div>
         )}
 
-        {/* Messages area — 대화가 길어지면 스크롤바 생성 */}
-        <ScrollArea className="min-h-0" style={{ maxHeight: messages.length > 0 ? 600 : undefined }}>
-          <div ref={scrollRef} className="flex flex-col gap-3 p-1">
-            {messages.length === 0 && !chatMutation.isPending && (
-              <div className="flex flex-col items-center justify-center py-6 gap-3">
-                <p className="text-sm text-muted-foreground">
-                  아래 예시를 클릭하거나 직접 입력해 보세요
-                </p>
-                <div className="grid grid-cols-2 gap-2 w-full max-w-md">
-                  {examples.map((ex) => (
-                    <Button
-                      key={ex}
-                      variant="outline"
-                      size="sm"
-                      className="text-xs h-auto py-2 whitespace-normal text-left"
-                      onClick={() => handleSend(ex)}
-                    >
-                      {ex}
-                    </Button>
-                  ))}
-                </div>
-              </div>
-            )}
+        {/* Messages area — native 스크롤바로 긴 내용 탐색 가능 */}
+        <div
+          ref={scrollRef}
+          className="flex flex-col gap-3 p-1 overflow-y-auto"
+          style={{ maxHeight: messages.length > 0 ? 600 : undefined }}
+        >
+          {messages.length === 0 && !chatMutation.isPending && (
+            <div className="flex flex-col items-center justify-center py-4 gap-2">
+              <p className="text-sm text-muted-foreground">
+                아래 예시를 클릭하거나 직접 입력해 보세요
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs h-auto py-2 whitespace-normal"
+                onClick={() => handleSend(example)}
+              >
+                {example}
+              </Button>
+            </div>
+          )}
 
-            {messages.map((msg, i) => (
+          {messages.map((msg, i) => (
+            <div
+              key={i}
+              className={cn(
+                "flex flex-col max-w-[85%]",
+                msg.role === "user" ? "self-end items-end" : "self-start items-start",
+              )}
+            >
               <div
-                key={i}
                 className={cn(
-                  "flex flex-col max-w-[85%]",
-                  msg.role === "user" ? "self-end items-end" : "self-start items-start",
+                  "rounded-lg px-3 py-2 text-sm whitespace-pre-wrap",
+                  msg.role === "user"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted text-foreground",
                 )}
               >
-                <div
-                  className={cn(
-                    "rounded-lg px-3 py-2 text-sm whitespace-pre-wrap",
-                    msg.role === "user"
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted text-foreground",
-                  )}
-                >
-                  {msg.content}
+                {msg.content}
+              </div>
+              {msg.toolsUsed && msg.toolsUsed.length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {msg.toolsUsed.map((tool) => (
+                    <Badge key={tool} variant="outline" className="text-[10px] px-1.5 py-0">
+                      {tool}
+                    </Badge>
+                  ))}
                 </div>
-                {msg.toolsUsed && msg.toolsUsed.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {msg.toolsUsed.map((tool) => (
-                      <Badge key={tool} variant="outline" className="text-[10px] px-1.5 py-0">
-                        {tool}
-                      </Badge>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
+              )}
+            </div>
+          ))}
 
-            {chatMutation.isPending && (
-              <div className="self-start flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                처리 중...
-              </div>
-            )}
+          {chatMutation.isPending && (
+            <div className="self-start flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              처리 중...
+            </div>
+          )}
+        </div>
+
+        {/* AI가 번호 선택지를 보여줬을 때 빠른 선택 버튼 */}
+        {quickReplies.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {quickReplies.map((n) => (
+              <Button
+                key={n}
+                variant="outline"
+                size="sm"
+                className="text-xs px-3 py-1 h-auto"
+                onClick={() => handleSend(n)}
+              >
+                {n}번
+              </Button>
+            ))}
           </div>
-        </ScrollArea>
+        )}
+
+        {/* 학생 등록 후 반 선택 UI */}
+        {enrollTarget && activeClasses.length > 0 && (
+          <div className="rounded-lg border p-3 space-y-2">
+            <p className="text-sm font-medium">
+              {enrollTarget.studentName} — 수강할 반을 선택하세요
+            </p>
+            <div className="grid gap-1.5 max-h-48 overflow-y-auto">
+              {activeClasses.map((cls) => {
+                const teacher = teachers.find((t) => t.id === cls.teacherId);
+                return (
+                  <Button
+                    key={cls.id}
+                    variant="outline"
+                    size="sm"
+                    className="justify-start text-xs h-auto py-1.5 px-2"
+                    onClick={() => handleEnrollClass(cls)}
+                  >
+                    <span className="font-medium">{cls.name}</span>
+                    <span className="text-muted-foreground ml-2">
+                      {teacher?.name ?? "-"} · {cls.schedule} · {cls.defaultTuition?.toLocaleString()}원
+                    </span>
+                  </Button>
+                );
+              })}
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-xs"
+              onClick={() => setEnrollTarget(null)}
+            >
+              나중에 등록
+            </Button>
+          </div>
+        )}
 
         {/* Input bar */}
         <div className="flex gap-2">

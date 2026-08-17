@@ -90,6 +90,7 @@ app.use((req, res, next) => {
   console.log(`🔑 JWT_SECRET set: ${!!process.env.JWT_SECRET}`);
   console.log(`🔑 ADMIN_PASSWORD set: ${!!process.env.ADMIN_PASSWORD}`);
   console.log(`🗄️  DATABASE_URL set: ${!!process.env.DATABASE_URL}`);
+  console.log(`🤖 OPENAI_API_KEY set: ${!!process.env.OPENAI_API_KEY}`);
 
   // ALWAYS serve the app on the port specified in the environment variable PORT
   // Other ports are firewalled. Default to 3000 if not specified.

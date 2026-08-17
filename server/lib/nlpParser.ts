@@ -702,7 +702,7 @@ export interface RawAiResult {
 export class NlpConfigError extends Error {}
 
 async function callOpenAi(text: string, signal?: AbortSignal): Promise<RawAiResult> {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = (process.env.OPENAI_API_KEY ?? "").trim();
   if (!apiKey) {
     throw new NlpConfigError(
       "OPENAI_API_KEY가 설정되지 않았습니다. Railway 대시보드 → Variables에서 등록해주세요."

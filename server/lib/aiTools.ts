@@ -490,18 +490,49 @@ export const TOOL_DEFINITIONS: Array<{
     type: "function",
     function: {
       name: "create_student",
-      description: "새 학생을 등록한다. 이름은 필수, 나머지는 선택.",
+      description:
+        "학원에 새 학생을 등록한다. student_name에는 반드시 **새로 등록되는 학생 본인**의 이름만 넣는다. " +
+        "'선생님', '쌤', '강사', '담당'이 뒤따르는 이름은 강사이므로 student_name이 아니라 teacher_name에 넣는다. " +
+        "'엄마', '아빠', '어머니', '아버지', '보호자' 표현이 붙은 이름은 학생 본인이 아니라 그 학생의 보호자를 뜻한다. " +
+        "이 도구는 반 배정을 하지 않는다 — 반에 넣으려면 등록 후 별도로 enroll_student를 호출한다.",
       parameters: {
         type: "object",
         properties: {
-          name: { type: "string", description: "학생 이름" },
-          school: { type: "string", description: "학교 이름 (예: 숭의중, 불로초)" },
-          grade: { type: "string", description: "학년 (예: 중1, 고2, 초6)" },
+          student_name: {
+            type: "string",
+            description:
+              "새로 등록되는 학생 본인의 이름. 절대 강사·보호자 이름을 여기 넣지 않는다. " +
+              "예: '신규 정동현 삼육중1 고은채 선생님 화목A반' → student_name='정동현' (고은채는 teacher_name).",
+          },
+          school: {
+            type: "string",
+            description: "학생의 학교 이름. 예: '삼육중', '숭의중', '불로초'.",
+          },
+          grade: {
+            type: "string",
+            description: "학년. 반드시 '중1', '고2', '초6' 같은 형식으로 넣는다.",
+          },
           gender: { type: "string", enum: ["남", "여"], description: "성별" },
-          parent_phone: { type: "string", description: "보호자 연락처" },
+          parent_phone: {
+            type: "string",
+            description: "보호자(엄마/아빠) 연락처. 학생 본인의 번호가 아님.",
+          },
+          teacher_name: {
+            type: "string",
+            description:
+              "선택. 학생을 배정할 담당 강사 이름. '고은채 선생님', '정쌤' 같은 표현에서 추출. " +
+              "이 값이 있으면 등록 직후 자동으로 해당 강사의 반 후보를 검색해 준다. " +
+              "**중요: 이 값을 student_name과 혼동하지 말 것.**",
+          },
+          class_hint: {
+            type: "string",
+            description:
+              "선택. 사용자가 언급한 반 이름 힌트. 예: '화목A반', '월수금', '중1반'. " +
+              "등록 후 이 힌트로 실제 반을 검색해 수강 등록을 이어갈 수 있다.",
+          },
           notes: { type: "string", description: "특이사항 메모" },
         },
-        required: ["name"],
+        required: ["student_name"],
       },
     },
   },
@@ -1482,16 +1513,71 @@ async function getTeacherInfo(
 // ── Student CRUD tools ──
 
 async function createStudentTool(
-  args: { name: string; school?: string; grade?: string; gender?: string; parent_phone?: string; notes?: string },
+  args: {
+    student_name?: string;
+    // 이전 스키마 호환용
+    name?: string;
+    school?: string;
+    grade?: string;
+    gender?: string;
+    parent_phone?: string;
+    teacher_name?: string;
+    class_hint?: string;
+    notes?: string;
+  },
   ctx: ToolContext
 ) {
+  // student_name을 우선, 없으면 name (하위 호환)
+  const rawStudentName = (args.student_name ?? args.name ?? "").trim();
+
+  // ─── Semantic sanity check ──────────────────────────────────────
+  // 1. 이름이 비어있거나 너무 짧으면 거부
+  if (!rawStudentName || rawStudentName.length < 2) {
+    return {
+      error:
+        "student_name이 비어 있거나 너무 짧습니다. 원문을 다시 해석해 새 학생 본인의 이름을 정확히 넣어 주세요.",
+    };
+  }
+
+  // 2. 학생 이름이 실제 등록된 강사와 일치하는지 검사 → parsing 오류일 가능성 매우 높음
+  const allTeachers = await storage.getTeachersByTenant(ctx.tenantId);
+  const activeTeachers = allTeachers.filter((t) => t.isActive);
+  const teacherByName = activeTeachers.find(
+    (t) => t.name.replace(/\s+/g, "") === rawStudentName.replace(/\s+/g, ""),
+  );
+
+  if (teacherByName) {
+    // 원장님이 명시적으로 강사와 동명인 신규 학생을 등록할 수는 있지만,
+    // 대다수는 파싱 오류이므로 여기서 잘못 등록되는 걸 막고 재해석을 유도한다.
+    return {
+      error: `"${rawStudentName}"은(는) 현재 등록된 강사(${teacherByName.name} 선생님) 이름과 동일합니다. 원문에서 실제 신규 학생의 이름을 다시 추출해 주세요. 강사 이름은 student_name이 아니라 teacher_name 필드에 넣어야 합니다.`,
+      hint: "예: '신규 정동현 삼육중1 고은채 선생님 화목A반'이라면 student_name='정동현', teacher_name='고은채'.",
+      existingTeacher: {
+        id: teacherByName.id,
+        name: teacherByName.name,
+      },
+    };
+  }
+
+  // 3. teacher_name이 지정됐는데 실제 DB에 없으면 확인 정보 반환 (실행은 계속)
+  let resolvedTeacher: { id: string; name: string } | null = null;
+  if (args.teacher_name) {
+    const tName = args.teacher_name.trim();
+    const found = activeTeachers.find(
+      (t) => t.name.replace(/\s+/g, "") === tName.replace(/\s+/g, "") || fuzzyMatch(t.name, tName),
+    );
+    if (found) {
+      resolvedTeacher = { id: found.id, name: found.name };
+    }
+  }
+
   // 동명이인 확인
-  const existing = await storage.findStudentsByName(ctx.tenantId, args.name);
+  const existing = await storage.findStudentsByName(ctx.tenantId, rawStudentName);
   const activeExisting = existing.filter((s) => s.isActive);
 
   const student = await storage.createStudent({
     tenantId: ctx.tenantId,
-    name: args.name,
+    name: rawStudentName,
     school: args.school ?? null,
     grade: args.grade ? (canonicalGrade(args.grade) ?? args.grade) : null,
     gender: args.gender ?? null,
@@ -1499,6 +1585,30 @@ async function createStudentTool(
     notes: args.notes ?? null,
     isActive: true,
   });
+
+  // 반 후보 검색 (teacher_name / class_hint 있으면)
+  let classCandidates:
+    | Array<{ id: string; name: string; teacherName: string; schedule: string; defaultTuition: string }>
+    | undefined;
+  if (resolvedTeacher || args.class_hint) {
+    const allClasses = await storage.getClassesByTenant(ctx.tenantId);
+    const teacherMap = new Map(activeTeachers.map((t) => [t.id, t]));
+    let candidates = allClasses.filter((c) => c.isActive);
+    if (resolvedTeacher) {
+      candidates = candidates.filter((c) => c.teacherId === resolvedTeacher!.id);
+    }
+    if (args.class_hint) {
+      const hint = args.class_hint.trim();
+      candidates = candidates.filter((c) => fuzzyMatch(c.name, hint));
+    }
+    classCandidates = candidates.slice(0, 5).map((c) => ({
+      id: c.id,
+      name: c.name,
+      teacherName: teacherMap.get(c.teacherId)?.name ?? "-",
+      schedule: c.schedule,
+      defaultTuition: formatKRW(c.defaultTuition),
+    }));
+  }
 
   return {
     success: true,
@@ -1510,9 +1620,22 @@ async function createStudentTool(
       gender: student.gender,
       parentPhone: student.parentPhone,
     },
-    ...(activeExisting.length > 0 ? {
-      warning: `동명이인 ${activeExisting.length}명이 이미 있습니다: ${activeExisting.map((s) => `${s.name}(${s.grade ?? "학년 미정"}, ${s.school ?? "학교 미정"})`).join(", ")}`,
-    } : {}),
+    ...(resolvedTeacher ? { resolvedTeacher } : {}),
+    ...(classCandidates && classCandidates.length > 0
+      ? {
+          classCandidates,
+          nextStep: `enroll_student를 호출하여 반 배정을 완료하세요. 후보가 1개면 바로, 여러 개면 사용자에게 선택을 요청.`,
+        }
+      : args.teacher_name && !resolvedTeacher
+        ? {
+            teacherNotFound: `강사 "${args.teacher_name}"을(를) DB에서 찾지 못했습니다. get_teacher_info로 확인하거나 사용자에게 재확인하세요.`,
+          }
+        : {}),
+    ...(activeExisting.length > 0
+      ? {
+          warning: `동명이인 ${activeExisting.length}명이 이미 있습니다: ${activeExisting.map((s) => `${s.name}(${s.grade ?? "학년 미정"}, ${s.school ?? "학교 미정"})`).join(", ")}`,
+        }
+      : {}),
   };
 }
 

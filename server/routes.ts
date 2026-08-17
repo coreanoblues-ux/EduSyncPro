@@ -29,6 +29,7 @@ import {
 import { parseInput, NlpConfigError } from "./lib/nlpParser";
 import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
+import { parseDays, parseSchedule } from "@shared/timetable";
 import { z } from "zod";
 import { db } from "./db";
 import { users } from "@shared/schema";
@@ -1398,6 +1399,100 @@ export async function registerRoutes(app: Express): Promise<Server> {
           );
         }
 
+        // ── 학생 목록 조회 ──
+        // 조건(요일·강사·시간·학년)에 맞는 학생들을 찾아 붙여준다.
+        // 클라이언트가 표로 보여줄 수 있도록 납작한 배열로 내보낸다.
+        let studentListResults: Array<{
+          studentName: string;
+          parentPhone: string | null;
+          teacherName: string;
+          className: string;
+          schedule: string | null;
+          grade: string | null;
+        }> = [];
+
+        if (result.draft.category === 'student-list') {
+          const draft = result.draft;
+          const allStudents = await storage.getStudentsByTenant(tenantId);
+          const allEnrollments = await storage.getEnrollmentsByTenant(tenantId);
+          const allClasses = await storage.getClassesByTenant(tenantId);
+          const allTeachers = await storage.getTeachersByTenant(tenantId);
+
+          const studentById = new Map(allStudents.map((s) => [s.id, s]));
+          const classById = new Map(allClasses.map((c) => [c.id, c]));
+          const teacherById = new Map(allTeachers.map((t) => [t.id, t]));
+
+          // 활성 수강만
+          const activeEnrollments = allEnrollments.filter((e) => e.isActive);
+
+          for (const enrollment of activeEnrollments) {
+            const student = studentById.get(enrollment.studentId);
+            if (!student || student.isActive === false) continue; // 휴원생 제외
+
+            const cls = classById.get(enrollment.classId);
+            if (!cls || !cls.isActive) continue;
+
+            const teacher = cls.teacherId ? teacherById.get(cls.teacherId) : undefined;
+
+            // 요일 필터
+            if (draft.days && draft.days.length > 0) {
+              const classSlots = parseSchedule(cls.schedule || '', cls.name || '');
+              const classDaysFromSlots = Array.from(new Set(classSlots.map((s) => s.day)));
+              // 슬롯에서 요일을 못 읽었으면 schedule 문자열에서 직접 읽는다
+              const classDays = classDaysFromSlots.length > 0
+                ? classDaysFromSlots
+                : parseDays(cls.schedule || '');
+              // 지정 요일 중 하나라도 겹쳐야 통과
+              const match = draft.days.some((d) => classDays.indexOf(d) >= 0);
+              if (!match) continue;
+            }
+
+            // 강사 필터
+            if (draft.teacherName) {
+              const wanted = draft.teacherName.replace(/\s+/g, '');
+              const actual = teacher?.name?.replace(/\s+/g, '') ?? '';
+              if (actual !== wanted) continue;
+            }
+
+            // 시간 필터 (시 단위)
+            if (draft.timeHour !== null) {
+              const slots = parseSchedule(cls.schedule || '', cls.name || '');
+              if (slots.length === 0) continue; // 시간을 못 읽으면 제외
+              const matchesTime = slots.some((s) => {
+                const slotHour = Math.floor(s.startMin / 60);
+                return slotHour === draft.timeHour;
+              });
+              if (!matchesTime) continue;
+            }
+
+            // 학년 필터
+            if (draft.gradeFilter) {
+              const g = student.grade || '';
+              if (draft.gradeFilter.length === 1) {
+                // 급 전체: "중" → "중1", "중2", "중3" 모두 매칭
+                if (!g.startsWith(draft.gradeFilter)) continue;
+              } else {
+                // 구체적 학년: "중2" → 정확히 "중2"만
+                if (g !== draft.gradeFilter) continue;
+              }
+            }
+
+            studentListResults.push({
+              studentName: student.name,
+              parentPhone: student.parentPhone || null,
+              teacherName: teacher?.name || '담당 미정',
+              className: cls.name || '알 수 없는 반',
+              schedule: cls.schedule || null,
+              grade: student.grade || null,
+            });
+          }
+
+          // 이름 순 정렬
+          studentListResults.sort((a, b) => a.studentName.localeCompare(b.studentName, 'ko'));
+
+          // 같은 학생이 여러 반에 있으면 각각 한 줄씩 나온다 (의도된 동작)
+        }
+
         // 반 이름은 학원마다 다르므로 AI에게 맡기지 않고 실제 목록과 대조한다.
         let classMatch: { id: string; name: string } | null = null;
         let classCandidates: Array<{ id: string; name: string }> = [];
@@ -1486,6 +1581,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           classCandidates,
           teacherMatch,
           teacherMatches,
+          studentListResults,
         });
       } catch (error: any) {
         if (error instanceof NlpConfigError) {

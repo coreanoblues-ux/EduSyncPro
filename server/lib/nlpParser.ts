@@ -40,6 +40,10 @@ import {
   extractClassNameFromText,
   looksLikeInquiry,
   looksLikeTask,
+  looksLikeStudentList,
+  looksLikeDownload,
+  extractGradeFilter,
+  extractTimeFilter,
   extractTaskSlot,
   extractTaskTitle,
   extractTaskDue,
@@ -49,6 +53,7 @@ import {
 } from "./nlpNormalize";
 import { ymdKst } from "@shared/day";
 import { canonicalGrade, expandSchoolName } from "@shared/gradePromotion";
+import { parseDays, type Day } from "@shared/timetable";
 
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
@@ -219,6 +224,28 @@ export interface TaskDraft {
   slot: TaskSlotHint;
 }
 
+/**
+ * 특정 요일·시간·강사·학년 조건에 맞는 학생 목록 조회.
+ *
+ * "월 수 학생 목록 보여줘", "화 목 정우석 선생님 6시 수업 학생 목록" 같은 문장을
+ * 받으면 조건에 맞는 학생들을 표로 보여준다. "다운로드"가 있으면 CSV로 내보낸다.
+ *
+ * 실제 학생 데이터는 서버(routes.ts)에서 채운다. 여기는 필터 조건만 넘긴다.
+ */
+export interface StudentListDraft {
+  category: "student-list";
+  /** 필터 요일. null이면 전체 요일 */
+  days: Day[] | null;
+  /** 필터 강사 이름. null이면 전체 강사 */
+  teacherName: string | null;
+  /** 필터 시간(시 단위, 24시간). null이면 전체 시간 */
+  timeHour: number | null;
+  /** 학년 필터. "중2", "중", "고1" 등. null이면 전체 학년 */
+  gradeFilter: string | null;
+  /** 다운로드(CSV) 의도가 있는가 */
+  download: boolean;
+}
+
 export interface UnclearDraft {
   category: "unclear";
   reason: string;
@@ -234,6 +261,7 @@ export type Draft =
   | PersonDraft
   | LookupDraft
   | TaskDraft
+  | StudentListDraft
   | UnclearDraft;
 
 export type ParseResult = {
@@ -870,6 +898,46 @@ export function arbitrate(
     );
   }
 
+  /*
+    ── -1.5. 학생 목록 조회 ──
+    "월 수 학생 목록 보여줘", "전체 중학생 목록 다운로드" 같은 문장.
+    person·lookup 보다 먼저 봐야 한다. "정우석 선생님 목록"이 lookup으로 빠지면
+    학생 한 명 조회 폼이 뜨기 때문이다.
+  */
+  if (looksLikeStudentList(sourceText)) {
+    // "목록"의 "목"이 목요일, "수업"의 "수"가 수요일로 잡히지 않도록 걷어낸다
+    const dayClean = sourceText.replace(/목록|명단|리스트|수업|학생들/g, " ");
+    const days = parseDays(dayClean);
+    const teacherName = extractTeacherName(sourceText) ??
+      ai.teacher_name?.trim().replace(/\s*(선생님|쌤|T)$/, "") ?? null;
+    const timeHour = extractTimeFilter(sourceText);
+    const gradeFilter = extractGradeFilter(sourceText);
+    const download = looksLikeDownload(sourceText);
+
+    const filters: string[] = [];
+    if (days.length > 0) filters.push(days.join("·"));
+    if (teacherName) filters.push(`${teacherName} 선생님`);
+    if (timeHour !== null) filters.push(`${timeHour}시`);
+    if (gradeFilter) filters.push(gradeFilter);
+    if (filters.length > 0) {
+      corrections.push(`조건: ${filters.join(", ")}`);
+    }
+    if (download) corrections.push("CSV 다운로드 준비됨");
+
+    return {
+      sourceText,
+      corrections,
+      draft: {
+        category: "student-list",
+        days: days.length > 0 ? days : null,
+        teacherName: teacherName || null,
+        timeHour,
+        gradeFilter,
+        download,
+      },
+    };
+  }
+
   // ── -1. 학생·교사 정보 수정 ──
   // 가장 먼저 본다. "학생 수정 …"은 명시적 명령이므로 뒤쪽 분기가 이것을
   // 등록이나 상담으로 가로채면 안 된다. 전화번호가 섞여 있어도 마찬가지다.
@@ -1180,6 +1248,39 @@ export async function parseInput(
   const lookupName = extractLookupName(trimmed);
   if (lookupName) {
     return { sourceText: trimmed, corrections: [], draft: { category: "lookup", name: lookupName } };
+  }
+
+  // 학생 목록 조회도 AI에게 물을 것이 없다. 필터 조건은 코드가 원문에서 직접 뽑는다.
+  if (looksLikeStudentList(trimmed)) {
+    const now = opts.now ?? new Date();
+    const corrections: string[] = [];
+    const dayClean = trimmed.replace(/목록|명단|리스트|수업|학생들/g, " ");
+    const days = parseDays(dayClean);
+    const teacherName = extractTeacherName(trimmed);
+    const timeHour = extractTimeFilter(trimmed);
+    const gradeFilter = extractGradeFilter(trimmed);
+    const download = looksLikeDownload(trimmed);
+
+    const filters: string[] = [];
+    if (days.length > 0) filters.push(days.join("·"));
+    if (teacherName) filters.push(`${teacherName} 선생님`);
+    if (timeHour !== null) filters.push(`${timeHour}시`);
+    if (gradeFilter) filters.push(gradeFilter);
+    if (filters.length > 0) corrections.push(`조건: ${filters.join(", ")}`);
+    if (download) corrections.push("CSV 다운로드 준비됨");
+
+    return {
+      sourceText: trimmed,
+      corrections,
+      draft: {
+        category: "student-list",
+        days: days.length > 0 ? days : null,
+        teacherName: teacherName || null,
+        timeHour,
+        gradeFilter,
+        download,
+      },
+    };
   }
 
   const ai = await callOpenAi(trimmed, opts.signal);

@@ -10,7 +10,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Sparkles, AlertTriangle, Loader2, Check, X } from "lucide-react";
+import { Sparkles, AlertTriangle, Loader2, Check, X, Download, Users } from "lucide-react";
 import { labelClassesByTeacher } from "@shared/classLabel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -167,10 +167,30 @@ interface TaskDraft {
   slot: "퇴근전" | "출근전";
 }
 
+/** 학생 목록 조회. 요일·강사·시간·학년 조건으로 필터한 결과를 표로 보여준다. */
+interface StudentListDraft {
+  category: "student-list";
+  days: string[] | null;
+  teacherName: string | null;
+  timeHour: number | null;
+  gradeFilter: string | null;
+  download: boolean;
+}
+
 interface UnclearDraft {
   category: "unclear";
   reason: string;
   question: string;
+}
+
+/** 학생 목록 조회 결과 한 줄 */
+interface StudentListRow {
+  studentName: string;
+  parentPhone: string | null;
+  teacherName: string;
+  className: string;
+  schedule: string | null;
+  grade: string | null;
 }
 
 interface ParseResponse {
@@ -182,6 +202,7 @@ interface ParseResponse {
     | PersonDraft
     | LookupDraft
     | TaskDraft
+    | StudentListDraft
     | UnclearDraft;
   sourceText: string;
   corrections: string[];
@@ -194,6 +215,8 @@ interface ParseResponse {
   teacherMatch?: { id: string; name: string } | null;
   /** 교사 수정 초안에서 고칠 수 있는 교사 후보들 */
   teacherMatches?: Array<{ id: string; name: string; subject: string; phone: string | null }>;
+  /** 학생 목록 조회 결과 */
+  studentListResults?: StudentListRow[];
 }
 
 const EXAMPLES = [
@@ -208,6 +231,9 @@ const EXAMPLES = [
   "8월 19일 출근전 재현이 엄마한테 전화하기",
   "학생 수정 김민준 학교 숭의중으로",
   "교사 추가 박지훈 수학 010-1111-2222",
+  "월 수 학생 목록 보여줘",
+  "화 목 고은채 선생님 6시 수업 학생 목록",
+  "전체 중학생 목록 다운로드",
 ];
 
 function today(): string {
@@ -847,6 +873,118 @@ export default function QuickInput() {
                     학생 정보 열기
                   </Button>
                 </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* 학생 목록 조회 결과 */}
+        {draft?.category === "student-list" && (
+          <div className="space-y-3 rounded-md border p-3" data-testid="quick-input-student-list">
+            <div className="flex items-center justify-between gap-2">
+              <Badge variant="secondary">
+                <Users className="mr-1 inline h-3 w-3" />
+                학생 목록 조회
+              </Badge>
+              <Button variant="ghost" size="sm" onClick={reset}>
+                다시 입력
+              </Button>
+            </div>
+
+            {(() => {
+              const rows = parsed?.studentListResults ?? [];
+              if (rows.length === 0) {
+                return (
+                  <p className="text-sm text-muted-foreground">
+                    조건에 맞는 학생이 없습니다.
+                  </p>
+                );
+              }
+
+              const downloadCsv = () => {
+                // BOM for Excel compatibility
+                const BOM = "\uFEFF";
+                const header = "성명,연락처,담당강사,반,수업시간,학년";
+                const lines = rows.map((r) =>
+                  [
+                    r.studentName,
+                    r.parentPhone || "",
+                    r.teacherName,
+                    r.className,
+                    r.schedule || "",
+                    r.grade || "",
+                  ]
+                    .map((v) => `"${v.replace(/"/g, '""')}"`)
+                    .join(",")
+                );
+                const csv = BOM + header + "\n" + lines.join("\n");
+                const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                const filterParts: string[] = [];
+                if (draft.days) filterParts.push(draft.days.join(""));
+                if (draft.teacherName) filterParts.push(draft.teacherName);
+                if (draft.gradeFilter) filterParts.push(draft.gradeFilter);
+                a.download = `학생목록_${filterParts.join("_") || "전체"}_${new Date().toISOString().slice(0, 10)}.csv`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+              };
+
+              return (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    {rows.length}명 검색됨
+                  </p>
+
+                  {/* 표 */}
+                  <div className="max-h-[400px] overflow-auto rounded-md border">
+                    <table className="w-full text-sm">
+                      <thead className="sticky top-0 bg-muted">
+                        <tr>
+                          <th className="px-3 py-2 text-left font-medium">#</th>
+                          <th className="px-3 py-2 text-left font-medium">성명</th>
+                          <th className="px-3 py-2 text-left font-medium">연락처</th>
+                          <th className="px-3 py-2 text-left font-medium">담당강사</th>
+                          <th className="px-3 py-2 text-left font-medium">수업시간</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((r, i) => (
+                          <tr key={i} className="border-t hover:bg-accent/50">
+                            <td className="px-3 py-1.5 text-muted-foreground">{i + 1}</td>
+                            <td className="px-3 py-1.5 font-medium">
+                              {r.studentName}
+                              {r.grade && (
+                                <span className="ml-1 text-xs text-muted-foreground">
+                                  ({r.grade})
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3 py-1.5 text-muted-foreground">
+                              {r.parentPhone || ""}
+                            </td>
+                            <td className="px-3 py-1.5">{r.teacherName}</td>
+                            <td className="px-3 py-1.5 text-muted-foreground text-xs">
+                              {r.className}
+                              {r.schedule && (
+                                <span className="ml-1">({r.schedule})</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* CSV 다운로드 버튼 */}
+                  <Button variant="outline" size="sm" onClick={downloadCsv}>
+                    <Download className="mr-1 h-4 w-4" />
+                    CSV 다운로드 ({rows.length}명)
+                  </Button>
+                </>
               );
             })()}
           </div>
@@ -1651,7 +1789,7 @@ export default function QuickInput() {
           </div>
         )}
 
-        {draft && draft.category !== "unclear" && draft.category !== "lookup" && (
+        {draft && draft.category !== "unclear" && draft.category !== "lookup" && draft.category !== "student-list" && (
           <div className="flex gap-2">
             <Button
               onClick={() => saveMutation.mutate()}

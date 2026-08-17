@@ -766,6 +766,78 @@ export function looksLikeTask(text: string): boolean {
   return TASK_MARKER.test(text);
 }
 
+// ─── 학생 목록 조회 ──────────────────────────────────────────────────────
+
+/**
+ * "월 수 학생 목록 보여줘", "전체 중학생 목록 다운로드" 같은 학생 목록 조회인지 판정한다.
+ *
+ * "목록"·"명단"·"리스트" 같은 키워드와 "보여줘"·"조회"·"다운로드" 같은 동작어가
+ * 함께 있어야 한다. "김민준 목록"처럼 한 사람을 가리키는 말은 조회(lookup)다.
+ */
+export function looksLikeStudentList(text: string): boolean {
+  const t = text.replace(/\s+/g, "");
+  // "목록", "명단", "리스트" 중 하나가 있어야 한다
+  const hasListWord = /(목록|명단|리스트|학생들)/.test(t);
+  // "다운로드"는 "전체 중2 다운로드"처럼 목록 키워드 없이도 학생 목록 다운로드 의도일 수 있다
+  const hasDownload = /(다운로드|다운|내보내기|추출)/.test(t);
+  // 학년 필터 + 다운로드 → 학생 목록 의도 ("전체 중2 다운로드", "전체 중학생 다운로드")
+  const hasGradeHint = /(중학생|고등학생|초등학생|중등|고등|초등|중\d|고\d|초\d|전체)/.test(t);
+
+  if (!hasListWord && !(hasDownload && hasGradeHint)) return false;
+
+  // 동작어가 있어야 한다 — 없으면 다른 문장의 일부일 수 있다
+  if (/(보여|조회|검색|확인|알려|다운로드|다운|내보내기|추출|뽑아)/.test(t)) return true;
+  // "목록" 자체로 끝나는 문장도 조회 의도로 본다 ("월 수 학생 목록")
+  if (/목록$|명단$|리스트$/.test(t)) return true;
+  return false;
+}
+
+/**
+ * 학생 목록에서 다운로드(CSV/엑셀) 의도가 있는지 판정한다.
+ */
+export function looksLikeDownload(text: string): boolean {
+  return /(다운로드|다운|내보내기|추출|엑셀|excel|csv|xlsx)/.test(text.replace(/\s+/g, "").toLowerCase());
+}
+
+/**
+ * "중학생", "중2", "고1", "초등학생" 같은 학년 필터를 뽑는다.
+ * 단일 학년("중2"), 급 전체("중학생"), 또는 null을 반환한다.
+ */
+export function extractGradeFilter(text: string): string | null {
+  // "중2", "고1", "초3" 같은 구체적인 학년
+  const specific = text.match(/(중|고|초)\s*(\d)/);
+  if (specific) return `${specific[1]}${specific[2]}`;
+
+  // "중학생", "고등학생", "초등학생" 같은 급 전체
+  if (/중학생|중학교|중등/.test(text)) return "중";
+  if (/고등학생|고등학교|고등/.test(text)) return "고";
+  if (/초등학생|초등학교|초등/.test(text)) return "초";
+
+  return null;
+}
+
+/**
+ * "6시", "19:00", "7시 수업" 같은 시간 필터를 뽑는다.
+ * 학생 목록 필터 용도이므로 정확한 분(minute) 대신 시(hour) 단위로만 뽑는다.
+ */
+export function extractTimeFilter(text: string): number | null {
+  // "19:00", "6:30" — 콜론 형태
+  const colon = text.match(/(\d{1,2}):\d{2}\s*(?:수업|반|시간|부터)?/);
+  if (colon) {
+    const h = Number(colon[1]);
+    if (h >= 0 && h <= 23) return h;
+  }
+  // "6시", "7시 수업"
+  const korean = text.match(/(\d{1,2})\s*시\s*(?:수업|반|부터|대)?/);
+  if (korean) {
+    let h = Number(korean[1]);
+    // 학원이라 1~8시는 오후로 본다 (timetable.ts와 같은 규칙)
+    if (h >= 1 && h <= 8) h += 12;
+    return h;
+  }
+  return null;
+}
+
 /** "담당 과목은 수학", "수학 담당" 처럼 적힌 과목을 뽑는다. */
 export function extractSubject(text: string): string | null {
   const m = text.match(

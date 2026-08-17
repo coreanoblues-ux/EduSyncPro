@@ -7,7 +7,7 @@
  *    AI가 학생 이름을 지어내거나 금액을 잘못 읽어도 저장 전에 사람이 막을 수 있어야 한다.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Sparkles, AlertTriangle, Loader2, Check, X, Download, Users } from "lucide-react";
@@ -279,6 +279,12 @@ export default function QuickInput() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const [, setLocation] = useLocation();
+
+  // 예시 문장을 3개만 골라 보여준다. 마운트 시 한 번만 뽑으므로 깜빡이지 않는다.
+  const shownExamples = useMemo(
+    () => EXAMPLES.slice().sort(() => Math.random() - 0.5).slice(0, 3),
+    []
+  );
 
   const { data: classes = [] } = useQuery<ClassOption[]>({ queryKey: ["/api/classes"] });
   const { data: teachers = [] } = useQuery<TeacherOption[]>({ queryKey: ["/api/teachers"] });
@@ -658,7 +664,7 @@ export default function QuickInput() {
 
         {!parsed && (
           <div className="flex flex-wrap gap-2">
-            {EXAMPLES.map((ex) => (
+            {shownExamples.map((ex) => (
               <button
                 key={ex}
                 type="button"

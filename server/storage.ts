@@ -21,6 +21,8 @@ import {
   type InsertConsultation,
   type Task,
   type InsertTask,
+  type AiAuditLog,
+  type InsertAiAuditLog,
   users,
   tenants,
   students,
@@ -31,7 +33,8 @@ import {
   lessonLogs,
   waiters,
   consultations,
-  tasks
+  tasks,
+  aiAuditLogs,
 } from "@shared/schema";
 import { eq, and, sql, desc, isNull, gt, ilike } from "drizzle-orm";
 import { randomUUID } from "crypto";
@@ -127,6 +130,9 @@ export interface IStorage {
     tenantId: string,
     studentId: string
   ): Promise<Array<Enrollment & { className: string; classSubject: string; defaultTuition: number }>>;
+
+  // AI audit log
+  createAiAuditLog(log: InsertAiAuditLog): Promise<AiAuditLog>;
 }
 
 export class DbStorage implements IStorage {
@@ -710,6 +716,12 @@ export class DbStorage implements IStorage {
       classSubject: r.classSubject,
       defaultTuition: r.defaultTuition,
     }));
+  }
+
+  // AI audit log
+  async createAiAuditLog(log: InsertAiAuditLog): Promise<AiAuditLog> {
+    const result = await db.insert(aiAuditLogs).values(log).returning();
+    return result[0];
   }
 }
 

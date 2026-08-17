@@ -1594,6 +1594,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   );
 
+  // ─── AI 상담실장 채팅 ──────────────────────────────────────────────────
+  app.post('/api/ai/chat',
+    authGuard,
+    tenantGuard,
+    roleGuard('owner', 'teacher'),
+    validateBody(z.object({
+      messages: z.array(z.object({
+        role: z.enum(['user', 'assistant']),
+        content: z.string(),
+      })).min(1).max(50),
+    })),
+    async (req: Request, res: Response) => {
+      try {
+        const { runAgent } = await import('./lib/aiAgent');
+        const result = await runAgent(
+          req.body.messages,
+          { tenantId: req.user!.tenantId!, userId: req.user!.id },
+        );
+        res.json(result);
+      } catch (error: any) {
+        if (error.name === 'NlpConfigError') {
+          return res.status(503).json({ error: error.message });
+        }
+        console.error('AI chat error:', error?.message || error);
+        res.status(502).json({ error: 'AI 상담실장에 문제가 발생했습니다. 잠시 후 다시 시도해주세요.' });
+      }
+    }
+  );
+
   // Superadmin Routes
   // Get all tenants (for approval management)
   app.get('/api/superadmin/tenants',

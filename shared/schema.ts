@@ -197,6 +197,20 @@ export const tasks = pgTable("tasks", {
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
+// AI Audit Log table (AI 자연어 처리 감사 로그)
+export const aiAuditLogs = pgTable("ai_audit_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  userId: varchar("user_id").references(() => users.id).notNull(),
+  sourceText: text("source_text").notNull(),
+  intent: text("intent"),
+  toolsCalled: text("tools_called"),
+  entityType: text("entity_type"),
+  entityId: text("entity_id"),
+  result: text("result"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
 // Relations
 export const tenantsRelations = relations(tenants, ({ many }) => ({
   users: many(users),
@@ -336,6 +350,17 @@ export const tasksRelations = relations(tasks, ({ one }) => ({
   }),
 }));
 
+export const aiAuditLogsRelations = relations(aiAuditLogs, ({ one }) => ({
+  tenant: one(tenants, {
+    fields: [aiAuditLogs.tenantId],
+    references: [tenants.id],
+  }),
+  user: one(users, {
+    fields: [aiAuditLogs.userId],
+    references: [users.id],
+  }),
+}));
+
 // Insert schemas
 export const insertTenantSchema = createInsertSchema(tenants).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true, updatedAt: true });
@@ -373,6 +398,7 @@ export const insertTaskSchema = createInsertSchema(tasks).omit({
   createdAt: true,
   updatedAt: true,
 });
+export const insertAiAuditLogSchema = createInsertSchema(aiAuditLogs).omit({ id: true, createdAt: true });
 
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "날짜는 YYYY-MM-DD 형식이어야 합니다.");
 
@@ -421,6 +447,7 @@ export type Waiter = typeof waiters.$inferSelect;
 export type Consultation = typeof consultations.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type TaskSlot = Task["slot"];
+export type AiAuditLog = typeof aiAuditLogs.$inferSelect;
 
 export type InsertTenant = z.infer<typeof insertTenantSchema>;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -433,3 +460,4 @@ export type InsertLessonLog = z.infer<typeof insertLessonLogSchema>;
 export type InsertWaiter = z.infer<typeof insertWaiterSchema>;
 export type InsertConsultation = z.infer<typeof insertConsultationSchema>;
 export type InsertTask = z.infer<typeof insertTaskSchema>;
+export type InsertAiAuditLog = z.infer<typeof insertAiAuditLogSchema>;

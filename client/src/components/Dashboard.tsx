@@ -6,7 +6,6 @@ import { Badge } from "@/components/ui/badge";
 import { useLocation } from "wouter";
 import DashboardCard from "./DashboardCard";
 import PhoneSearch from "./PhoneSearch";
-import QuickInput from "./QuickInput";
 import AiChat from "./AiChat";
 import {
   AlertTriangle,
@@ -198,10 +197,7 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
     <div className="space-y-6 p-6" data-testid="dashboard">
       <TenantBanner tenant={tenant} userRole={userRole} />
 
-      {/* 자연어 AI 입력 — 승인된 학원에서만 노출 */}
-      {userRole !== 'superadmin' && <QuickInput />}
-
-      {/* AI 상담실장 — 대화형 학원 업무 처리 */}
+      {/* AI 상담실장 — 통합 대화형 학원 업무 처리 */}
       {userRole !== 'superadmin' && <AiChat />}
 
       {/* 수신 전화 빠른 조회 — 번호 뒷자리만 치면 학생 정보가 즉시 뜬다 */}

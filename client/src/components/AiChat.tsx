@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -25,14 +25,21 @@ interface ChatContext {
 }
 
 const ALL_EXAMPLES = [
+  // 조회
   "김민준 요즘 어때?",
   "이번달 미납자 알려줘",
-  "어제 안온 애들 보여줘",
+  "중1 학생 목록 보여줘",
   "화목 5시반 학생 누구야?",
   "정쌤 반 학생 보여줘",
-  "이번달 매출 지난달이랑 비교",
+  // 수납·매출
   "김민준 35만원 계좌이체 수납",
-  "중1 학생 목록 보여줘",
+  "이번달 매출 지난달이랑 비교",
+  // 등록·수정
+  "새 학생 등록: 이서연 중2 숭의중",
+  "김민준 전화번호 010-1234-5678로 변경",
+  // 상담·할일
+  "상담 기록: 이서연 엄마 수학 보충 문의",
+  "할 일: 내일까지 학부모 안내문 발송",
 ];
 
 function pickRandomExamples(count: number): string[] {
@@ -45,6 +52,7 @@ export default function AiChat() {
   const [input, setInput] = useState("");
   const [context, setContext] = useState<ChatContext>({});
   const scrollRef = useRef<HTMLDivElement>(null);
+  const qc = useQueryClient();
 
   const examples = useMemo(() => pickRandomExamples(4), []);
 
@@ -66,11 +74,23 @@ export default function AiChat() {
       if (data.context) {
         setContext((prev) => ({ ...prev, ...data.context }));
       }
+      // 데이터 변경이 있었을 수 있으므로 관련 쿼리를 무효화
+      const writes = data.toolsUsed?.filter((t) =>
+        t.startsWith("create_") || t.startsWith("update_") || t.startsWith("record_") || t.startsWith("enroll_")
+      );
+      if (writes && writes.length > 0) {
+        qc.invalidateQueries({ queryKey: ["/api/students"] });
+        qc.invalidateQueries({ queryKey: ["/api/enrollments"] });
+        qc.invalidateQueries({ queryKey: ["/api/payments"] });
+        qc.invalidateQueries({ queryKey: ["/api/consultations"] });
+        qc.invalidateQueries({ queryKey: ["/api/tasks"] });
+        qc.invalidateQueries({ queryKey: ["/api/classes"] });
+      }
     },
     onError: (error: Error) => {
       const errorMsg: ChatMessage = {
         role: "assistant",
-        content: `오류가 발생했습니다: ${error.message}`,
+        content: `오류가 발생했습니다: ${error.message.replace(/^\d+:\s*/, "")}`,
       };
       setMessages((prev) => [...prev, errorMsg]);
     },
@@ -126,7 +146,7 @@ export default function AiChat() {
   }, [context]);
 
   return (
-    <Card className="flex flex-col h-full">
+    <Card className="flex flex-col">
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
         <div>
           <CardTitle className="flex items-center gap-2 text-lg">
@@ -134,7 +154,7 @@ export default function AiChat() {
             AI 상담실장
           </CardTitle>
           <p className="text-sm text-muted-foreground mt-1">
-            학생 조회, 수납, 출결, 상담 등을 말하듯 입력하세요
+            학생 조회, 수납, 등록, 출결, 상담, 할 일 등 무엇이든 말하듯 입력하세요
           </p>
         </div>
         {messages.length > 0 && (
@@ -145,7 +165,7 @@ export default function AiChat() {
         )}
       </CardHeader>
 
-      <CardContent className="flex flex-col flex-1 gap-3 pt-0">
+      <CardContent className="flex flex-col gap-3 pt-0">
         {/* Context badges */}
         {contextBadges.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
@@ -158,14 +178,14 @@ export default function AiChat() {
         )}
 
         {/* Messages area */}
-        <ScrollArea className="flex-1 min-h-0" style={{ maxHeight: 400 }}>
+        <ScrollArea className="min-h-0" style={{ maxHeight: messages.length > 0 ? 480 : undefined }}>
           <div ref={scrollRef} className="flex flex-col gap-3 p-1">
             {messages.length === 0 && !chatMutation.isPending && (
-              <div className="flex flex-col items-center justify-center py-8 gap-4">
+              <div className="flex flex-col items-center justify-center py-6 gap-3">
                 <p className="text-sm text-muted-foreground">
                   아래 예시를 클릭하거나 직접 입력해 보세요
                 </p>
-                <div className="grid grid-cols-2 gap-2 w-full max-w-sm">
+                <div className="grid grid-cols-2 gap-2 w-full max-w-md">
                   {examples.map((ex) => (
                     <Button
                       key={ex}
@@ -185,7 +205,7 @@ export default function AiChat() {
               <div
                 key={i}
                 className={cn(
-                  "flex flex-col max-w-[80%]",
+                  "flex flex-col max-w-[85%]",
                   msg.role === "user" ? "self-end items-end" : "self-start items-start",
                 )}
               >
@@ -214,7 +234,7 @@ export default function AiChat() {
             {chatMutation.isPending && (
               <div className="self-start flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                분석 중...
+                처리 중...
               </div>
             )}
           </div>
@@ -226,7 +246,7 @@ export default function AiChat() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="무엇이든 물어보세요..."
+            placeholder="예) 김민준 35만원 카드 결제 / 중1 학생 목록 / 새 학생 등록..."
             disabled={chatMutation.isPending}
             className="flex-1"
           />

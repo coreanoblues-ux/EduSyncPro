@@ -432,6 +432,86 @@ export const TOOL_DEFINITIONS: Array<{
       },
     },
   },
+  // ── 학생 등록·수정 도구 ──
+  {
+    type: "function",
+    function: {
+      name: "create_student",
+      description: "새 학생을 등록한다. 이름은 필수, 나머지는 선택.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "학생 이름" },
+          school: { type: "string", description: "학교 이름 (예: 숭의중, 불로초)" },
+          grade: { type: "string", description: "학년 (예: 중1, 고2, 초6)" },
+          gender: { type: "string", enum: ["남", "여"], description: "성별" },
+          parent_phone: { type: "string", description: "보호자 연락처" },
+          notes: { type: "string", description: "특이사항 메모" },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_student",
+      description: "기존 학생의 정보를 수정한다. student_id 필수. 바꿀 필드만 넘긴다.",
+      parameters: {
+        type: "object",
+        properties: {
+          student_id: { type: "string", description: "학생 ID" },
+          name: { type: "string", description: "학생 이름" },
+          school: { type: "string", description: "학교" },
+          grade: { type: "string", description: "학년" },
+          gender: { type: "string", enum: ["남", "여"], description: "성별" },
+          parent_phone: { type: "string", description: "보호자 연락처" },
+          notes: { type: "string", description: "특이사항 메모" },
+          is_active: { type: "boolean", description: "활성 여부 (false=휴원)" },
+        },
+        required: ["student_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "enroll_student",
+      description: "학생을 반에 수강 등록한다.",
+      parameters: {
+        type: "object",
+        properties: {
+          student_id: { type: "string", description: "학생 ID" },
+          class_id: { type: "string", description: "반 ID" },
+          tuition: { type: "number", description: "수강료 (생략 시 반 기본 수강료 적용)" },
+          due_day: { type: "integer", description: "납부일 (1~31, 기본 1)" },
+          start_date: { type: "string", description: "시작일 (YYYY-MM-DD, 기본 오늘)" },
+        },
+        required: ["student_id", "class_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_students_by_schedule",
+      description: "요일·시간·강사·학년 조건에 맞는 학생 목록 조회. 조건을 생략하면 전체.",
+      parameters: {
+        type: "object",
+        properties: {
+          days: {
+            type: "array",
+            items: { type: "string", enum: ["월", "화", "수", "목", "금", "토", "일"] },
+            description: "필터 요일 목록",
+          },
+          teacher_name: { type: "string", description: "강사 이름 (부분 일치)" },
+          hour: { type: "integer", description: "수업 시작 시간 (24시간제, 예: 17)" },
+          grade: { type: "string", description: "학년 필터 (예: 중1, 고, 초6)" },
+        },
+        required: [],
+      },
+    },
+  },
 ];
 
 // ─── Tool implementations ───────────────────────────────────────────────
@@ -1267,6 +1347,201 @@ async function getTeacherInfo(
 
 // ─── Dispatcher ─────────────────────────────────────────────────────────
 
+// ── Student CRUD tools ──
+
+async function createStudentTool(
+  args: { name: string; school?: string; grade?: string; gender?: string; parent_phone?: string; notes?: string },
+  ctx: ToolContext
+) {
+  // 동명이인 확인
+  const existing = await storage.findStudentsByName(ctx.tenantId, args.name);
+  const activeExisting = existing.filter((s) => s.isActive);
+
+  const student = await storage.createStudent({
+    tenantId: ctx.tenantId,
+    name: args.name,
+    school: args.school ?? null,
+    grade: args.grade ? (canonicalGrade(args.grade) ?? args.grade) : null,
+    gender: args.gender ?? null,
+    parentPhone: args.parent_phone ?? null,
+    notes: args.notes ?? null,
+    isActive: true,
+  });
+
+  return {
+    success: true,
+    student: {
+      id: student.id,
+      name: student.name,
+      school: student.school,
+      grade: student.grade,
+      gender: student.gender,
+      parentPhone: student.parentPhone,
+    },
+    ...(activeExisting.length > 0 ? {
+      warning: `동명이인 ${activeExisting.length}명이 이미 있습니다: ${activeExisting.map((s) => `${s.name}(${s.grade ?? "학년 미정"}, ${s.school ?? "학교 미정"})`).join(", ")}`,
+    } : {}),
+  };
+}
+
+async function updateStudentTool(
+  args: { student_id: string; name?: string; school?: string; grade?: string; gender?: string; parent_phone?: string; notes?: string; is_active?: boolean },
+  ctx: ToolContext
+) {
+  // 해당 학생이 이 학원 소속인지 확인
+  const allStudents = await storage.getStudentsByTenant(ctx.tenantId);
+  const target = allStudents.find((s) => s.id === args.student_id);
+  if (!target) return { error: "해당 학생을 찾을 수 없습니다." };
+
+  const updateData: Record<string, any> = {};
+  if (args.name !== undefined) updateData.name = args.name;
+  if (args.school !== undefined) updateData.school = args.school;
+  if (args.grade !== undefined) updateData.grade = canonicalGrade(args.grade) ?? args.grade;
+  if (args.gender !== undefined) updateData.gender = args.gender;
+  if (args.parent_phone !== undefined) updateData.parentPhone = args.parent_phone;
+  if (args.notes !== undefined) updateData.notes = args.notes;
+  if (args.is_active !== undefined) updateData.isActive = args.is_active;
+
+  const updated = await storage.updateStudent(args.student_id, updateData);
+  return {
+    success: true,
+    student: {
+      id: updated.id,
+      name: updated.name,
+      school: updated.school,
+      grade: updated.grade,
+      parentPhone: updated.parentPhone,
+      isActive: updated.isActive,
+    },
+  };
+}
+
+async function enrollStudentTool(
+  args: { student_id: string; class_id: string; tuition?: number; due_day?: number; start_date?: string },
+  ctx: ToolContext
+) {
+  // 학생과 반이 이 학원 소속인지 확인
+  const allStudents = await storage.getStudentsByTenant(ctx.tenantId);
+  const student = allStudents.find((s) => s.id === args.student_id);
+  if (!student) return { error: "해당 학생을 찾을 수 없습니다." };
+
+  const allClasses = await storage.getClassesByTenant(ctx.tenantId);
+  const cls = allClasses.find((c) => c.id === args.class_id);
+  if (!cls) return { error: "해당 반을 찾을 수 없습니다." };
+
+  // 이미 등록되어 있는지 확인
+  const existingEnrollments = await storage.getEnrollmentsByTenant(ctx.tenantId);
+  const alreadyEnrolled = existingEnrollments.find(
+    (e) => e.studentId === args.student_id && e.classId === args.class_id && e.isActive
+  );
+  if (alreadyEnrolled) {
+    return { error: `${student.name}은(는) 이미 ${cls.name}에 등록되어 있습니다.` };
+  }
+
+  const enrollment = await storage.createEnrollment({
+    tenantId: ctx.tenantId,
+    studentId: args.student_id,
+    classId: args.class_id,
+    tuition: args.tuition ?? cls.defaultTuition,
+    dueDay: args.due_day ?? 1,
+    startDate: new Date(args.start_date ?? todayStr()),
+    isActive: true,
+  });
+
+  return {
+    success: true,
+    enrollment: {
+      id: enrollment.id,
+      studentName: student.name,
+      className: cls.name,
+      tuition: enrollment.tuition,
+      startDate: enrollment.startDate,
+    },
+  };
+}
+
+async function listStudentsBySchedule(
+  args: { days?: string[]; teacher_name?: string; hour?: number; grade?: string },
+  ctx: ToolContext
+) {
+  const allStudents = await storage.getStudentsByTenant(ctx.tenantId);
+  const allEnrollments = await storage.getEnrollmentsByTenant(ctx.tenantId);
+  const allClasses = await storage.getClassesByTenant(ctx.tenantId);
+  const allTeachers = await storage.getTeachersByTenant(ctx.tenantId);
+
+  const studentById = new Map(allStudents.map((s) => [s.id, s]));
+  const classById = new Map(allClasses.map((c) => [c.id, c]));
+  const teacherById = new Map(allTeachers.map((t) => [t.id, t]));
+
+  const results: Array<{
+    studentName: string;
+    grade: string | null;
+    parentPhone: string | null;
+    teacherName: string;
+    className: string;
+    schedule: string | null;
+  }> = [];
+
+  for (const enrollment of allEnrollments) {
+    if (!enrollment.isActive) continue;
+    const student = studentById.get(enrollment.studentId);
+    if (!student || !student.isActive) continue;
+    const cls = classById.get(enrollment.classId);
+    if (!cls || !cls.isActive) continue;
+    const teacher = cls.teacherId ? teacherById.get(cls.teacherId) : undefined;
+
+    // 요일 필터
+    if (args.days && args.days.length > 0) {
+      const classSlots = parseSchedule(cls.schedule || "", cls.name || "");
+      const classDays = classSlots.length > 0
+        ? Array.from(new Set(classSlots.map((s) => s.day)))
+        : parseDays(cls.schedule || "");
+      if (!args.days.some((d) => classDays.includes(d as any))) continue;
+    }
+
+    // 강사 필터
+    if (args.teacher_name) {
+      const wanted = args.teacher_name.replace(/\s+/g, "");
+      const actual = teacher?.name?.replace(/\s+/g, "") ?? "";
+      if (!actual.includes(wanted)) continue;
+    }
+
+    // 시간 필터
+    if (args.hour !== undefined) {
+      const slots = parseSchedule(cls.schedule || "", cls.name || "");
+      if (slots.length === 0) continue;
+      if (!slots.some((s) => Math.floor(s.startMin / 60) === args.hour)) continue;
+    }
+
+    // 학년 필터
+    if (args.grade) {
+      const g = student.grade || "";
+      if (args.grade.length === 1) {
+        if (!g.startsWith(args.grade)) continue;
+      } else {
+        const canonical = canonicalGrade(args.grade) ?? args.grade;
+        if (g !== canonical && !g.startsWith(args.grade)) continue;
+      }
+    }
+
+    results.push({
+      studentName: student.name,
+      grade: student.grade,
+      parentPhone: student.parentPhone,
+      teacherName: teacher?.name || "담당 미정",
+      className: cls.name,
+      schedule: cls.schedule,
+    });
+  }
+
+  results.sort((a, b) => a.studentName.localeCompare(b.studentName, "ko"));
+
+  return {
+    count: results.length,
+    students: results,
+  };
+}
+
 const TOOL_MAP: Record<
   string,
   (args: any, ctx: ToolContext) => Promise<any>
@@ -1287,6 +1562,10 @@ const TOOL_MAP: Record<
   get_dashboard_summary: getDashboardSummary,
   get_attendance_issues: getAttendanceIssues,
   get_teacher_info: getTeacherInfo,
+  create_student: createStudentTool,
+  update_student: updateStudentTool,
+  enroll_student: enrollStudentTool,
+  list_students_by_schedule: listStudentsBySchedule,
 };
 
 export async function executeTool(

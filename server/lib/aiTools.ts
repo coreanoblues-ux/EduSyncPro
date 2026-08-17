@@ -66,6 +66,21 @@ function fuzzyMatch(haystack: string, needle: string): boolean {
   return h.includes(n) || n.includes(h);
 }
 
+/**
+ * "중학생", "고등학생", "초등학생", "중", "고", "초", "고등부", "중등부" 등을
+ * 학교급 접두사("중", "고", "초")로 정규화한다. 정확한 학년("중1")이면 null.
+ */
+function normalizeGradeLevel(input: string): string | null {
+  const s = input.trim();
+  // 이미 정확한 학년이면 접두사 매칭이 아닌 정확 매칭 사용
+  if (/^[초중고]\d$/.test(s)) return null;
+
+  if (/^중|중학|중학생|중등|중등부/.test(s)) return "중";
+  if (/^고|고등|고등학생|고등부/.test(s)) return "고";
+  if (/^초|초등|초등학생|초등부/.test(s)) return "초";
+  return null;
+}
+
 // ─── Tool definitions for OpenAI ────────────────────────────────────────
 
 /** OpenAI function calling schema. name → parameters (JSON Schema). */
@@ -93,7 +108,7 @@ export const TOOL_DEFINITIONS: Array<{
           },
           grade: {
             type: "string",
-            description: "학년 필터 (예: '중1', '고2')",
+            description: "학년 필터. 정확한 학년(중1, 고2) 또는 학교급 전체(중, 고, 초, 중학생, 고등학생, 초등학생)",
           },
           school: {
             type: "string",
@@ -150,10 +165,14 @@ export const TOOL_DEFINITIONS: Array<{
     function: {
       name: "search_classes",
       description:
-        "반을 요일, 시간, 강사명, 과목으로 검색한다. 현재 수강 인원과 정원도 반환한다.",
+        "반을 이름, 요일, 시간, 강사명, 과목으로 검색한다. 현재 수강 인원과 정원도 반환한다. 조건 없이 호출하면 전체 반 목록을 반환한다.",
       parameters: {
         type: "object",
         properties: {
+          query: {
+            type: "string",
+            description: "반 이름 키워드 (부분 일치, 예: '고등', '수학A')",
+          },
           days: {
             type: "array",
             items: { type: "string" },
@@ -541,13 +560,23 @@ async function searchStudents(
     });
   }
 
-  // 학년 필터
+  // 학년 필터 — 접두사("중", "고", "초") 또는 정확한 학년("중1") 모두 지원
   if (args.grade) {
-    const canonical = canonicalGrade(args.grade) ?? args.grade;
-    results = results.filter((s) => {
-      const sg = canonicalGrade(s.grade, s.school) ?? s.grade;
-      return sg === canonical;
-    });
+    const gradePrefix = normalizeGradeLevel(args.grade);
+    if (gradePrefix) {
+      // 학교급 전체: "중학생", "고등학생", "고", "중" 등
+      results = results.filter((s) => {
+        const sg = (canonicalGrade(s.grade, s.school) ?? s.grade ?? "");
+        return sg.startsWith(gradePrefix);
+      });
+    } else {
+      // 정확한 학년: "중1", "고2" 등
+      const canonical = canonicalGrade(args.grade) ?? args.grade;
+      results = results.filter((s) => {
+        const sg = canonicalGrade(s.grade, s.school) ?? s.grade;
+        return sg === canonical;
+      });
+    }
   }
 
   // 학교 필터
@@ -558,7 +587,7 @@ async function searchStudents(
     );
   }
 
-  const mapped = results.slice(0, 20).map((s) => ({
+  const mapped = results.slice(0, 50).map((s) => ({
     id: s.id,
     name: s.name,
     grade: s.grade ?? "-",
@@ -724,7 +753,7 @@ async function getStudentPaymentStatus(
 // ── Class tools ──
 
 async function searchClasses(
-  args: { days?: string[]; teacher_name?: string; time_hour?: number; subject?: string },
+  args: { query?: string; days?: string[]; teacher_name?: string; time_hour?: number; subject?: string },
   ctx: ToolContext
 ) {
   const allClasses = await storage.getClassesByTenant(ctx.tenantId);
@@ -742,6 +771,12 @@ async function searchClasses(
   }
 
   let results = activeClasses;
+
+  // 반 이름 키워드 필터
+  if (args.query) {
+    const q = args.query.trim();
+    results = results.filter((c) => fuzzyMatch(c.name, q) || fuzzyMatch(c.subject, q));
+  }
 
   // 요일 필터
   if (args.days && args.days.length > 0) {
@@ -780,7 +815,7 @@ async function searchClasses(
   }
 
   return {
-    classes: results.slice(0, 20).map((c) => {
+    classes: results.slice(0, 50).map((c) => {
       const teacher = teacherMap.get(c.teacherId);
       const slots = parseSchedule(c.schedule, c.name);
       const scheduleText = slots

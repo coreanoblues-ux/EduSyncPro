@@ -175,7 +175,7 @@ export async function runAgent(
       messages: oaiMessages,
       tools: TOOL_DEFINITIONS,
       temperature: 0.3,
-      max_tokens: 1500,
+      max_tokens: 3000,
     };
 
     const res = await fetch(OPENAI_URL, {

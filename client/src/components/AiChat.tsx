@@ -177,8 +177,8 @@ export default function AiChat() {
           </div>
         )}
 
-        {/* Messages area */}
-        <ScrollArea className="min-h-0" style={{ maxHeight: messages.length > 0 ? 480 : undefined }}>
+        {/* Messages area — 대화가 길어지면 스크롤바 생성 */}
+        <ScrollArea className="min-h-0" style={{ maxHeight: messages.length > 0 ? 600 : undefined }}>
           <div ref={scrollRef} className="flex flex-col gap-3 p-1">
             {messages.length === 0 && !chatMutation.isPending && (
               <div className="flex flex-col items-center justify-center py-6 gap-3">

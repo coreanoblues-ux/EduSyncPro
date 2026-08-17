@@ -30,6 +30,32 @@ function todayStr(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+/**
+ * AI가 넘기는 월 표현을 "YYYY-MM" 형태로 정규화한다.
+ * "7", "07", "7월", "2026-7" → "2026-07"
+ */
+function normalizeMonth(input: string | undefined): string {
+  if (!input) return currentMonth();
+  const s = input.trim().replace(/월$/, "");
+
+  // 이미 정상 포맷 "2026-07"
+  if (/^\d{4}-\d{2}$/.test(s)) return s;
+
+  // "2026-7" → "2026-07"
+  const dashMatch = s.match(/^(\d{4})-(\d{1,2})$/);
+  if (dashMatch) return `${dashMatch[1]}-${dashMatch[2].padStart(2, "0")}`;
+
+  // "7" 또는 "07" → 올해 기준
+  const numMatch = s.match(/^(\d{1,2})$/);
+  if (numMatch) {
+    const m = numMatch[1].padStart(2, "0");
+    const year = new Date().getFullYear();
+    return `${year}-${m}`;
+  }
+
+  return currentMonth();
+}
+
 /** 금액을 "150,000원" 형태로 포맷한다. */
 function formatKRW(amount: number): string {
   const abs = Math.abs(amount);
@@ -887,18 +913,35 @@ async function getUnpaidStudents(
   args: { month?: string },
   ctx: ToolContext
 ) {
-  const month = args.month ?? currentMonth();
+  const month = normalizeMonth(args.month);
 
   const allEnrollments = await storage.getEnrollmentsByTenant(ctx.tenantId);
   const activeEnrollments = allEnrollments.filter((e) => e.isActive);
 
-  const allPayments = await storage.getPaymentsByTenant(ctx.tenantId);
-  const monthPayments = allPayments.filter(
-    (p) => p.paymentMonth === month && p.amount > 0
-  );
-  const paidEnrollmentIds = new Set(monthPayments.map((p) => p.enrollmentId));
+  // 조회 월 이후에 시작한 수강은 제외 (7월 미납 조회 시 8월 등록 학생 배제)
+  const relevantEnrollments = activeEnrollments.filter((e) => {
+    if (!e.startDate) return true;
+    const startMonth = new Date(e.startDate).toISOString().slice(0, 7);
+    return startMonth <= month;
+  });
 
-  const unpaidEnrollments = activeEnrollments.filter(
+  const allPayments = await storage.getPaymentsByTenant(ctx.tenantId);
+  // 해당 월 납부 기록: 순액이 양수인 enrollment만 납부 완료로 처리
+  // (같은 달에 수납 + 환불이 있으면 합산해서 판단)
+  const netByEnrollment = new Map<string, number>();
+  for (const p of allPayments) {
+    if (p.paymentMonth !== month) continue;
+    const key = p.enrollmentId ?? "";
+    if (!key) continue;
+    netByEnrollment.set(key, (netByEnrollment.get(key) ?? 0) + (p.amount ?? 0));
+  }
+  const paidEnrollmentIds = new Set(
+    Array.from(netByEnrollment.entries())
+      .filter(([, net]) => net > 0)
+      .map(([id]) => id)
+  );
+
+  const unpaidEnrollments = relevantEnrollments.filter(
     (e) => !paidEnrollmentIds.has(e.id)
   );
 
@@ -981,7 +1024,7 @@ async function recordPayment(
   }
 
   const paymentType = args.type ?? "원비";
-  const paymentMonth = args.month ?? currentMonth();
+  const paymentMonth = normalizeMonth(args.month);
 
   const created = await storage.createPayment({
     tenantId: ctx.tenantId,
@@ -1039,7 +1082,7 @@ async function getMonthlyRevenue(
   args: { month?: string },
   ctx: ToolContext
 ) {
-  const month = args.month ?? currentMonth();
+  const month = normalizeMonth(args.month);
   const allPayments = await storage.getPaymentsByTenant(ctx.tenantId);
   const monthPayments = allPayments.filter((p) => p.paymentMonth === month);
 
@@ -1054,9 +1097,9 @@ async function compareMonthlyRevenue(
   ctx: ToolContext
 ) {
   const now = new Date();
-  const m2 = args.month2 ?? currentMonth();
+  const m2 = normalizeMonth(args.month2);
   const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const m1 = args.month1 ?? prev.toISOString().slice(0, 7);
+  const m1 = normalizeMonth(args.month1 ?? prev.toISOString().slice(0, 7));
 
   const allPayments = await storage.getPaymentsByTenant(ctx.tenantId);
   const p1 = allPayments.filter((p) => p.paymentMonth === m1);
@@ -1246,11 +1289,23 @@ async function getDashboardSummary(
   const monthPayments = allPayments.filter((p) => p.paymentMonth === month);
   const revenue = monthPayments.reduce((s, p) => s + p.amount, 0);
 
-  // 미납자 수 계산
+  // 미납자 수 계산 — 순액 기반 + 수강 시작일 체크
   const allEnrollments = await storage.getEnrollmentsByTenant(ctx.tenantId);
-  const activeEnrollments = allEnrollments.filter((e) => e.isActive);
+  const activeEnrollments = allEnrollments.filter((e) => {
+    if (!e.isActive) return false;
+    if (!e.startDate) return true;
+    return new Date(e.startDate).toISOString().slice(0, 7) <= month;
+  });
+  const netByEnrollment = new Map<string, number>();
+  for (const p of monthPayments) {
+    const key = p.enrollmentId ?? "";
+    if (!key) continue;
+    netByEnrollment.set(key, (netByEnrollment.get(key) ?? 0) + (p.amount ?? 0));
+  }
   const paidEnrollmentIds = new Set(
-    monthPayments.filter((p) => p.amount > 0).map((p) => p.enrollmentId)
+    Array.from(netByEnrollment.entries())
+      .filter(([, net]) => net > 0)
+      .map(([id]) => id)
   );
   const unpaidStudentIds = new Set(
     activeEnrollments

@@ -4,9 +4,20 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, RefreshCw, Send, Sparkles } from "lucide-react";
+import {
+  Loader2,
+  Mic,
+  MicOff,
+  RefreshCw,
+  Send,
+  Sparkles,
+  Volume2,
+  VolumeX,
+  Radio,
+} from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
+import { useVoice } from "@/hooks/useVoice";
 import type { Class, Teacher } from "@shared/schema";
 
 interface ChatMessage {
@@ -146,12 +157,35 @@ export default function AiChat() {
     [enrollTarget, teachers, handleSend],
   );
 
+  // 음성 입출력 훅. onCommand는 음성으로 들어온 문장을 자동 전송.
+  const voice = useVoice({
+    onCommand: (text) => handleSend(text),
+    wakeWord: "상담실장",
+  });
+
+  // AI 응답이 도착하면 TTS 재생 (활성화된 경우에만)
+  const lastSpokenRef = useRef<string | null>(null);
+  useEffect(() => {
+    const last = messages[messages.length - 1];
+    if (
+      last?.role === "assistant" &&
+      last.content &&
+      last.content !== lastSpokenRef.current &&
+      voice.ttsEnabled
+    ) {
+      lastSpokenRef.current = last.content;
+      voice.speak(last.content);
+    }
+  }, [messages, voice.ttsEnabled, voice.speak]);
+
   const handleReset = useCallback(() => {
     setMessages([]);
     setContext({});
     setInput("");
     setEnrollTarget(null);
-  }, []);
+    lastSpokenRef.current = null;
+    voice.stopSpeaking();
+  }, [voice]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -333,6 +367,85 @@ export default function AiChat() {
             >
               나중에 등록
             </Button>
+          </div>
+        )}
+
+        {/* 음성 컨트롤 */}
+        {(voice.supported || voice.ttsSupported) && (
+          <div className="flex items-center gap-1.5 flex-wrap text-xs">
+            {voice.supported && (
+              <>
+                <Button
+                  variant={voice.handsFree ? "default" : "outline"}
+                  size="sm"
+                  className={cn(
+                    "h-8 px-2 gap-1",
+                    voice.handsFree && "animate-pulse",
+                  )}
+                  onClick={voice.toggleHandsFree}
+                  title="핸즈프리: '상담실장' 이라고 부르면 활성화됩니다"
+                >
+                  <Radio className="h-3.5 w-3.5" />
+                  핸즈프리
+                </Button>
+                <Button
+                  variant={voice.isListening && !voice.handsFree ? "default" : "outline"}
+                  size="sm"
+                  className="h-8 px-2 gap-1"
+                  onClick={voice.startPushToTalk}
+                  disabled={chatMutation.isPending}
+                  title="한 번 말하고 자동 전송"
+                >
+                  {voice.isListening && !voice.handsFree ? (
+                    <MicOff className="h-3.5 w-3.5" />
+                  ) : (
+                    <Mic className="h-3.5 w-3.5" />
+                  )}
+                  말하기
+                </Button>
+              </>
+            )}
+            {voice.ttsSupported && (
+              <Button
+                variant={voice.ttsEnabled ? "default" : "outline"}
+                size="sm"
+                className="h-8 px-2 gap-1"
+                onClick={voice.toggleTts}
+                title="AI 응답을 음성으로 읽어줍니다"
+              >
+                {voice.ttsEnabled ? (
+                  <Volume2 className="h-3.5 w-3.5" />
+                ) : (
+                  <VolumeX className="h-3.5 w-3.5" />
+                )}
+                읽어주기
+              </Button>
+            )}
+
+            {/* 상태 표시 */}
+            <div className="flex-1 min-w-0 flex items-center gap-2 pl-1">
+              {voice.wakeArmed && (
+                <span className="text-primary font-medium">
+                  🎯 명령을 말씀하세요
+                </span>
+              )}
+              {!voice.wakeArmed && voice.handsFree && !voice.isSpeaking && (
+                <span className="text-muted-foreground">
+                  👂 "상담실장" 부르면 시작
+                </span>
+              )}
+              {!voice.wakeArmed && voice.isListening && !voice.handsFree && (
+                <span className="text-primary">🎤 듣는 중...</span>
+              )}
+              {voice.isSpeaking && (
+                <span className="text-muted-foreground">🔊 읽는 중...</span>
+              )}
+              {voice.interimText && (
+                <span className="italic text-muted-foreground truncate">
+                  "{voice.interimText}"
+                </span>
+              )}
+            </div>
           </div>
         )}
 

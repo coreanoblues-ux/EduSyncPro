@@ -12,6 +12,7 @@ import {
   ArrowRight,
   BookOpen,
   Check,
+  ClipboardCheck,
   Clock,
   Flame,
   ListChecks,
@@ -122,6 +123,26 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
     [consultations]
   );
 
+  // 레벨테스트 진행 중인 건 (예정 + 완료). 예정은 날짜 빠른 순, 완료는 최근 순.
+  // 이 단계에서 학생이 새는 게 매출 손실이라 대시보드에 상시 노출한다.
+  const levelTests = useMemo(() => {
+    const rows = consultations.filter(
+      (c) => c.status === "레벨테스트예정" || c.status === "레벨테스트완료"
+    );
+    return rows.sort((a, b) => {
+      // 예정이 위, 완료가 아래
+      if (a.status !== b.status) return a.status === "레벨테스트예정" ? -1 : 1;
+      if (a.status === "레벨테스트예정") {
+        // 예정: 이른 날짜 먼저
+        const ta = a.levelTestDate ? new Date(a.levelTestDate).getTime() : Infinity;
+        const tb = b.levelTestDate ? new Date(b.levelTestDate).getTime() : Infinity;
+        return ta - tb;
+      }
+      // 완료: 최근에 완료된 것부터
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    });
+  }, [consultations]);
+
   const overdues = useMemo(
     () => computeOverdues(enrollments, payments, students, classes),
     [enrollments, payments, students, classes]
@@ -227,9 +248,10 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
 
       {/*
         원장이 아침에 확인해야 하는 순서대로 세로로 쌓는다.
-        1) 새로 들어온 상담  2) 자리 기다리는 대기  3) 돈이 안 들어온 미납
+        1) 새로 들어온 상담  2) 레벨테스트 진행중  3) 자리 기다리는 대기  4) 돈이 안 들어온 미납
+        레벨테스트를 신규상담과 대기등록 사이에 두어 상담 흐름 순서 그대로 시선을 따라가게 만든다.
       */}
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-3">
         <SectionCard
           title="신규 상담"
           count={newConsultations.length}
@@ -241,6 +263,20 @@ export default function Dashboard({ userRole, tenant }: DashboardProps) {
         >
           {newConsultations.slice(0, PREVIEW_LIMIT).map((c) => (
             <ConsultationRow key={c.id} consultation={c} />
+          ))}
+        </SectionCard>
+
+        <SectionCard
+          title="레벨테스트"
+          count={levelTests.length}
+          icon={ClipboardCheck}
+          accent="text-indigo-600 dark:text-indigo-400"
+          emptyText="진행 중인 레벨테스트가 없습니다."
+          onMore={() => setLocation('/consultations')}
+          testId="dashboard-level-tests"
+        >
+          {levelTests.slice(0, PREVIEW_LIMIT).map((c) => (
+            <ConsultationRow key={c.id} consultation={c} showLevelTestBadge />
           ))}
         </SectionCard>
 
@@ -461,8 +497,17 @@ function SectionCard({
   );
 }
 
-function ConsultationRow({ consultation }: { consultation: Consultation }) {
+function ConsultationRow({
+  consultation,
+  showLevelTestBadge = false,
+}: {
+  consultation: Consultation;
+  /** 레벨테스트 섹션에서는 이름 옆에 [예정]/[완료] 배지를 붙인다. */
+  showLevelTestBadge?: boolean;
+}) {
   const name = consultation.studentName || consultation.guardianName || "이름 미상";
+  const isScheduled = consultation.status === "레벨테스트예정";
+  const isCompleted = consultation.status === "레벨테스트완료";
 
   return (
     <div
@@ -470,8 +515,24 @@ function ConsultationRow({ consultation }: { consultation: Consultation }) {
       data-testid={`dashboard-consultation-${consultation.id}`}
     >
       <div className="min-w-0">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="font-medium">{name}</span>
+          {showLevelTestBadge && isScheduled && (
+            <Badge
+              variant="outline"
+              className="text-[10px] bg-indigo-100 text-indigo-700 border-indigo-200 dark:bg-indigo-900/40 dark:text-indigo-300 dark:border-indigo-800"
+            >
+              예정
+            </Badge>
+          )}
+          {showLevelTestBadge && isCompleted && (
+            <Badge
+              variant="outline"
+              className="text-[10px] bg-purple-100 text-purple-700 border-purple-200 dark:bg-purple-900/40 dark:text-purple-300 dark:border-purple-800"
+            >
+              완료
+            </Badge>
+          )}
           {consultation.studentGrade && (
             <span className="text-xs text-muted-foreground">{consultation.studentGrade}</span>
           )}
@@ -481,7 +542,20 @@ function ConsultationRow({ consultation }: { consultation: Consultation }) {
             </Badge>
           )}
         </div>
-        {consultation.followUp && (
+        {showLevelTestBadge && isScheduled && consultation.levelTestDate && (
+          <p className="truncate text-xs text-muted-foreground">
+            {new Date(consultation.levelTestDate).toLocaleString("ko-KR", {
+              month: "numeric",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </p>
+        )}
+        {showLevelTestBadge && isCompleted && consultation.levelTestScore && (
+          <p className="truncate text-xs text-muted-foreground">결과: {consultation.levelTestScore}</p>
+        )}
+        {!showLevelTestBadge && consultation.followUp && (
           <p className="truncate text-xs text-muted-foreground">{consultation.followUp}</p>
         )}
       </div>

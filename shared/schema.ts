@@ -13,7 +13,18 @@ export const paymentMethodEnum = pgEnum("payment_method", ["계좌이체", "카�
 export const paymentTypeEnum = pgEnum("payment_type", ["원비", "환불", "지출", "기타"]);
 
 // 상담 진행 상태
-export const consultationStatusEnum = pgEnum("consultation_status", ["상담문의", "대기등록", "최종등록", "보류"]);
+// 흐름: 상담문의 → 레벨테스트예정 → 레벨테스트완료 → 반배정상담 → 최종등록 / 대기등록 / 보류
+// 레벨테스트 3단계를 명시적으로 트래킹해서 원장이 "지금 어느 단계에 몇 명 있는지"를
+// 대시보드에서 바로 알 수 있게 만든다. 각 단계에서 원생이 사라지지 않게 하는 게 매출과 직결된다.
+export const consultationStatusEnum = pgEnum("consultation_status", [
+  "상담문의",
+  "레벨테스트예정",
+  "레벨테스트완료",
+  "반배정상담",
+  "대기등록",
+  "최종등록",
+  "보류",
+]);
 
 // 할 일을 언제까지 끝내야 하는지. 기본값이자 대부분인 "퇴근전"이 이 기능의 본체다.
 export const taskSlotEnum = pgEnum("task_slot", ["퇴근전", "출근전"]);
@@ -145,6 +156,11 @@ export const consultations = pgTable("consultations", {
   // 최종등록으로 전환되면 아래 두 필드가 채워진다
   classId: varchar("class_id").references(() => classes.id, { onDelete: "set null" }),
   studentId: varchar("student_id").references(() => students.id, { onDelete: "set null" }),
+  // 레벨테스트 관련 (상담 흐름: 상담문의 → 레벨테스트예정 → 레벨테스트완료 → 반배정상담 → 최종등록/대기등록/보류)
+  levelTestDate: timestamp("level_test_date"), // 레벨테스트 예정/완료 일시
+  levelTestScore: text("level_test_score"),    // 점수 또는 등급 문자열 (예: "85점", "B+")
+  levelTestNotes: text("level_test_notes"),    // 레벨테스트 결과 메모
+  recommendedClassId: varchar("recommended_class_id").references(() => classes.id, { onDelete: "set null" }), // 반배정상담 단계에서 추천된 반
   sourceText: text("source_text"),
   createdBy: varchar("created_by").references(() => users.id).notNull(),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
@@ -374,7 +390,11 @@ export const insertLessonLogSchema = createInsertSchema(lessonLogs).omit({ id: t
 });
 export const insertWaiterSchema = createInsertSchema(waiters).omit({ id: true, createdAt: true });
 export const insertConsultationSchema = createInsertSchema(consultations)
-  .omit({ id: true, createdAt: true, updatedAt: true });
+  .omit({ id: true, createdAt: true, updatedAt: true })
+  .extend({
+    // JSON으로 들어오는 ISO 문자열/Date 모두 허용
+    levelTestDate: z.coerce.date().optional().nullable(),
+  });
 
 // POST /api/payments 본문 검증용.
 // enrollmentId가 nullable이 되었으므로, 원비/환불일 때만 필수라는 규칙을 코드로 강제한다.

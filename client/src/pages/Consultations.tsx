@@ -33,18 +33,45 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import type { Consultation, Class } from "@shared/schema";
 
-type Status = "상담문의" | "대기등록" | "최종등록" | "보류";
+type Status =
+  | "상담문의"
+  | "레벨테스트예정"
+  | "레벨테스트완료"
+  | "반배정상담"
+  | "대기등록"
+  | "최종등록"
+  | "보류";
 
-const STATUSES: Status[] = ["상담문의", "대기등록", "최종등록", "보류"];
+const STATUSES: Status[] = [
+  "상담문의",
+  "레벨테스트예정",
+  "레벨테스트완료",
+  "반배정상담",
+  "대기등록",
+  "최종등록",
+  "보류",
+];
 
 /**
- * 목록에 쌓이는 순서. 원장이 처리해야 할 급한 것부터 위로 올린다.
- * 최종등록은 이미 끝난 건이라 맨 아래에 두고, 보류는 그 뒤에 붙인다.
+ * 목록에 쌓이는 순서. 실제 상담 흐름 순서대로 배치한다.
+ * (상담문의 → 레벨테스트예정 → 레벨테스트완료 → 반배정상담 → 대기/최종 → 보류)
+ * 각 단계에서 사람이 새지 않게 원장이 대시보드에서 바로 볼 수 있어야 매출 손실이 줄어든다.
  */
-const GROUP_ORDER: Status[] = ["상담문의", "대기등록", "최종등록", "보류"];
+const GROUP_ORDER: Status[] = [
+  "상담문의",
+  "레벨테스트예정",
+  "레벨테스트완료",
+  "반배정상담",
+  "대기등록",
+  "최종등록",
+  "보류",
+];
 
 const GROUP_HINT: Record<Status, string> = {
   상담문의: "연락은 왔지만 아직 아무것도 정해지지 않은 건",
+  레벨테스트예정: "테스트 일정이 잡힌 건 — 하루 전에 확인 연락 필요",
+  레벨테스트완료: "결과가 나온 건 — 반배정 상담을 잡아야 함",
+  반배정상담: "결과를 놓고 반을 정하는 중",
   대기등록: "자리가 나면 등록하기로 한 건",
   최종등록: "등록이 끝난 건 — 7일이 지나면 목록에서 사라집니다",
   보류: "진행이 멈춘 건",
@@ -65,6 +92,9 @@ function daysSince(value: string | Date, now: number): number {
 
 const STATUS_STYLE: Record<Status, string> = {
   상담문의: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+  레벨테스트예정: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300",
+  레벨테스트완료: "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300",
+  반배정상담: "bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300",
   대기등록: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
   최종등록: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
   보류: "bg-muted text-muted-foreground",
@@ -91,6 +121,18 @@ export default function Consultations({ userRole }: ConsultationsProps) {
   const [enrollTarget, setEnrollTarget] = useState<Consultation | null>(null);
   const [form, setForm] = useState({ name: "", grade: "", classId: "", startDate: today(), dueDay: "8" });
 
+  // 레벨테스트 예약/기록 다이얼로그. 하나의 대화상자가 "예약"과 "결과 기록" 두 모드로 동작한다.
+  // 상담문의 → 레벨테스트예정: 날짜만 잡는다.
+  // 레벨테스트예정 → 레벨테스트완료: 점수·메모·추천반을 입력한다.
+  const [levelTestTarget, setLevelTestTarget] = useState<Consultation | null>(null);
+  const [ltForm, setLtForm] = useState({
+    date: "",
+    score: "",
+    notes: "",
+    recommendedClassId: "",
+  });
+  const ltMode: "schedule" | "record" = levelTestTarget?.status === "레벨테스트예정" ? "record" : "schedule";
+
   const { toast } = useToast();
   const qc = useQueryClient();
 
@@ -100,7 +142,7 @@ export default function Consultations({ userRole }: ConsultationsProps) {
   const { data: classes = [] } = useQuery<Class[]>({ queryKey: ["/api/classes"] });
 
   const counts = useMemo(() => {
-    const acc: Record<string, number> = { 상담문의: 0, 대기등록: 0, 최종등록: 0, 보류: 0 };
+    const acc: Record<string, number> = Object.fromEntries(STATUSES.map((s) => [s, 0]));
     for (const c of consultations) acc[c.status] = (acc[c.status] ?? 0) + 1;
     return acc;
   }, [consultations]);
@@ -160,6 +202,51 @@ export default function Consultations({ userRole }: ConsultationsProps) {
       toast({ title: "삭제 실패", description: err.message.replace(/^\d+:\s*/, ""), variant: "destructive" });
     },
   });
+
+  const levelTestMutation = useMutation({
+    mutationFn: async ({ id, mode }: { id: string; mode: "schedule" | "record" }) => {
+      if (mode === "schedule") {
+        // datetime-local 값은 로컬 시각으로 해석된다. 서버는 timestamp(without tz)에 그대로 저장한다.
+        await apiRequest("PATCH", `/api/consultations/${id}`, {
+          status: "레벨테스트예정",
+          levelTestDate: ltForm.date ? new Date(ltForm.date).toISOString() : null,
+        });
+      } else {
+        await apiRequest("PATCH", `/api/consultations/${id}`, {
+          status: "레벨테스트완료",
+          levelTestScore: ltForm.score.trim() || null,
+          levelTestNotes: ltForm.notes.trim() || null,
+          recommendedClassId: ltForm.recommendedClassId || null,
+        });
+      }
+    },
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["/api/consultations"] });
+      setLevelTestTarget(null);
+      toast({
+        title: vars.mode === "schedule" ? "레벨테스트 일정이 저장되었습니다" : "레벨테스트 결과가 저장되었습니다",
+      });
+    },
+    onError: (err: Error) => {
+      toast({ title: "저장 실패", description: err.message.replace(/^\d+:\s*/, ""), variant: "destructive" });
+    },
+  });
+
+  const openLevelTest = (c: Consultation) => {
+    // 예약 모드: 현재 값을 기본으로 (yyyy-MM-ddTHH:mm)
+    let dateVal = "";
+    if (c.levelTestDate) {
+      const d = new Date(c.levelTestDate);
+      dateVal = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    }
+    setLtForm({
+      date: dateVal,
+      score: c.levelTestScore ?? "",
+      notes: c.levelTestNotes ?? "",
+      recommendedClassId: c.recommendedClassId ?? "",
+    });
+    setLevelTestTarget(c);
+  };
 
   const enrollMutation = useMutation({
     mutationFn: async (consultation: Consultation) => {
@@ -233,12 +320,12 @@ export default function Consultations({ userRole }: ConsultationsProps) {
         </p>
       </div>
 
-      <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
+      <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7">
         {STATUSES.map((s) => (
           <Card key={s} className="hover-elevate">
-            <CardContent className="pt-6 text-center">
-              <div className="text-2xl font-bold">{counts[s] ?? 0}</div>
-              <p className="text-sm text-muted-foreground">{s}</p>
+            <CardContent className="pt-4 pb-4 text-center">
+              <div className="text-xl font-bold">{counts[s] ?? 0}</div>
+              <p className="text-xs text-muted-foreground">{s}</p>
             </CardContent>
           </Card>
         ))}
@@ -368,18 +455,51 @@ export default function Consultations({ userRole }: ConsultationsProps) {
                   </div>
                 )}
                 {c.memo && <p className="text-sm text-muted-foreground">{c.memo}</p>}
+
+                {(c.levelTestDate || c.levelTestScore || c.levelTestNotes || c.recommendedClassId) && (
+                  <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm space-y-1">
+                    <div className="text-xs font-medium text-muted-foreground">레벨테스트</div>
+                    {c.levelTestDate && (
+                      <div>일정: {new Date(c.levelTestDate).toLocaleString("ko-KR")}</div>
+                    )}
+                    {c.levelTestScore && <div>결과: {c.levelTestScore}</div>}
+                    {c.levelTestNotes && <div className="text-muted-foreground">{c.levelTestNotes}</div>}
+                    {c.recommendedClassId && (
+                      <div>추천반: {classes.find((k) => k.id === c.recommendedClassId)?.name ?? "(삭제된 반)"}</div>
+                    )}
+                  </div>
+                )}
+
                 {c.sourceText && (
                   <p className="text-xs text-muted-foreground/70 border-l-2 pl-2">입력: {c.sourceText}</p>
                 )}
 
-                {canEdit && !c.studentId && (
-                  <div className="pt-3 border-t">
-                    <Button size="sm" variant="outline" onClick={() => openEnroll(c)} data-testid={`button-enroll-${c.id}`}>
-                      <UserPlus className="h-4 w-4 mr-2" />
-                      학생으로 등록
-                    </Button>
-                  </div>
-                )}
+                {canEdit && (() => {
+                  const showLevelTest = c.status === "상담문의" || c.status === "레벨테스트예정";
+                  const showEnroll = !c.studentId;
+                  if (!showLevelTest && !showEnroll) return null;
+                  return (
+                    <div className="pt-3 border-t flex flex-wrap gap-2">
+                      {showLevelTest && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => openLevelTest(c)}
+                          data-testid={`button-level-test-${c.id}`}
+                        >
+                          <CalendarClock className="h-4 w-4 mr-2" />
+                          {c.status === "레벨테스트예정" ? "레벨테스트 결과 기록" : "레벨테스트 예약"}
+                        </Button>
+                      )}
+                      {showEnroll && (
+                        <Button size="sm" variant="outline" onClick={() => openEnroll(c)} data-testid={`button-enroll-${c.id}`}>
+                          <UserPlus className="h-4 w-4 mr-2" />
+                          학생으로 등록
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })()}
               </CardContent>
             </Card>
           ))}
@@ -469,6 +589,93 @@ export default function Consultations({ userRole }: ConsultationsProps) {
               data-testid="button-confirm-enroll"
             >
               {enrollMutation.isPending ? "등록 중..." : "등록하기"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!levelTestTarget} onOpenChange={(open) => !open && setLevelTestTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {ltMode === "record" ? "레벨테스트 결과 기록" : "레벨테스트 예약"}
+            </DialogTitle>
+            <DialogDescription>
+              {ltMode === "record"
+                ? "점수·메모·추천반을 남기면 상태가 «레벨테스트완료»로 넘어갑니다."
+                : "일정을 잡으면 상태가 «레벨테스트예정»으로 바뀝니다."}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {ltMode === "schedule" ? (
+              <div className="space-y-2">
+                <Label>레벨테스트 일시</Label>
+                <Input
+                  type="datetime-local"
+                  value={ltForm.date}
+                  onChange={(e) => setLtForm({ ...ltForm, date: e.target.value })}
+                  data-testid="input-level-test-date"
+                />
+              </div>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <Label>점수 / 등급</Label>
+                  <Input
+                    placeholder="예: 85점, B+, 초급 상위 등"
+                    value={ltForm.score}
+                    onChange={(e) => setLtForm({ ...ltForm, score: e.target.value })}
+                    data-testid="input-level-test-score"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>메모</Label>
+                  <Input
+                    placeholder="예: 문법 약함, 회화 좋음"
+                    value={ltForm.notes}
+                    onChange={(e) => setLtForm({ ...ltForm, notes: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>추천반 (선택)</Label>
+                  <Select
+                    value={ltForm.recommendedClassId || "none"}
+                    onValueChange={(v) => setLtForm({ ...ltForm, recommendedClassId: v === "none" ? "" : v })}
+                  >
+                    <SelectTrigger data-testid="select-recommended-class">
+                      <SelectValue placeholder="반을 선택하세요" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">추천하지 않음</SelectItem>
+                      {classes.filter((c) => c.isActive !== false).map((c) => (
+                        <SelectItem key={c.id} value={c.id}>
+                          {c.name} · {c.subject}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLevelTestTarget(null)}>
+              취소
+            </Button>
+            <Button
+              onClick={() =>
+                levelTestTarget && levelTestMutation.mutate({ id: levelTestTarget.id, mode: ltMode })
+              }
+              disabled={
+                levelTestMutation.isPending ||
+                (ltMode === "schedule" && !ltForm.date) ||
+                (ltMode === "record" && !ltForm.score.trim())
+              }
+              data-testid="button-confirm-level-test"
+            >
+              {levelTestMutation.isPending ? "저장 중..." : "저장"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -12,6 +12,7 @@
 import { storage } from "../storage";
 import { parseDays, parseSchedule, formatMinutes } from "@shared/timetable";
 import { canonicalGrade } from "@shared/gradePromotion";
+import type { Consultation } from "@shared/schema";
 
 // ─── Tool execution context ────────────────────────────────────────────
 
@@ -373,7 +374,8 @@ export const TOOL_DEFINITIONS: Array<{
     type: "function",
     function: {
       name: "create_consultation",
-      description: "상담/문의 기록을 생성한다.",
+      description:
+        "상담/문의 기록을 생성한다. 흐름: 상담문의 → 레벨테스트예정 → 레벨테스트완료 → 반배정상담 → 대기등록/최종등록/보류.",
       parameters: {
         type: "object",
         properties: {
@@ -383,12 +385,78 @@ export const TOOL_DEFINITIONS: Array<{
           studentGrade: { type: "string", description: "학년 (예: '중1')" },
           status: {
             type: "string",
-            enum: ["상담문의", "대기등록", "최종등록", "보류"],
+            enum: [
+              "상담문의",
+              "레벨테스트예정",
+              "레벨테스트완료",
+              "반배정상담",
+              "대기등록",
+              "최종등록",
+              "보류",
+            ],
             description: "상담 상태 (기본 '상담문의')",
           },
           subject: { type: "string", description: "문의 과목" },
           followUp: { type: "string", description: "후속 조치 메모" },
           memo: { type: "string", description: "상담 메모" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "schedule_level_test",
+      description:
+        "기존 상담 건에 레벨테스트 일정을 잡는다. 상태가 '레벨테스트예정'으로 바뀐다. 학생 이름 또는 상담 ID로 지정한다.",
+      parameters: {
+        type: "object",
+        properties: {
+          consultation_id: { type: "string", description: "상담 ID (있으면 최우선)" },
+          student_name: { type: "string", description: "학생 이름 (consultation_id가 없을 때 최근 건에서 찾음)" },
+          test_date: {
+            type: "string",
+            description: "테스트 일시. 'YYYY-MM-DD HH:mm' 또는 자연어(내일 오후 3시 등). 서버가 파싱.",
+          },
+        },
+        required: ["test_date"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "record_level_test_result",
+      description:
+        "레벨테스트 결과를 기록한다. 상태가 '레벨테스트완료'로 바뀐다. 점수·메모·추천반을 함께 남길 수 있다.",
+      parameters: {
+        type: "object",
+        properties: {
+          consultation_id: { type: "string", description: "상담 ID (있으면 최우선)" },
+          student_name: { type: "string", description: "학생 이름 (consultation_id가 없을 때 최근 '레벨테스트예정' 건에서 찾음)" },
+          score: { type: "string", description: "점수 또는 등급 (예: '85점', 'B+')" },
+          notes: { type: "string", description: "결과 메모" },
+          recommended_class_name: { type: "string", description: "추천할 반 이름 (선택, 실제 반과 매칭 시도)" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_level_tests",
+      description:
+        "레벨테스트 관련 상담 목록을 반환한다. 상태별로 필터할 수 있다 (예정/완료/전체).",
+      parameters: {
+        type: "object",
+        properties: {
+          filter: {
+            type: "string",
+            enum: ["예정", "완료", "전체"],
+            description: "기본 '예정'",
+          },
         },
         required: [],
       },
@@ -1235,13 +1303,22 @@ async function getRecentConsultations(
   return { consultations: results };
 }
 
+type ConsultationStatus =
+  | "상담문의"
+  | "레벨테스트예정"
+  | "레벨테스트완료"
+  | "반배정상담"
+  | "대기등록"
+  | "최종등록"
+  | "보류";
+
 async function createConsultation(
   args: {
     phone?: string;
     guardianName?: string;
     studentName?: string;
     studentGrade?: string;
-    status?: "상담문의" | "대기등록" | "최종등록" | "보류";
+    status?: ConsultationStatus;
     subject?: string;
     followUp?: string;
     memo?: string;
@@ -1278,6 +1355,224 @@ async function createConsultation(
       status: created.status,
       createdAt: formatDate(created.createdAt),
     },
+  };
+}
+
+// ── Level test tools ──
+
+/**
+ * "내일 오후 3시", "다음주 화요일 10시", "2026-08-20 15:00" 같은 표현을 Date로 바꾼다.
+ * 완벽한 파서를 만들 필요는 없고, 학원장이 실제로 쓰는 관용 표현만 커버한다.
+ */
+function parseKoreanDateTime(input: string): Date | null {
+  const s = input.trim();
+
+  // ISO / 표준 형식 우선
+  const iso = new Date(s);
+  if (!isNaN(iso.getTime()) && /\d{4}-\d{2}-\d{2}/.test(s)) return iso;
+
+  const now = new Date();
+  let base = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  // 요일/상대 날짜
+  if (/오늘/.test(s)) {
+    // base 그대로
+  } else if (/내일/.test(s)) {
+    base.setDate(base.getDate() + 1);
+  } else if (/모레/.test(s)) {
+    base.setDate(base.getDate() + 2);
+  } else {
+    const weekdays = ["일", "월", "화", "수", "목", "금", "토"];
+    const wdMatch = s.match(/(?:이번주|다음주|담주)?\s*([일월화수목금토])요일/);
+    if (wdMatch) {
+      const targetWd = weekdays.indexOf(wdMatch[1]);
+      const currentWd = base.getDay();
+      let diff = targetWd - currentWd;
+      if (diff <= 0 || /다음주|담주/.test(s)) diff += 7;
+      base.setDate(base.getDate() + diff);
+    } else {
+      const mdMatch = s.match(/(\d{1,2})월\s*(\d{1,2})일/);
+      if (mdMatch) {
+        const m = Number(mdMatch[1]) - 1;
+        const d = Number(mdMatch[2]);
+        base = new Date(now.getFullYear(), m, d);
+        if (base.getTime() < now.getTime() - 86400000) base.setFullYear(now.getFullYear() + 1);
+      }
+    }
+  }
+
+  // 시간
+  let hour = 10; // 기본 오전 10시 (대부분 학원 상담 시간대)
+  let minute = 0;
+  const isPm = /오후|저녁|밤/.test(s);
+  const isAm = /오전|아침/.test(s);
+
+  const hmMatch = s.match(/(\d{1,2})\s*[:시]\s*(\d{1,2})?/);
+  if (hmMatch) {
+    hour = Number(hmMatch[1]);
+    minute = hmMatch[2] ? Number(hmMatch[2]) : 0;
+    if (isPm && hour < 12) hour += 12;
+    if (isAm && hour === 12) hour = 0;
+  }
+  const halfMatch = s.match(/(\d{1,2})\s*시\s*반/);
+  if (halfMatch) {
+    hour = Number(halfMatch[1]);
+    minute = 30;
+    if (isPm && hour < 12) hour += 12;
+  }
+
+  base.setHours(hour, minute, 0, 0);
+  return isNaN(base.getTime()) ? null : base;
+}
+
+async function findConsultationForLevelTest(
+  args: { consultation_id?: string; student_name?: string; onlyScheduled?: boolean },
+  ctx: ToolContext,
+): Promise<{ found?: Consultation; error?: string; candidates?: Consultation[] }> {
+  if (args.consultation_id) {
+    const c = await storage.getConsultation(args.consultation_id);
+    if (!c || c.tenantId !== ctx.tenantId) return { error: "해당 상담을 찾을 수 없습니다." };
+    return { found: c };
+  }
+  if (!args.student_name?.trim()) {
+    return { error: "consultation_id 또는 student_name 중 하나가 필요합니다." };
+  }
+  const rows = await storage.getConsultationsByTenant(ctx.tenantId);
+  const q = args.student_name.trim();
+  let matches = rows.filter((r) => (r.studentName ?? "").includes(q));
+  if (args.onlyScheduled) {
+    matches = matches.filter((r) => r.status === "레벨테스트예정");
+  }
+  if (matches.length === 0) {
+    return { error: `"${q}" 이름과 일치하는 상담 기록이 없습니다.` };
+  }
+  // 가장 최근 것 선택
+  matches.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return { found: matches[0], candidates: matches.slice(1, 4) };
+}
+
+async function scheduleLevelTest(
+  args: { consultation_id?: string; student_name?: string; test_date: string },
+  ctx: ToolContext,
+) {
+  const parsed = parseKoreanDateTime(args.test_date);
+  if (!parsed) {
+    return { error: `테스트 일시("${args.test_date}")를 이해하지 못했습니다. 예: "내일 오후 3시", "2026-08-25 15:00"` };
+  }
+
+  const { found, error, candidates } = await findConsultationForLevelTest(
+    { consultation_id: args.consultation_id, student_name: args.student_name },
+    ctx,
+  );
+  if (error) return { error };
+  if (!found) return { error: "상담을 찾지 못했습니다." };
+
+  const updated = await storage.updateConsultation(found.id, {
+    status: "레벨테스트예정",
+    levelTestDate: parsed,
+  });
+
+  return {
+    success: true,
+    consultation: {
+      id: updated.id,
+      studentName: updated.studentName ?? "-",
+      status: updated.status,
+      levelTestDate: parsed.toISOString(),
+    },
+    otherCandidates: candidates?.map((c) => ({ id: c.id, name: c.studentName, status: c.status })) ?? [],
+  };
+}
+
+async function recordLevelTestResult(
+  args: {
+    consultation_id?: string;
+    student_name?: string;
+    score?: string;
+    notes?: string;
+    recommended_class_name?: string;
+  },
+  ctx: ToolContext,
+) {
+  const { found, error, candidates } = await findConsultationForLevelTest(
+    { consultation_id: args.consultation_id, student_name: args.student_name, onlyScheduled: true },
+    ctx,
+  );
+  if (error) return { error };
+  if (!found) return { error: "레벨테스트 예정된 상담을 찾지 못했습니다." };
+
+  // 추천반 매칭 (선택)
+  let recommendedClassId: string | null = null;
+  let classNotFound: string | undefined;
+  if (args.recommended_class_name?.trim()) {
+    const classes = await storage.getClassesByTenant(ctx.tenantId);
+    const q = args.recommended_class_name.trim();
+    const match = classes.find((c) => c.name === q) ?? classes.find((c) => c.name.includes(q));
+    if (match) {
+      recommendedClassId = match.id;
+    } else {
+      classNotFound = `"${q}" 이름의 반이 없어 추천반은 저장하지 않았습니다.`;
+    }
+  }
+
+  const updated = await storage.updateConsultation(found.id, {
+    status: "레벨테스트완료",
+    levelTestScore: args.score?.trim() || null,
+    levelTestNotes: args.notes?.trim() || null,
+    recommendedClassId,
+  });
+
+  return {
+    success: true,
+    consultation: {
+      id: updated.id,
+      studentName: updated.studentName ?? "-",
+      status: updated.status,
+      score: updated.levelTestScore,
+      notes: updated.levelTestNotes,
+      recommendedClassId: updated.recommendedClassId,
+    },
+    classNotFound,
+    otherCandidates: candidates?.map((c) => ({ id: c.id, name: c.studentName })) ?? [],
+  };
+}
+
+async function listLevelTests(
+  args: { filter?: "예정" | "완료" | "전체" },
+  ctx: ToolContext,
+) {
+  const filter = args.filter ?? "예정";
+  const rows = await storage.getConsultationsByTenant(ctx.tenantId);
+
+  const filtered = rows.filter((r) => {
+    if (filter === "예정") return r.status === "레벨테스트예정";
+    if (filter === "완료") return r.status === "레벨테스트완료";
+    return (
+      r.status === "레벨테스트예정" ||
+      r.status === "레벨테스트완료" ||
+      r.status === "반배정상담"
+    );
+  });
+
+  filtered.sort((a, b) => {
+    const ta = a.levelTestDate ? new Date(a.levelTestDate).getTime() : new Date(a.createdAt).getTime();
+    const tb = b.levelTestDate ? new Date(b.levelTestDate).getTime() : new Date(b.createdAt).getTime();
+    return ta - tb;
+  });
+
+  return {
+    filter,
+    count: filtered.length,
+    tests: filtered.map((r) => ({
+      id: r.id,
+      studentName: r.studentName ?? "-",
+      studentGrade: r.studentGrade ?? "-",
+      phone: r.phone ?? "-",
+      status: r.status,
+      testDate: r.levelTestDate ? new Date(r.levelTestDate).toLocaleString("ko-KR") : null,
+      score: r.levelTestScore,
+      notes: r.levelTestNotes,
+    })),
   };
 }
 
@@ -1812,6 +2107,9 @@ const TOOL_MAP: Record<
   compare_monthly_revenue: compareMonthlyRevenue,
   get_recent_consultations: getRecentConsultations,
   create_consultation: createConsultation,
+  schedule_level_test: scheduleLevelTest,
+  record_level_test_result: recordLevelTestResult,
+  list_level_tests: listLevelTests,
   create_task: createTask,
   get_tasks: getTasks,
   get_dashboard_summary: getDashboardSummary,

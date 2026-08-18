@@ -13,6 +13,7 @@
     "test:class": "tsx scripts/test-class-label.ts",
     "test:timetable": "tsx scripts/test-timetable.ts",
     "db:push": "drizzle-kit push",
+    "db:migrate:level-test": "tsx scripts/migrate-add-level-test.ts",
     "db:verify": "tsx scripts/db-verify.ts",
     "grades:preview": "tsx scripts/preview-grades.ts"
   },

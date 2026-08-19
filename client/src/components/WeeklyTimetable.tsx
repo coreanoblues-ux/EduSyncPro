@@ -4,6 +4,11 @@
  * 세로가 시간, 가로가 요일이다. 색은 선생님별로 다르게 준다 — 원장이 시간표를
  * 볼 때 궁금한 건 "이 시간에 누가 수업하나"이지 "무슨 반인가"가 아니기 때문이다.
  *
+ * ▶ 주중(월~금)과 주말(토~일)은 시간대가 다르다. 주말은 오전부터 수업이 있고,
+ *   주중은 대개 오후·저녁에 몰려 있다. 한 축을 공유하면 주중 상단이 텅 비어
+ *   격자만 늘어난다. 그래서 두 시간표를 상하로 나누되, 카드는 하나로 둔다 —
+ *   각각 자기 수업 시간대에 맞춰 격자를 그린다.
+ *
  * 일정 칸이 자유 입력이라 시각을 못 읽는 반이 있다. 그런 반은 격자에 그리지 않고
  * 아래에 따로 모아 둔다. 아무 데나 그려 넣으면 시간표를 믿을 수 없게 된다.
  *
@@ -116,11 +121,22 @@ function assignLanes(blocks: Block[]): Block[] {
   return out;
 }
 
+const WEEKDAYS: readonly Day[] = ["월", "화", "수", "목", "금"];
+const WEEKEND: readonly Day[] = ["토", "일"];
+
+/** 격자 시간 범위를 실제 수업에 맞춰 계산한다. 없으면 기본값을 돌려준다. */
+function computeHourRange(blocks: Block[], fallback: [number, number]): [number, number] {
+  if (blocks.length === 0) return fallback;
+  const start = Math.floor(Math.min(...blocks.map((b) => b.startMin)) / 60);
+  const end = Math.ceil(Math.max(...blocks.map((b) => b.endMin)) / 60);
+  return [start, end];
+}
+
 export default function WeeklyTimetable({ classes, teachers }: Props) {
   /** 범례에서 고른 선생님. null이면 전체를 본다(기본값). */
   const [only, setOnly] = useState<string | null>(null);
 
-  const { allBlocks, allUnplaced, legend, startHour, endHour } = useMemo(() => {
+  const { allBlocks, allUnplaced, legend } = useMemo(() => {
     const groups = groupClassesByTeacher(
       classes.filter((c) => c.isActive),
       teachers
@@ -170,29 +186,35 @@ export default function WeeklyTimetable({ classes, teachers }: Props) {
       }
     });
 
-    // 격자 범위는 실제 수업에 맞춘다. 새벽 0시부터 그리면 빈 칸만 길어진다.
-    // 한 선생님만 볼 때도 이 범위를 그대로 쓴다 — 선생님을 바꿔 누를 때마다
-    // 눈금이 움직이면 같은 시각이 다른 높이에 그려져 견주어 볼 수가 없다.
-    const startHour = raw.length ? Math.floor(Math.min(...raw.map((b) => b.startMin)) / 60) : 9;
-    const endHour = raw.length ? Math.ceil(Math.max(...raw.map((b) => b.endMin)) / 60) : 22;
-
-    return { allBlocks: raw, allUnplaced: unplaced, legend, startHour, endHour };
+    return { allBlocks: raw, allUnplaced: unplaced, legend };
   }, [classes, teachers]);
 
   // 고른 선생님이 반을 다 잃으면(반 삭제·담당 변경) 아무것도 없는 시간표가 남는다.
   const selected = only !== null && legend.some((l) => l.key === only) ? only : null;
 
-  const blocks = useMemo(
-    () => assignLanes(selected === null ? allBlocks : allBlocks.filter((b) => b.teacherKey === selected)),
+  const filtered = useMemo(
+    () => (selected === null ? allBlocks : allBlocks.filter((b) => b.teacherKey === selected)),
     [allBlocks, selected]
   );
+
+  // 주중과 주말은 시간대가 겹치지 않으므로 각각 따로 lane 계산·시각 범위 계산을 한다.
+  const weekdayBlocks = useMemo(
+    () => assignLanes(filtered.filter((b) => (WEEKDAYS as readonly Day[]).includes(b.day))),
+    [filtered]
+  );
+  const weekendBlocks = useMemo(
+    () => assignLanes(filtered.filter((b) => (WEEKEND as readonly Day[]).includes(b.day))),
+    [filtered]
+  );
+
+  // 각 시간표의 시간 범위는 그 요일의 수업에만 의존한다. 주중 수업이 오후 4시에
+  // 처음 시작하는데 주말 수업 때문에 격자를 오전 9시부터 그리면 위쪽이 텅 빈다.
+  const [wdStart, wdEnd] = computeHourRange(weekdayBlocks, [16, 22]);
+  const [weStart, weEnd] = computeHourRange(weekendBlocks, [9, 18]);
+
   const unplaced =
     selected === null ? allUnplaced : allUnplaced.filter((u) => u.teacherKey === selected);
   const selectedName = legend.find((l) => l.key === selected)?.name ?? null;
-
-  const hours = Array.from({ length: endHour - startHour }, (_, i) => startHour + i);
-  const gridHeight = hours.length * HOUR_PX;
-  const topOf = (min: number) => ((min - startHour * 60) / 60) * HOUR_PX;
 
   return (
     <Card data-testid="weekly-timetable">
@@ -240,7 +262,7 @@ export default function WeeklyTimetable({ classes, teachers }: Props) {
       </CardHeader>
 
       <CardContent>
-        {blocks.length === 0 ? (
+        {weekdayBlocks.length === 0 && weekendBlocks.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
             {selectedName
               ? `${selectedName} 선생님 반은 일정에 시각이 적혀 있지 않아 그릴 수 없습니다.`
@@ -248,91 +270,36 @@ export default function WeeklyTimetable({ classes, teachers }: Props) {
           </p>
         ) : (
           <div className="overflow-x-auto">
-            <div className="min-w-[720px]">
-              {/* 요일 머리 */}
-              <div className="flex border-b">
-                <div className="w-12 shrink-0" />
-                {DAYS.map((d) => (
-                  <div
-                    key={d}
-                    className={`flex-1 pb-2 text-center text-sm font-medium ${
-                      d === "토" ? "text-blue-600" : d === "일" ? "text-rose-600" : ""
-                    }`}
-                  >
-                    {d}
-                  </div>
-                ))}
-              </div>
-
-              {/* 격자 */}
-              <div className="flex" style={{ height: gridHeight }}>
-                {/* 시간 눈금 */}
-                <div className="relative w-12 shrink-0">
-                  {hours.map((h, i) => (
-                    <div
-                      key={h}
-                      className="absolute right-2 -translate-y-1/2 text-xs tabular-nums text-muted-foreground"
-                      style={{ top: i * HOUR_PX }}
-                    >
-                      {h}시
-                    </div>
-                  ))}
-                </div>
-
-                {DAYS.map((day) => (
-                  <div key={day} className="relative flex-1 border-l">
-                    {/* 한 시간마다 옅은 줄 */}
-                    {hours.map((h, i) => (
-                      <div
-                        key={h}
-                        className="absolute inset-x-0 border-t border-dashed border-muted"
-                        style={{ top: i * HOUR_PX }}
-                      />
-                    ))}
-
-                    {blocks
-                      .filter((b) => b.day === day)
-                      .map((b) => {
-                        const top = topOf(b.startMin);
-                        const height = ((b.endMin - b.startMin) / 60) * HOUR_PX;
-                        // 40분이 안 되는 칸은 글씨 두 줄이 안 들어간다. 셋 이상
-                        // 겹쳐 좁아진 칸도 시각을 넣으면 잘려서 오히려 지저분하다.
-                        const tight = height < 38 || b.lanes >= 3;
-                        return (
-                          <div
-                            key={`${b.classId}-${b.day}-${b.startMin}`}
-                            className={`absolute overflow-hidden rounded-sm border-l-[3px] px-1.5 py-0.5 ${b.color.block}`}
-                            style={{
-                              top,
-                              height: Math.max(height - 2, 16),
-                              left: `${(b.lane / b.lanes) * 100}%`,
-                              width: `calc(${100 / b.lanes}% - 3px)`,
-                            }}
-                            title={`${b.label} · ${b.teacherName} · ${formatMinutes(b.startMin)}-${formatMinutes(b.endMin)}${
-                              b.guessedMeridiem ? " (오전/오후가 적혀 있지 않아 오후로 봤습니다)" : ""
-                            }`}
-                            data-testid={`timetable-block-${b.classId}-${b.day}`}
-                          >
-                            <div className="truncate text-[11px] font-medium leading-tight">
-                              {b.short}
-                              {b.guessedMeridiem && <span className="opacity-60"> ?</span>}
-                            </div>
-                            {!tight && (
-                              <div className="truncate text-[10px] leading-tight opacity-75">
-                                {formatMinutes(b.startMin)}-{formatMinutes(b.endMin)}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                  </div>
-                ))}
-              </div>
+            {/* 상단: 주중 시간표 (월~금). 시간 범위는 주중 수업에만 맞춘다. */}
+            <TimetableSection
+              days={WEEKDAYS}
+              blocks={weekdayBlocks}
+              startHour={wdStart}
+              endHour={wdEnd}
+              emptyText={
+                selectedName
+                  ? `${selectedName} 선생님의 주중 수업은 없습니다.`
+                  : "주중(월~금) 수업이 없습니다."
+              }
+            />
+            {/* 하단: 주말 시간표 (토·일). 분리된 카드가 아니라 같은 카드 안의 하단 구역. */}
+            <div className="mt-4 border-t pt-4">
+              <TimetableSection
+                days={WEEKEND}
+                blocks={weekendBlocks}
+                startHour={weStart}
+                endHour={weEnd}
+                emptyText={
+                  selectedName
+                    ? `${selectedName} 선생님의 주말 수업은 없습니다.`
+                    : "주말(토·일) 수업이 없습니다."
+                }
+              />
             </div>
           </div>
         )}
 
-        {blocks.some((b) => b.guessedMeridiem) && (
+        {(weekdayBlocks.some((b) => b.guessedMeridiem) || weekendBlocks.some((b) => b.guessedMeridiem)) && (
           <p className="mt-3 text-xs text-muted-foreground">
             ? 표시는 일정에 오전·오후가 없어 오후로 본 수업입니다. 반 수정에서
             "19:00-21:00"처럼 적으면 추측하지 않습니다.
@@ -361,5 +328,122 @@ export default function WeeklyTimetable({ classes, teachers }: Props) {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * 요일 목록·수업 블록·시간 범위를 받아 격자 하나를 그린다.
+ * 주중과 주말 두 번 쓰기 위해 뽑아낸 하위 컴포넌트.
+ *
+ * min-width는 요일 수에 맞춰 다르게 준다. 주중(5열)은 720px, 주말(2열)은 320px.
+ * 같은 720px을 쓰면 주말은 두 칸이 화면 절반씩 차지해 큼직해 보이는데,
+ * 원장 눈에는 주중과 주말이 나란한 척도로 읽혀야 한다.
+ */
+function TimetableSection({
+  days,
+  blocks,
+  startHour,
+  endHour,
+  emptyText,
+}: {
+  days: readonly Day[];
+  blocks: Block[];
+  startHour: number;
+  endHour: number;
+  emptyText: string;
+}) {
+  const hours = Array.from({ length: endHour - startHour }, (_, i) => startHour + i);
+  const gridHeight = hours.length * HOUR_PX;
+  const topOf = (min: number) => ((min - startHour * 60) / 60) * HOUR_PX;
+
+  // 주중과 주말이 세로 눈금 폭·요일 폭이 같아 보이도록, 요일 하나의 최소 폭을 고정한다.
+  const minWidth = 48 + days.length * 96;
+
+  if (blocks.length === 0) {
+    return <p className="py-6 text-center text-sm text-muted-foreground">{emptyText}</p>;
+  }
+
+  return (
+    <div style={{ minWidth }}>
+      {/* 요일 머리 */}
+      <div className="flex border-b">
+        <div className="w-12 shrink-0" />
+        {days.map((d) => (
+          <div
+            key={d}
+            className={`flex-1 pb-2 text-center text-sm font-medium ${
+              d === "토" ? "text-blue-600" : d === "일" ? "text-rose-600" : ""
+            }`}
+          >
+            {d}
+          </div>
+        ))}
+      </div>
+
+      {/* 격자 */}
+      <div className="flex" style={{ height: gridHeight }}>
+        {/* 시간 눈금 */}
+        <div className="relative w-12 shrink-0">
+          {hours.map((h, i) => (
+            <div
+              key={h}
+              className="absolute right-2 -translate-y-1/2 text-xs tabular-nums text-muted-foreground"
+              style={{ top: i * HOUR_PX }}
+            >
+              {h}시
+            </div>
+          ))}
+        </div>
+
+        {days.map((day) => (
+          <div key={day} className="relative flex-1 border-l">
+            {/* 한 시간마다 옅은 줄 */}
+            {hours.map((h, i) => (
+              <div
+                key={h}
+                className="absolute inset-x-0 border-t border-dashed border-muted"
+                style={{ top: i * HOUR_PX }}
+              />
+            ))}
+
+            {blocks
+              .filter((b) => b.day === day)
+              .map((b) => {
+                const top = topOf(b.startMin);
+                const height = ((b.endMin - b.startMin) / 60) * HOUR_PX;
+                // 40분이 안 되는 칸은 글씨 두 줄이 안 들어간다. 셋 이상 겹쳐
+                // 좁아진 칸도 시각을 넣으면 잘려서 오히려 지저분하다.
+                const tight = height < 38 || b.lanes >= 3;
+                return (
+                  <div
+                    key={`${b.classId}-${b.day}-${b.startMin}`}
+                    className={`absolute overflow-hidden rounded-sm border-l-[3px] px-1.5 py-0.5 ${b.color.block}`}
+                    style={{
+                      top,
+                      height: Math.max(height - 2, 16),
+                      left: `${(b.lane / b.lanes) * 100}%`,
+                      width: `calc(${100 / b.lanes}% - 3px)`,
+                    }}
+                    title={`${b.label} · ${b.teacherName} · ${formatMinutes(b.startMin)}-${formatMinutes(b.endMin)}${
+                      b.guessedMeridiem ? " (오전/오후가 적혀 있지 않아 오후로 봤습니다)" : ""
+                    }`}
+                    data-testid={`timetable-block-${b.classId}-${b.day}`}
+                  >
+                    <div className="truncate text-[11px] font-medium leading-tight">
+                      {b.short}
+                      {b.guessedMeridiem && <span className="opacity-60"> ?</span>}
+                    </div>
+                    {!tight && (
+                      <div className="truncate text-[10px] leading-tight opacity-75">
+                        {formatMinutes(b.startMin)}-{formatMinutes(b.endMin)}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }

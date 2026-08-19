@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Plus, Edit, Trash2, BookOpen, Users, Calendar, DollarSign, Info, ChevronDown, ChevronRight } from "lucide-react";
+import { Plus, Edit, Trash2, BookOpen, Users, Calendar, DollarSign, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -211,7 +211,7 @@ export default function Classes({ userRole }: ClassesProps) {
           </p>
         </div>
         
-        {(userRole === 'owner' || userRole === 'superadmin') && (
+        {(userRole === 'owner' || userRole === 'teacher' || userRole === 'superadmin') && (
           <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
             <DialogTrigger asChild>
               <Button data-testid="button-add-class">
@@ -344,12 +344,6 @@ export default function Classes({ userRole }: ClassesProps) {
           </Dialog>
         )}
         
-        {userRole === 'teacher' && (
-          <div className="text-sm text-muted-foreground bg-muted/50 px-3 py-2 rounded-lg flex items-center gap-2">
-            <Info className="h-4 w-4" />
-            <span>반 등록/수정/삭제는 학원장만 가능합니다</span>
-          </div>
-        )}
       </div>
 
       {/* 선생님별 개설 강의 */}
@@ -409,7 +403,7 @@ export default function Classes({ userRole }: ClassesProps) {
                               {classItem.isActive ? "활성" : "비활성"}
                             </Badge>
                           </div>
-                          {(userRole === 'owner' || userRole === 'superadmin') && (
+                          {(userRole === 'owner' || userRole === 'teacher' || userRole === 'superadmin') && (
                             <div className="flex items-center gap-1">
                               <Button
                                 size="icon"
@@ -419,6 +413,8 @@ export default function Classes({ userRole }: ClassesProps) {
                               >
                                 <Edit className="h-4 w-4" />
                               </Button>
+                              {/* 삭제는 원장 전용 — 수강 이력이 걸린 반은 되돌리기 어렵다 */}
+                              {(userRole === 'owner' || userRole === 'superadmin') && (
                               <AlertDialog>
                                 <AlertDialogTrigger asChild>
                                   <Button
@@ -450,6 +446,7 @@ export default function Classes({ userRole }: ClassesProps) {
                                   </AlertDialogFooter>
                                 </AlertDialogContent>
                               </AlertDialog>
+                              )}
                             </div>
                           )}
                         </CardHeader>

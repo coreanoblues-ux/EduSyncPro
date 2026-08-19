@@ -793,7 +793,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/classes',
     authGuard,
     tenantGuard,
-    roleGuard('owner'),
+    // 반 추가는 강사도 할 수 있게 한다. 원장 혼자 반을 세팅하다 보면 학기 초 폭주가 심하고,
+    // 새 강사가 자기 반을 직접 등록하지 못하면 강사 채용이 실질적으로 원장 병목이 된다.
+    roleGuard('owner', 'teacher'),
     validateBody(insertClassSchema.omit({ tenantId: true, isActive: true })),
     async (req: Request, res: Response) => {
       try {
@@ -815,7 +817,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.put('/api/classes/:id',
     authGuard,
     tenantGuard,
-    roleGuard('owner'),
+    // 편집도 강사에게 허용. 시간표·수강료 조정을 원장이 매번 대신 눌러 줄 필요가 없다.
+    // 삭제는 여전히 원장 전용 (수강 이력이 걸린 반을 강사가 실수로 지우면 복구가 어렵다).
+    roleGuard('owner', 'teacher'),
     validateParams(idParamSchema),
     validateBody(insertClassSchema.omit({ tenantId: true }).partial()),
     async (req: Request, res: Response) => {

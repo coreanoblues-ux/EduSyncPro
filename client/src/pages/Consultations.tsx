@@ -8,12 +8,13 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MessageSquare, Phone, Search, Trash2, UserPlus, CalendarClock } from "lucide-react";
+import { MessageSquare, Phone, Search, Trash2, UserPlus, CalendarClock, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -133,6 +134,10 @@ export default function Consultations({ userRole }: ConsultationsProps) {
   });
   const ltMode: "schedule" | "record" = levelTestTarget?.status === "레벨테스트예정" ? "record" : "schedule";
 
+  // 메모/후속조치/과목 수정 다이얼로그. 원장이 각 단계에서 상담 내용을 직접 다듬을 수 있게 한다.
+  const [editTarget, setEditTarget] = useState<Consultation | null>(null);
+  const [editForm, setEditForm] = useState({ subject: "", followUp: "", memo: "" });
+
   const { toast } = useToast();
   const qc = useQueryClient();
 
@@ -231,6 +236,34 @@ export default function Consultations({ userRole }: ConsultationsProps) {
       toast({ title: "저장 실패", description: err.message.replace(/^\d+:\s*/, ""), variant: "destructive" });
     },
   });
+
+  const editMutation = useMutation({
+    mutationFn: async (id: string) => {
+      // 빈 문자열은 null로 보내 원본이 지워지도록 한다. 원장이 의도적으로 비우는 경우가 있음.
+      await apiRequest("PATCH", `/api/consultations/${id}`, {
+        subject: editForm.subject.trim() || null,
+        followUp: editForm.followUp.trim() || null,
+        memo: editForm.memo.trim() || null,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/consultations"] });
+      setEditTarget(null);
+      toast({ title: "상담 내용이 저장되었습니다" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "저장 실패", description: err.message.replace(/^\d+:\s*/, ""), variant: "destructive" });
+    },
+  });
+
+  const openEdit = (c: Consultation) => {
+    setEditForm({
+      subject: c.subject ?? "",
+      followUp: c.followUp ?? "",
+      memo: c.memo ?? "",
+    });
+    setEditTarget(c);
+  };
 
   const openLevelTest = (c: Consultation) => {
     // 예약 모드: 현재 값을 기본으로 (yyyy-MM-ddTHH:mm)
@@ -434,6 +467,15 @@ export default function Consultations({ userRole }: ConsultationsProps) {
                         ))}
                       </SelectContent>
                     </Select>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      onClick={() => openEdit(c)}
+                      title="상담 내용 수정"
+                      data-testid={`button-edit-${c.id}`}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
                     {userRole === "owner" && (
                       <Button
                         size="icon"
@@ -676,6 +718,61 @@ export default function Consultations({ userRole }: ConsultationsProps) {
               data-testid="button-confirm-level-test"
             >
               {levelTestMutation.isPending ? "저장 중..." : "저장"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!editTarget} onOpenChange={(open) => !open && setEditTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>상담 내용 수정</DialogTitle>
+            <DialogDescription>
+              {editTarget?.studentName || editTarget?.guardianName || "이름 미상"} · {editTarget?.status}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>문의 과목</Label>
+              <Input
+                value={editForm.subject}
+                onChange={(e) => setEditForm({ ...editForm, subject: e.target.value })}
+                placeholder="예: 영어, 수학"
+                data-testid="input-edit-subject"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>후속 조치</Label>
+              <Input
+                value={editForm.followUp}
+                onChange={(e) => setEditForm({ ...editForm, followUp: e.target.value })}
+                placeholder="예: 다음주 화요일 재통화"
+                data-testid="input-edit-follow-up"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>메모</Label>
+              <Textarea
+                value={editForm.memo}
+                onChange={(e) => setEditForm({ ...editForm, memo: e.target.value })}
+                rows={5}
+                placeholder="상담 내용 메모"
+                data-testid="input-edit-memo"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditTarget(null)}>
+              취소
+            </Button>
+            <Button
+              onClick={() => editTarget && editMutation.mutate(editTarget.id)}
+              disabled={editMutation.isPending}
+              data-testid="button-confirm-edit"
+            >
+              {editMutation.isPending ? "저장 중..." : "저장"}
             </Button>
           </DialogFooter>
         </DialogContent>

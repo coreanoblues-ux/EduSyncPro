@@ -407,6 +407,48 @@ export const TOOL_DEFINITIONS: Array<{
   {
     type: "function",
     function: {
+      name: "update_consultation",
+      description:
+        "기존 상담 기록을 수정한다. 상태 변경, 메모 추가/교체, 후속조치·과목·학년·전화·보호자명 수정에 쓴다. " +
+        "학생 이름 + 전화번호로 대상 상담을 찾는다. create_consultation과 달리 새 카드를 만들지 않는다. " +
+        "메모는 기본이 append(이어붙임)이며, memo_mode='replace'를 명시하면 덮어쓴다.",
+      parameters: {
+        type: "object",
+        properties: {
+          consultation_id: { type: "string", description: "상담 ID (있으면 최우선)" },
+          student_name: { type: "string", description: "학생 이름 (ID 없을 때 필수)" },
+          phone: { type: "string", description: "전화번호 (동명이인 구분 및 정보 갱신용)" },
+          status: {
+            type: "string",
+            enum: [
+              "상담문의",
+              "레벨테스트예정",
+              "레벨테스트완료",
+              "반배정상담",
+              "대기등록",
+              "최종등록",
+              "보류",
+            ],
+            description: "변경할 상담 상태",
+          },
+          subject: { type: "string", description: "문의 과목" },
+          followUp: { type: "string", description: "후속 조치 메모" },
+          memo: { type: "string", description: "상담 메모 (기본은 이어붙임)" },
+          memo_mode: {
+            type: "string",
+            enum: ["append", "replace"],
+            description: "기본 append. 원장이 '메모 통째로 바꿔줘'라고 하면 replace.",
+          },
+          student_grade: { type: "string", description: "학년 (예: 중1)" },
+          guardian_name: { type: "string", description: "보호자명" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "schedule_level_test",
       description:
         "기존 상담 건에 레벨테스트 일정을 잡는다. 상태가 '레벨테스트예정'으로 바뀐다. 학생 이름 또는 상담 ID로 지정한다.",
@@ -1312,6 +1354,57 @@ type ConsultationStatus =
   | "최종등록"
   | "보류";
 
+/**
+ * 두 전화번호가 같은 사람의 번호인지 판단한다.
+ * 하이픈·공백 제거 후 뒷자리 8자리로 비교한다 (010-XXXX-YYYY의 XXXXYYYY).
+ * 같은 학원장이 한 번은 "010-4444-3333", 다른 번호는 "01044443333"으로 넣어도 매칭된다.
+ */
+function samePhone(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const na = a.replace(/[^0-9]/g, "");
+  const nb = b.replace(/[^0-9]/g, "");
+  if (!na || !nb) return false;
+  return na.slice(-8) === nb.slice(-8);
+}
+
+/**
+ * 같은 사람으로 볼 만한 기존 상담을 찾는다.
+ * 판정 기준(우선순위):
+ *   1) 이름 + 전화번호가 둘 다 일치 → 확실
+ *   2) 전화번호만 일치 → 확실 (같은 학부모 번호는 사실상 동일 가족의 학생)
+ *   3) 이름만 일치하고 전화가 한쪽만 있는 경우 → 확실
+ * "보류"는 이미 진행이 멈춘 건이므로 제외한다.
+ */
+async function findExistingConsultation(
+  args: { studentName?: string | null; phone?: string | null },
+  ctx: ToolContext,
+): Promise<Consultation | null> {
+  const name = args.studentName?.trim();
+  const phone = args.phone?.trim();
+  if (!name && !phone) return null;
+
+  const rows = await storage.getConsultationsByTenant(ctx.tenantId);
+  const active = rows.filter((r) => r.status !== "보류");
+
+  if (name && phone) {
+    const both = active.find(
+      (r) => (r.studentName ?? "").trim() === name && samePhone(r.phone, phone),
+    );
+    if (both) return both;
+  }
+  if (phone) {
+    const byPhone = active.find((r) => samePhone(r.phone, phone));
+    if (byPhone) return byPhone;
+  }
+  if (name) {
+    const byName = active.find(
+      (r) => (r.studentName ?? "").trim() === name && (!phone || !r.phone),
+    );
+    if (byName) return byName;
+  }
+  return null;
+}
+
 async function createConsultation(
   args: {
     phone?: string;
@@ -1329,6 +1422,57 @@ async function createConsultation(
   const grade = args.studentGrade
     ? canonicalGrade(args.studentGrade) ?? args.studentGrade
     : null;
+
+  // ⚠ 중복 방지: 같은 사람(이름+전화)의 상담이 이미 있으면 새로 만들지 않고 상태·필드를
+  //   갱신한다. 이걸 안 하면 원장이 "○○ 대기등록"이라고만 말했을 때 기존 상담 카드는 남고
+  //   대기 목록에 별도 카드가 하나 더 생겨 같은 학생이 두 군데에 걸린다.
+  const existing = await findExistingConsultation(
+    { studentName: args.studentName, phone: args.phone },
+    ctx,
+  );
+
+  if (existing) {
+    const patch: Record<string, unknown> = {};
+    if (args.status && args.status !== existing.status) patch.status = args.status;
+    if (grade && grade !== existing.studentGrade) patch.studentGrade = grade;
+    // 새 값이 오면 덮어쓰고, 값이 없으면 그대로 둔다 (원본 정보 손실 방지).
+    if (args.phone && args.phone !== existing.phone) patch.phone = args.phone;
+    if (args.guardianName && args.guardianName !== existing.guardianName) patch.guardianName = args.guardianName;
+    if (args.subject && args.subject !== existing.subject) patch.subject = args.subject;
+    if (args.followUp && args.followUp !== existing.followUp) patch.followUp = args.followUp;
+    // 메모는 이어붙인다 (덮어쓰면 이전 상담 기록이 사라진다).
+    if (args.memo) {
+      const stamp = new Date().toLocaleString("ko-KR", { month: "numeric", day: "numeric" });
+      patch.memo = existing.memo ? `${existing.memo}\n[${stamp}] ${args.memo}` : args.memo;
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return {
+        success: true,
+        merged: true,
+        consultation: {
+          id: existing.id,
+          studentName: existing.studentName ?? "-",
+          status: existing.status,
+        },
+        note: `이미 동일 학생 상담이 존재합니다. 변경할 새 정보가 없어 기존 카드를 그대로 둡니다.`,
+      };
+    }
+
+    const updated = await storage.updateConsultation(existing.id, patch);
+    return {
+      success: true,
+      merged: true,
+      consultation: {
+        id: updated.id,
+        studentName: updated.studentName ?? "-",
+        guardianName: updated.guardianName ?? "-",
+        status: updated.status,
+        createdAt: formatDate(updated.createdAt),
+      },
+      note: `동일 학생(${existing.studentName ?? "-"})의 기존 상담을 발견해서 새로 만들지 않고 갱신했습니다. 변경: ${Object.keys(patch).join(", ")}`,
+    };
+  }
 
   const created = await storage.createConsultation({
     tenantId: ctx.tenantId,
@@ -1348,12 +1492,94 @@ async function createConsultation(
 
   return {
     success: true,
+    merged: false,
     consultation: {
       id: created.id,
       studentName: created.studentName ?? "-",
       guardianName: created.guardianName ?? "-",
       status: created.status,
       createdAt: formatDate(created.createdAt),
+    },
+  };
+}
+
+async function updateConsultation(
+  args: {
+    consultation_id?: string;
+    student_name?: string;
+    phone?: string;
+    status?: ConsultationStatus;
+    subject?: string;
+    followUp?: string;
+    memo?: string;
+    memo_mode?: "append" | "replace";
+    student_grade?: string;
+    guardian_name?: string;
+  },
+  ctx: ToolContext,
+) {
+  // 대상 상담 찾기: consultation_id 최우선, 그다음 name+phone, 그다음 name 단독.
+  let target: Consultation | null = null;
+  if (args.consultation_id) {
+    const c = await storage.getConsultation(args.consultation_id);
+    if (!c || c.tenantId !== ctx.tenantId) return { error: "해당 상담을 찾을 수 없습니다." };
+    target = c;
+  } else {
+    target = await findExistingConsultation(
+      { studentName: args.student_name, phone: args.phone },
+      ctx,
+    );
+    if (!target) {
+      return {
+        error: `"${args.student_name ?? args.phone ?? "-"}" 에 해당하는 상담 기록을 찾지 못했습니다.`,
+      };
+    }
+  }
+
+  const patch: Record<string, unknown> = {};
+  if (args.status && args.status !== target.status) patch.status = args.status;
+  if (args.subject !== undefined && args.subject !== target.subject) patch.subject = args.subject || null;
+  if (args.followUp !== undefined && args.followUp !== target.followUp) patch.followUp = args.followUp || null;
+  if (args.guardian_name !== undefined && args.guardian_name !== target.guardianName)
+    patch.guardianName = args.guardian_name || null;
+  if (args.student_grade) {
+    const g = canonicalGrade(args.student_grade) ?? args.student_grade;
+    if (g !== target.studentGrade) patch.studentGrade = g;
+  }
+  if (args.phone !== undefined && args.phone !== target.phone) patch.phone = args.phone || null;
+
+  if (args.memo !== undefined) {
+    const mode = args.memo_mode ?? "append";
+    if (mode === "replace") {
+      patch.memo = args.memo || null;
+    } else {
+      // append: 기존 메모 아래에 날짜 스탬프와 함께 이어붙인다.
+      if (args.memo.trim()) {
+        const stamp = new Date().toLocaleString("ko-KR", { month: "numeric", day: "numeric" });
+        patch.memo = target.memo ? `${target.memo}\n[${stamp}] ${args.memo}` : args.memo;
+      }
+    }
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return {
+      success: true,
+      changed: false,
+      consultation: { id: target.id, studentName: target.studentName ?? "-", status: target.status },
+      note: "변경할 내용이 없어 그대로 두었습니다.",
+    };
+  }
+
+  const updated = await storage.updateConsultation(target.id, patch);
+  return {
+    success: true,
+    changed: true,
+    changedFields: Object.keys(patch),
+    consultation: {
+      id: updated.id,
+      studentName: updated.studentName ?? "-",
+      status: updated.status,
+      memo: updated.memo,
     },
   };
 }
@@ -2107,6 +2333,7 @@ const TOOL_MAP: Record<
   compare_monthly_revenue: compareMonthlyRevenue,
   get_recent_consultations: getRecentConsultations,
   create_consultation: createConsultation,
+  update_consultation: updateConsultation,
   schedule_level_test: scheduleLevelTest,
   record_level_test_result: recordLevelTestResult,
   list_level_tests: listLevelTests,

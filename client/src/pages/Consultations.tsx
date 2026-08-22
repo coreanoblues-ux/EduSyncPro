@@ -32,7 +32,16 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import type { Consultation, Class } from "@shared/schema";
+import { labelClassesByTeacher } from "@shared/classLabel";
+import type { Consultation, Class, Teacher } from "@shared/schema";
+
+/**
+ * 원장이 이 다이얼로그에서 반을 고르는 순서. 개수순 대신 이 순서를 우선한다.
+ * 페이지원 영어학원 사정: 정우석 → 김명근 → 고은채 순으로 상담 전환이 몰린다.
+ * 정우석 선생님 안에서는 월수 → 화목 → 주말 순으로 살펴보시니 스케줄까지 맞춘다.
+ */
+const CONSULTATION_TEACHER_ORDER = ["정우석", "김명근", "고은채"];
+const CONSULTATION_SCHEDULE_ORDER = ["월수", "화목", "주말"];
 
 type Status =
   | "상담문의"
@@ -134,9 +143,10 @@ export default function Consultations({ userRole }: ConsultationsProps) {
   });
   const ltMode: "schedule" | "record" = levelTestTarget?.status === "레벨테스트예정" ? "record" : "schedule";
 
-  // 메모/후속조치/과목 수정 다이얼로그. 원장이 각 단계에서 상담 내용을 직접 다듬을 수 있게 한다.
+  // 메모/후속조치/과목/연락처 수정 다이얼로그. 원장이 각 단계에서 상담 내용을 직접 다듬을 수 있게 한다.
+  // phone: 급하게 입력하느라 사전에 못 넣은 보호자 연락처를 나중에 추가할 수 있게 한다.
   const [editTarget, setEditTarget] = useState<Consultation | null>(null);
-  const [editForm, setEditForm] = useState({ subject: "", followUp: "", memo: "" });
+  const [editForm, setEditForm] = useState({ subject: "", followUp: "", memo: "", phone: "" });
 
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -145,6 +155,19 @@ export default function Consultations({ userRole }: ConsultationsProps) {
     queryKey: ["/api/consultations"],
   });
   const { data: classes = [] } = useQuery<Class[]>({ queryKey: ["/api/classes"] });
+  const { data: teachers = [] } = useQuery<Teacher[]>({ queryKey: ["/api/teachers"] });
+
+  // 학생 전환·추천반 드롭다운에서 쓸 반 목록.
+  // 강사 표기([김], [정], [고] 등)를 자동으로 붙이고, 원장이 자주 고르는 강사·요일 순으로 정렬한다.
+  const activeClassOptions = useMemo(
+    () =>
+      labelClassesByTeacher(
+        classes.filter((c) => c.isActive !== false),
+        teachers,
+        { teacherOrder: CONSULTATION_TEACHER_ORDER, scheduleOrder: CONSULTATION_SCHEDULE_ORDER }
+      ),
+    [classes, teachers]
+  );
 
   const counts = useMemo(() => {
     const acc: Record<string, number> = Object.fromEntries(STATUSES.map((s) => [s, 0]));
@@ -244,6 +267,7 @@ export default function Consultations({ userRole }: ConsultationsProps) {
         subject: editForm.subject.trim() || null,
         followUp: editForm.followUp.trim() || null,
         memo: editForm.memo.trim() || null,
+        phone: editForm.phone.trim() || null,
       });
     },
     onSuccess: () => {
@@ -261,6 +285,7 @@ export default function Consultations({ userRole }: ConsultationsProps) {
       subject: c.subject ?? "",
       followUp: c.followUp ?? "",
       memo: c.memo ?? "",
+      phone: c.phone ?? "",
     });
     setEditTarget(c);
   };
@@ -586,9 +611,9 @@ export default function Consultations({ userRole }: ConsultationsProps) {
                   <SelectValue placeholder="반을 선택하세요" />
                 </SelectTrigger>
                 <SelectContent>
-                  {classes.filter((c) => c.isActive !== false).map((c) => (
+                  {activeClassOptions.map((c) => (
                     <SelectItem key={c.id} value={c.id}>
-                      {c.name} · {c.subject} · {c.defaultTuition.toLocaleString()}원
+                      {c.label} · {c.subject} · {c.defaultTuition.toLocaleString()}원
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -690,9 +715,9 @@ export default function Consultations({ userRole }: ConsultationsProps) {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="none">추천하지 않음</SelectItem>
-                      {classes.filter((c) => c.isActive !== false).map((c) => (
+                      {activeClassOptions.map((c) => (
                         <SelectItem key={c.id} value={c.id}>
-                          {c.name} · {c.subject}
+                          {c.label} · {c.subject}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -733,6 +758,18 @@ export default function Consultations({ userRole }: ConsultationsProps) {
           </DialogHeader>
 
           <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>보호자 연락처</Label>
+              <Input
+                value={editForm.phone}
+                onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+                placeholder="예: 010-1234-5678"
+                data-testid="input-edit-phone"
+              />
+              <p className="text-xs text-muted-foreground">
+                급하게 상담을 넣느라 연락처가 빠졌다면 여기서 추가하세요.
+              </p>
+            </div>
             <div className="space-y-2">
               <Label>문의 과목</Label>
               <Input

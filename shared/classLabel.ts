@@ -19,6 +19,50 @@ export interface ClassLike {
   id: string;
   name: string;
   teacherId: string;
+  /** 스케줄 기반 정렬(월수 → 화목 → 주말 등)을 원할 때 있으면 참고한다. */
+  schedule?: string;
+}
+
+/**
+ * 드롭다운 정렬을 원장의 습관에 맞추는 옵션.
+ *
+ * 기본 동작은 "반이 많은 교사가 위, 묶음 안에서는 이름순"이라 대부분의 경우 충분하지만,
+ * 원장이 특정 순서를 고집하는 화면(예: 상담→학생 전환 다이얼로그)에서는 이 옵션으로 덮는다.
+ */
+export interface OrderOptions {
+  /**
+   * 이 순서대로 교사를 앞에 배치한다. 여기에 없는 교사는 기존 규칙(개수순)으로 그 뒤에 붙는다.
+   * 원장이 "이 사람 반을 제일 자주 고른다"고 정해 둔 경우에 쓴다.
+   */
+  teacherOrder?: string[];
+  /**
+   * 같은 교사의 반들 안에서 스케줄로 먼저 묶는 기준. 예: `["월수", "화목", "주말"]`.
+   * 지정된 키워드에 걸리지 않는 반은 뒤로 밀린다. 지정 안 하면 기존처럼 이름순.
+   */
+  scheduleOrder?: string[];
+}
+
+/**
+ * 반의 `schedule` 문자열이 키워드에 해당하는지 판정한다.
+ *
+ * DB에는 "월수", "월 수 금", "화목", "주말", "토일" 같은 표기가 섞여 있어서 단순
+ * `includes`로는 부족하다. `월수`는 월과 수가 모두 있어야 하고, `주말`은 실제 "주말"
+ * 표기나 토/일 요일이 들어 있어야 걸린다.
+ */
+function scheduleMatchesKeyword(schedule: string, kw: string): boolean {
+  if (kw === "월수") return /월/.test(schedule) && /수/.test(schedule);
+  if (kw === "화목") return /화/.test(schedule) && /목/.test(schedule);
+  if (kw === "주말") return /주말/.test(schedule) || /[토일]/.test(schedule);
+  return schedule.includes(kw);
+}
+
+function scheduleRank(schedule: string | undefined, order: string[]): number {
+  const s = (schedule ?? "").trim();
+  if (!s) return order.length;
+  for (let i = 0; i < order.length; i++) {
+    if (scheduleMatchesKeyword(s, order[i])) return i;
+  }
+  return order.length;
 }
 
 /** 이름 맨 앞의 `[...]` 표기를 떼어 낸다. 없으면 null. */
@@ -144,10 +188,12 @@ export interface TeacherGroup<T> {
  */
 export function groupClassesByTeacher<T extends ClassLike>(
   classes: T[],
-  teachers: TeacherLike[]
+  teachers: TeacherLike[],
+  options: OrderOptions = {}
 ): Array<TeacherGroup<T>> {
   const prefixes = teacherPrefixes(teachers, classes);
   const byId = new Map(teachers.map((t) => [t.id, t]));
+  const { teacherOrder, scheduleOrder } = options;
 
   const groups: Array<TeacherGroup<T>> = [];
   const indexOf = new Map<string, number>();
@@ -169,12 +215,30 @@ export function groupClassesByTeacher<T extends ClassLike>(
   }
 
   for (const g of groups) {
-    g.classes.sort((a, b) => sortKey(a.label).localeCompare(sortKey(b.label), "ko"));
+    g.classes.sort((a, b) => {
+      if (scheduleOrder && scheduleOrder.length > 0) {
+        const ra = scheduleRank(a.schedule, scheduleOrder);
+        const rb = scheduleRank(b.schedule, scheduleOrder);
+        if (ra !== rb) return ra - rb;
+      }
+      return sortKey(a.label).localeCompare(sortKey(b.label), "ko");
+    });
   }
+
+  const teacherRank = (name: string | undefined): number => {
+    if (!teacherOrder || !name) return teacherOrder ? teacherOrder.length : 0;
+    const idx = teacherOrder.indexOf(name);
+    return idx === -1 ? teacherOrder.length : idx;
+  };
 
   return groups.sort((a, b) => {
     // 담당 교사가 없는 반은 늘 맨 아래. 개수가 많아도 먼저 보여줄 이유가 없다.
     if (!a.teacher !== !b.teacher) return a.teacher ? -1 : 1;
+    if (teacherOrder && teacherOrder.length > 0) {
+      const ra = teacherRank(a.teacher?.name);
+      const rb = teacherRank(b.teacher?.name);
+      if (ra !== rb) return ra - rb;
+    }
     if (a.classes.length !== b.classes.length) return b.classes.length - a.classes.length;
     return (a.teacher?.name ?? "").localeCompare(b.teacher?.name ?? "", "ko");
   });
@@ -183,7 +247,8 @@ export function groupClassesByTeacher<T extends ClassLike>(
 /** 드롭다운용 평평한 목록. 같은 교사의 반이 붙어서 나온다. */
 export function labelClassesByTeacher<T extends ClassLike>(
   classes: T[],
-  teachers: TeacherLike[]
+  teachers: TeacherLike[],
+  options: OrderOptions = {}
 ): Array<T & { label: string }> {
-  return groupClassesByTeacher(classes, teachers).flatMap((g) => g.classes);
+  return groupClassesByTeacher(classes, teachers, options).flatMap((g) => g.classes);
 }

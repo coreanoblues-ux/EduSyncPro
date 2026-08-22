@@ -13,6 +13,10 @@ import {
   shortClassLabel,
 } from "@shared/classLabel";
 
+// 아래 정렬 옵션 테스트에서 쓴다. 상담→학생 전환 화면에서 원장이 실제로 쓰는 순서를 검증한다.
+const CONSULTATION_TEACHER_ORDER = ["정우석", "김명근", "고은채"];
+const CONSULTATION_SCHEDULE_ORDER = ["월수", "화목", "주말"];
+
 const T = {
   정우석: { id: "t-정우석", name: "정우석" },
   김명근: { id: "t-김명근", name: "김명근" },
@@ -214,6 +218,58 @@ check(
   shortClassLabel("[정]주말 고1 오후") === "주말 고1 오후",
   shortClassLabel("[정]주말 고1 오후")
 );
+
+// ─── 정렬 옵션 (상담→학생 전환 다이얼로그의 강사 우선 순서) ───────────────
+{
+  const ordered = groupClassesByTeacher(classes, teachers, {
+    teacherOrder: CONSULTATION_TEACHER_ORDER,
+  });
+  const names = ordered.map((g) => g.teacher?.name).join(",");
+  check(
+    "teacherOrder가 개수보다 우선한다",
+    names.startsWith("정우석,김명근,고은채"),
+    `실제 순서: ${names}`
+  );
+  check(
+    "teacherOrder에 없는 교사는 뒤에 개수 순으로 남는다",
+    ordered.slice(3).map((g) => g.teacher?.name).join(",") === "이홍석,정경란",
+    ordered.slice(3).map((g) => `${g.teacher?.name}(${g.classes.length})`).join(",")
+  );
+}
+
+// ─── 스케줄 우선순위 (월수 → 화목 → 주말) ────────────────────────────────
+{
+  // 스케줄 필드가 있는 별도 데이터셋. 실제 반 스키마와 같은 형태.
+  const scheduledClasses = [
+    { id: "s1", name: "심화 A", teacherId: T.정우석.id, schedule: "화 목" },
+    { id: "s2", name: "심화 B", teacherId: T.정우석.id, schedule: "월 수" },
+    { id: "s3", name: "고1 오전", teacherId: T.정우석.id, schedule: "주말" },
+    { id: "s4", name: "기본 C", teacherId: T.정우석.id, schedule: "월 수 금" },
+    { id: "s5", name: "기본 D", teacherId: T.정우석.id, schedule: "화 목 토" }, // 토가 있어도 화목이 먼저 걸리는 것을 기대
+  ];
+  const grouped = groupClassesByTeacher(scheduledClasses, teachers, {
+    scheduleOrder: CONSULTATION_SCHEDULE_ORDER,
+  });
+  const labels = grouped[0].classes.map((c) => `${c.name}(${c.schedule})`).join(",");
+  check(
+    "scheduleOrder: 월수 반이 화목보다 먼저",
+    grouped[0].classes[0].schedule?.includes("월") && grouped[0].classes[0].schedule?.includes("수"),
+    labels
+  );
+  check(
+    "scheduleOrder: 주말 반은 맨 뒤",
+    grouped[0].classes[grouped[0].classes.length - 1].schedule === "주말",
+    labels
+  );
+  // 화목토처럼 요일이 섞인 경우, 첫 매칭 규칙(scheduleMatchesKeyword)이 화목 → 주말 순으로
+  // 배열을 순회하므로 화목이 먼저 걸린다. 이게 원장의 직관과 맞다.
+  const idxOf = (name: string) => grouped[0].classes.findIndex((c) => c.name === name);
+  check(
+    "월수 그룹 내부는 두 개 모두 앞에 있다",
+    idxOf("심화 B") < idxOf("심화 A") && idxOf("기본 C") < idxOf("심화 A"),
+    grouped[0].classes.map((c) => c.name).join(",")
+  );
+}
 
 console.log(`\n${pass}건 통과 / ${fail}건 실패`);
 process.exit(fail === 0 ? 0 : 1);

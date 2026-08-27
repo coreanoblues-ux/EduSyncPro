@@ -726,6 +726,9 @@ export type PaymentIntent = typeof paymentIntents.$inferSelect;
 export type PaymentIntentStatus = PaymentIntent["status"];
 export type TossPaymentTransaction = typeof tossPaymentTransactions.$inferSelect;
 export type TossWebhookEvent = typeof tossWebhookEvents.$inferSelect;
+export type KioskDevice = typeof kioskDevices.$inferSelect;
+export type PaymentDispatch = typeof paymentDispatches.$inferSelect;
+export type PaymentDispatchStatus = PaymentDispatch["status"];
 
 export type InsertTenant = z.infer<typeof insertTenantSchema>;
 export type InsertUser = z.infer<typeof insertUserSchema>;

@@ -28,6 +28,7 @@ import {
   paymentIntents,
   tossPaymentTransactions,
   payments,
+  paymentDispatches,
   type PaymentIntentStatus,
 } from "@shared/schema";
 import { deviceGuard } from "./deviceAuth";
@@ -268,6 +269,19 @@ router.post(
           .update(paymentIntents)
           .set({ status: "APPROVED", approvedAt: new Date() })
           .where(eq(paymentIntents.id, intent.id));
+
+        // 9) 결제 단말기 모드로 만들어진 결제였다면 dispatch도 함께 APPROVED로 마감.
+        //    태블릿이 폴링해서 완료 화면으로 넘어갈 수 있게 하는 신호.
+        //    dispatch가 없으면(구 흐름) 조용히 건너뛴다.
+        await tx
+          .update(paymentDispatches)
+          .set({ status: "APPROVED", respondedAt: new Date() })
+          .where(
+            and(
+              eq(paymentDispatches.paymentKey, body.paymentKey),
+              eq(paymentDispatches.tenantId, tenantId)
+            )
+          );
 
         return {
           status: 200,

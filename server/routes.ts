@@ -33,6 +33,7 @@ import tossFrontAttendanceRouter from "./toss-front/attendance";
 import tossFrontWebhooksRouter from "./toss-front/webhooks";
 import tossFrontAdminRouter from "./toss-front/admin";
 import tossKioskRouter from "./toss-front/kioskRoutes";
+import tossDispatchRouter, { startDispatchExpirySweeper } from "./toss-front/dispatch";
 import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
 import { parseDays, parseSchedule } from "@shared/timetable";
@@ -1807,6 +1808,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.use("/api/toss-front", tossFrontAdminRouter);
   // 학생용 태블릿 웹앱 전용 API. 완전히 별도 인증(kioskGuard) 경로.
   app.use("/api/toss-kiosk", tossKioskRouter);
+  // 결제 단말기 모드 dispatch. 태블릿→서버, 서버→프론트 SSE, 프론트→서버 결과.
+  // /kiosk/dispatch* 는 kioskGuard, /dispatch/* 는 deviceGuard로 각각 인증.
+  app.use("/api/toss-kiosk", tossDispatchRouter);
+  app.use("/api/toss-front", tossDispatchRouter);
+  // 만료(3분 초과)된 dispatch를 30초 주기로 TIMEOUT으로 정리.
+  startDispatchExpirySweeper();
 
   const httpServer = createServer(app);
   return httpServer;

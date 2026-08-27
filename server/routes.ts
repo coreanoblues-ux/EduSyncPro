@@ -31,6 +31,7 @@ import tossFrontRouter from "./toss-front/routes";
 import tossFrontPaymentsRouter from "./toss-front/payments";
 import tossFrontAttendanceRouter from "./toss-front/attendance";
 import tossFrontWebhooksRouter from "./toss-front/webhooks";
+import tossFrontAdminRouter from "./toss-front/admin";
 import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
 import { parseDays, parseSchedule } from "@shared/timetable";
@@ -1802,6 +1803,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.use("/api/toss-front", tossFrontPaymentsRouter);
   app.use("/api/toss-front", tossFrontAttendanceRouter);
   app.use("/api/toss-front", tossFrontWebhooksRouter);
+  app.use("/api/toss-front", tossFrontAdminRouter);
 
   const httpServer = createServer(app);
   return httpServer;

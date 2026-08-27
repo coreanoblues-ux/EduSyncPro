@@ -20,6 +20,7 @@ import SignupForm from "@/components/SignupForm";
 import Dashboard from "@/components/Dashboard";
 import SuperAdminDashboard from "@/components/SuperAdminDashboard";
 import SystemAdmin from "@/pages/SystemAdmin";
+import TossFront from "@/pages/TossFront";
 import AcademySidebar from "@/components/AcademySidebar";
 import ThemeToggle from "@/components/ThemeToggle";
 
@@ -54,6 +55,9 @@ function Router({ user, tenant }: { user: User | null; tenant: Tenant | null }) 
       <Route path="/payments" component={() => <Payments userRole={user.role} />} />
       <Route path="/logs" component={() => <LessonLogs userRole={user.role} />} />
       <Route path="/overdues" component={() => <Overdues userRole={user.role} />} />
+      {(user.role === 'owner' || user.role === 'superadmin') && (
+        <Route path="/toss-front" component={() => <TossFront />} />
+      )}
       {user.role === 'superadmin' && (
         <Route path="/superadmin" component={() => <SuperAdminDashboard />} />
       )}

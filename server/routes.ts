@@ -27,6 +27,7 @@ import {
   updateTaskBodySchema
 } from "@shared/schema";
 import { parseInput, NlpConfigError } from "./lib/nlpParser";
+import tossFrontRouter from "./toss-front/routes";
 import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
 import { parseDays, parseSchedule } from "@shared/timetable";
@@ -1791,6 +1792,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }
   );
+
+  // Toss Front 2 플러그인 API. 인증은 라우터 안에서 자체 처리(원장 authGuard와
+  // 단말기 deviceGuard가 엔드포인트별로 분리돼 있다).
+  app.use("/api/toss-front", tossFrontRouter);
 
   const httpServer = createServer(app);
   return httpServer;

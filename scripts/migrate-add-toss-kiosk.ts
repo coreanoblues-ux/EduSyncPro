@@ -55,6 +55,8 @@ const NEW_TABLES: Array<{ name: string; ddl: string }> = [
         kiosk_device_id   VARCHAR REFERENCES kiosk_devices(id) ON DELETE SET NULL,
         toss_device_id    VARCHAR NOT NULL REFERENCES toss_front_devices(id) ON DELETE SET NULL,
         amount            INTEGER NOT NULL,
+        order_id          TEXT NOT NULL DEFAULT '',
+        order_name        TEXT NOT NULL DEFAULT '',
         status            payment_dispatch_status NOT NULL DEFAULT 'PENDING',
         delivered_at      TIMESTAMP,
         responded_at      TIMESTAMP,
@@ -65,6 +67,12 @@ const NEW_TABLES: Array<{ name: string; ddl: string }> = [
       )
     `,
   },
+];
+
+// 기존 payment_dispatches 테이블이 이미 만들어졌을 수 있으므로 컬럼 추가는 별도로 idempotent 처리.
+const COLUMN_ADDS: string[] = [
+  `ALTER TABLE payment_dispatches ADD COLUMN IF NOT EXISTS order_id   TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE payment_dispatches ADD COLUMN IF NOT EXISTS order_name TEXT NOT NULL DEFAULT ''`,
 ];
 
 const INDEXES: string[] = [
@@ -149,6 +157,11 @@ async function main() {
       console.log(`  table ${t.name}: 이미 존재`);
     }
   }
+
+  for (const stmt of COLUMN_ADDS) {
+    await pool.query(stmt);
+  }
+  console.log(`  columns: ${COLUMN_ADDS.length}개 실행 (ADD COLUMN IF NOT EXISTS)`);
 
   for (const idx of INDEXES) {
     await pool.query(idx);

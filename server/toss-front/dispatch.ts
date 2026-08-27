@@ -109,6 +109,7 @@ router.post("/kiosk/dispatch", kioskGuard, async (req: Request, res: Response) =
 
   const paymentKey = generatePaymentKey();
   const orderId = generateOrderId();
+  const orderName = `${invoice.studentName} · ${invoice.className} · ${invoice.paymentMonth}`;
   const expiresAt = new Date(Date.now() + DISPATCH_TTL_MS);
 
   try {
@@ -140,6 +141,8 @@ router.post("/kiosk/dispatch", kioskGuard, async (req: Request, res: Response) =
           kioskDeviceId: kiosk.id,
           tossDeviceId: tossDeviceId!,
           amount: invoice.amount,
+          orderId,
+          orderName,
           status: "PENDING",
           expiresAt,
         })
@@ -152,8 +155,8 @@ router.post("/kiosk/dispatch", kioskGuard, async (req: Request, res: Response) =
       dispatchId: dispatch.disp.id,
       paymentKey,
       orderId,
+      orderName,
       amount: invoice.amount,
-      orderName: `${invoice.studentName} · ${invoice.className} · ${invoice.paymentMonth}`,
       studentName: invoice.studentName,
       className: invoice.className,
       paymentMonth: invoice.paymentMonth,
@@ -264,6 +267,8 @@ router.get("/dispatch/stream", deviceGuard, async (req: Request, res: Response) 
       `event: payment.dispatch\ndata: ${JSON.stringify({
         dispatchId: p.id,
         paymentKey: p.paymentKey,
+        orderId: p.orderId,
+        orderName: p.orderName,
         amount: p.amount,
         expiresAt: p.expiresAt,
       })}\n\n`
@@ -274,22 +279,37 @@ router.get("/dispatch/stream", deviceGuard, async (req: Request, res: Response) 
 });
 
 /**
- * GET /dispatch/pending — SSE 폴백 폴링용.
- * 프론트가 SSE 재연결 실패 시 30초 주기로 호출해 현재 대기 중인 dispatch를 조회.
+ * GET /dispatch/pending — 1초 주기 폴링 진입점 (결제 단말기 모드의 기본 통신 채널).
+ *
+ * 반환 형태 { pending: {...} | null } — 프론트가 즉시 sdk.payment.requestPayment 에
+ * 필요한 필드를 그대로 갖도록 정규화한다. status='PENDING' 만 픽업 (DELIVERED 는 이미 다른
+ * 폴링 사이클이 잡아 결제창까지 띄운 것이므로 재진입 금지).
  */
 router.get("/dispatch/pending", deviceGuard, async (req: Request, res: Response) => {
   const device = req.device!;
-  const rows = await db
+  const [row] = await db
     .select()
     .from(paymentDispatches)
     .where(
       and(
         eq(paymentDispatches.tossDeviceId, device.id),
-        inArray(paymentDispatches.status, ["PENDING", "DELIVERED"] as PaymentDispatchStatus[])
+        eq(paymentDispatches.status, "PENDING")
       )
     )
-    .orderBy(paymentDispatches.createdAt);
-  return res.json(rows);
+    .orderBy(paymentDispatches.createdAt)
+    .limit(1);
+  if (!row) return res.json({ pending: null });
+  return res.json({
+    pending: {
+      dispatchId: row.id,
+      paymentKey: row.paymentKey,
+      orderId: row.orderId,
+      orderName: row.orderName,
+      amount: row.amount,
+      createdAt: row.createdAt,
+      expiresAt: row.expiresAt,
+    },
+  });
 });
 
 /** POST /dispatch/:id/ack — 프론트가 dispatch를 수신했음을 확정. DELIVERED로 표시 */
@@ -321,6 +341,9 @@ router.post("/dispatch/:id/ack", deviceGuard, async (req: Request, res: Response
  */
 const resultBodySchema = z.object({
   status: z.enum(["APPROVED", "CANCELED", "TIMEOUT", "FAILED"]),
+  // 플러그인은 reason 을 보내고 서버는 failureReason 필드에 저장한다.
+  // 두 이름을 모두 받아 하위 호환을 유지.
+  reason: z.string().max(300).optional(),
   failureReason: z.string().max(300).optional(),
 });
 
@@ -330,12 +353,13 @@ router.post("/dispatch/:id/result", deviceGuard, async (req: Request, res: Respo
   const device = req.device!;
 
   const openStates: PaymentDispatchStatus[] = ["PENDING", "DELIVERED"];
+  const reason = parsed.data.failureReason ?? parsed.data.reason ?? null;
   const result = await db
     .update(paymentDispatches)
     .set({
       status: parsed.data.status,
       respondedAt: new Date(),
-      failureReason: parsed.data.failureReason ?? null,
+      failureReason: reason,
     })
     .where(
       and(
@@ -357,7 +381,7 @@ router.post("/dispatch/:id/result", deviceGuard, async (req: Request, res: Respo
       .update(paymentIntents)
       .set({
         status: parsed.data.status === "TIMEOUT" ? "TIMEOUT" : parsed.data.status === "FAILED" ? "FAILED" : "CANCELED",
-        failureReason: parsed.data.failureReason ?? parsed.data.status,
+        failureReason: reason ?? parsed.data.status,
       })
       .where(and(eq(paymentIntents.paymentKey, result[0].paymentKey), eq(paymentIntents.tenantId, device.tenantId)));
   }

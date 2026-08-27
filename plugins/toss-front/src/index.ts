@@ -1,42 +1,50 @@
 /**
- * EduSyncPro 로비 키오스크 — Toss Front 2 플러그인 진입점.
+ * EduSyncPro Toss Front 2 플러그인 — "결제 단말기 모드".
  *
- * 화면 흐름:
- *   1. 대기 화면 → "부모님 번호 뒤 4자리" 입력
- *   2. 학생 후보가 여러 명이면 골라내는 화면
- *   3. 학생 확인 후 두 갈래:
- *      - "출석 체크" → 오늘 예정된 반 목록 → 반 선택 → 서버에 체크인
- *      - "학원비 결제" → 미납 청구서 목록 → 청구서 선택 → 카드 결제
- *   4. 완료 화면 (성공/실패) → 자동으로 대기 화면 복귀
+ * 이 단말기는 학생 검색·청구서 선택 UI가 없다. 학원 카운터 옆 태블릿 웹
+ * (/student-kiosk) 이 학생과 청구서를 골라 서버에 dispatch 를 만들어 두고,
+ * 이 단말기는 그 dispatch 를 pickup 해서 결제창만 띄운다.
  *
- * SDK 상세는 토스 개발자센터의 "Front Plugin Template API" 문서에 맞춘다.
- * 여기서는 SDK 인터페이스를 최소한만 가정한 얇은 구현으로 두어, 실제 SDK와
- * 연결할 때 표면적을 좁혀 놓는다.
+ * 동작 요약:
+ *   1) 부팅 → deviceKey 확인 → backup 복구 → 유휴 화면(sdk.template.renderIdlePage)
+ *   2) 1초마다 /api/toss-front/dispatch/pending 폴링
+ *   3) PENDING 이 있으면 즉시 ackDispatch → sdk.payment.requestPayment(...)
+ *   4) result.type 에 따라 서버에 APPROVED / CANCELED / TIMEOUT 통지
+ *   5) 유휴 화면 복귀 → 다시 폴링
+ *
+ * 폴링 간격을 1초로 잡은 이유는, 태블릿에서 원장이 "결제 요청" 을 누른 순간부터
+ * 이 단말기에서 카드 화면이 뜨기까지의 지연을 사용자가 인지 못 하는 수준으로 낮추기 위해서다.
+ * 서버 부하는 device 당 1 req/s 로 매우 낮다.
+ *
+ * SDK 어댑터: sdk 는 실제 window.tossFront 또는 SDK import 로 치환된다.
+ * 화면 그리기는 sdk.template.* 만 사용한다 (커스텀 HTML/CSS 없음).
  */
 
 import {
   setDeviceKey,
-  searchStudentsByPhoneSuffix,
-  fetchTodayClasses,
-  checkInAttendance,
-  fetchInvoices,
-  createPaymentIntent,
+  fetchPendingDispatch,
+  ackDispatch,
+  reportDispatchResult,
   confirmPayment,
   cancelPayment,
-  type StudentSummary,
-  type Invoice,
-  type TodayClass,
+  type PendingDispatch,
 } from "./api";
 
-// ─── SDK 인터페이스 가정 (실 SDK에 맞춰 어댑터로 교체) ───────────────
-// 이 자리는 실제 window.tossFront 또는 import 대상 SDK로 치환된다.
+// ─── 공식 SDK 인터페이스 가정 ─────────────────────────────────────────
+// 실제 SDK 시그니처에 맞춰 어댑터로 치환한다.
 declare const sdk: {
   template: {
-    show(spec: TemplateSpec): Promise<TemplateResult>;
+    /** 유휴 화면. Toss 표준 대기 그림/광고 슬라이드가 렌더된다. */
+    renderIdlePage(): void;
   };
   payment: {
     requestPayment(input: PaymentRequest): Promise<PaymentResult>;
-    requestPaymentCancel?(input: { paymentKey: string }): Promise<void>;
+    /** 앱 재시작/충돌 등으로 결제 결과를 놓쳤을 때 마지막 paymentKey 를 돌려준다. */
+    getBackupPaymentKey(): Promise<string | null>;
+    /** 특정 paymentKey 의 최종 결과를 조회. */
+    getPayment(input: { paymentKey: string }): Promise<PaymentResult | null>;
+    /** backup 을 사용해 복구를 마쳤을 때 반드시 리셋한다. */
+    resetBackupPaymentKey(): Promise<void>;
   };
   storage: {
     getItem(key: string): Promise<string | null>;
@@ -44,259 +52,185 @@ declare const sdk: {
   };
 };
 
-type TemplateSpec = {
-  title?: string;
-  body?: unknown;
-  buttons?: Array<{ id: string; label: string; style?: "primary" | "secondary" | "danger" }>;
-  input?: { id: string; placeholder?: string; type?: "text" | "number" | "digits4" };
-};
-
-type TemplateResult = { buttonId?: string; inputValue?: string };
-
+// 공식 SDK 반환 타입.
 type PaymentRequest = {
   paymentKey: string;
   orderId: string;
   amount: number;
   orderName: string;
-  method?: "CARD";
 };
 
-type PaymentResult = {
+type PaymentResponseSuccess = {
   paymentKey: string;
   orderId: string;
   amount: number;
   paymentMethod: "CARD" | "CASH" | "BARCODE";
   approvalNumber: string;
-  approvedTimestamp: string;
+  approvedAt: string; // ISO
+  card?: {
+    number?: string;        // masked
+    issuerName?: string;
+    acquirerName?: string;
+    cardType?: string;
+    installmentMonths?: number;
+    approveNo?: string;
+  };
   van?: string;
   tid?: string;
   vanTransactionKey?: string;
-  maskedCardNumber?: string;
-  issuerName?: string;
-  acquirerName?: string;
-  cardType?: string;
-  installment?: number;
   raw?: any;
 };
 
+type PaymentResult =
+  | { type: "SUCCESS"; response: PaymentResponseSuccess }
+  | { type: "CANCELED"; reason?: string }
+  | { type: "TIMEOUT"; reason?: string }
+  | { type: "FAILED"; code?: string; message?: string };
+
 // ─── 부팅 ─────────────────────────────────────────────────────────────
+
+const POLL_INTERVAL_MS = 1000;
+let running = false;
+let busy = false; // 결제창이 떠 있는 동안 폴링을 잠근다.
+
 export async function bootstrap() {
   const key = await sdk.storage.getItem("deviceKey");
   if (!key) {
-    // 원장이 서버 화면에서 발급한 deviceKey를 붙여넣기 하는 최초 설정 화면.
-    // 실제 배포에서는 SDK의 setup 페이지에서 처리하지만, 최소 안전망으로 여기서도 받는다.
-    const r = await sdk.template.show({
-      title: "단말기 등록",
-      body: "관리자 화면에서 발급받은 등록 코드를 입력하세요.",
-      input: { id: "code", placeholder: "deviceKey" },
-      buttons: [{ id: "save", label: "저장", style: "primary" }],
-    });
-    if (r.buttonId === "save" && r.inputValue) {
-      await sdk.storage.setItem("deviceKey", r.inputValue.trim());
-      setDeviceKey(r.inputValue.trim());
-    } else {
-      return; // 다음 부팅 때 다시 물어봄
-    }
-  } else {
-    setDeviceKey(key);
-  }
-  await mainLoop();
-}
-
-async function mainLoop() {
-  // 무한 루프 — 한 손님 처리가 끝나면 다음 손님을 위해 대기 화면으로 돌아온다.
-  // catch 안에서만 예외 처리하고 루프는 절대 종료시키지 않는다 — 학원 문 열려 있는
-  // 동안 태블릿이 꺼지면 안 되기 때문이다.
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    try {
-      await handleOneVisitor();
-    } catch (err) {
-      console.error("[plugin] 예외:", err);
-      await showErrorAndContinue(err);
-    }
-  }
-}
-
-async function handleOneVisitor() {
-  const student = await promptStudent();
-  if (!student) return;
-
-  while (true) {
-    const menu = await sdk.template.show({
-      title: `${student.name} 학생`,
-      body: `${student.grade ?? ""} · ${student.school ?? ""}`.trim(),
-      buttons: [
-        { id: "attend", label: "출석 체크", style: "primary" },
-        { id: "pay", label: "학원비 결제", style: "primary" },
-        { id: "exit", label: "다른 학생", style: "secondary" },
-      ],
-    });
-    if (menu.buttonId === "attend") await runAttendance(student);
-    else if (menu.buttonId === "pay") await runPayment(student);
-    else return;
-  }
-}
-
-async function promptStudent(): Promise<StudentSummary | null> {
-  const r = await sdk.template.show({
-    title: "안녕하세요",
-    body: "부모님 전화번호 뒤 4자리를 입력하세요.",
-    input: { id: "suffix", type: "digits4", placeholder: "0000" },
-    buttons: [
-      { id: "search", label: "확인", style: "primary" },
-      { id: "cancel", label: "취소", style: "secondary" },
-    ],
-  });
-  if (r.buttonId !== "search" || !r.inputValue) return null;
-  const suffix = r.inputValue.trim();
-  if (!/^\d{4}$/.test(suffix)) {
-    await sdk.template.show({
-      title: "잘못된 입력",
-      body: "숫자 4자리를 입력해 주세요.",
-      buttons: [{ id: "ok", label: "확인" }],
-    });
-    return null;
-  }
-  const candidates = await searchStudentsByPhoneSuffix(suffix);
-  if (candidates.length === 0) {
-    await sdk.template.show({
-      title: "학생을 찾을 수 없어요",
-      body: "번호를 다시 확인해 주세요. 그래도 안 되면 카운터에 알려 주세요.",
-      buttons: [{ id: "ok", label: "확인" }],
-    });
-    return null;
-  }
-  if (candidates.length === 1) return candidates[0];
-  // 여러 명이면 학년·학교로 골라 준다.
-  const pick = await sdk.template.show({
-    title: "학생을 골라 주세요",
-    body: candidates.map((s) => ({
-      id: s.id,
-      title: s.name,
-      subtitle: `${s.grade ?? ""} · ${s.school ?? ""}`.trim(),
-    })),
-    buttons: candidates.map((s) => ({ id: s.id, label: s.name })),
-  });
-  return candidates.find((s) => s.id === pick.buttonId) ?? null;
-}
-
-async function runAttendance(student: StudentSummary) {
-  const { classes } = await fetchTodayClasses(student.id);
-  if (classes.length === 0) {
-    await sdk.template.show({
-      title: "오늘 예정된 반이 없어요",
-      body: "카운터에 알려 주세요.",
-      buttons: [{ id: "ok", label: "확인" }],
-    });
+    // 결제 단말기 모드에서는 최초 등록도 관리자 프로세스로 처리하는 것이 원칙.
+    // 여기서는 로그만 남기고 유휴 화면을 띄운다.
+    console.error("[edusyncpro-front] deviceKey 미설정. 관리자에서 등록 필요.");
+    sdk.template.renderIdlePage();
     return;
   }
-  const pick = await sdk.template.show({
-    title: "어느 반이에요?",
-    body: classes.map((c: TodayClass) => ({
-      id: c.classId,
-      title: c.className,
-      subtitle: c.subject,
-      disabled: c.alreadyCheckedIn,
-      note: c.alreadyCheckedIn ? "이미 체크됨" : null,
-    })),
-    buttons: classes
-      .filter((c) => !c.alreadyCheckedIn)
-      .map((c) => ({ id: c.classId, label: c.className })),
+  setDeviceKey(key);
+
+  // 앱이 결제 도중 꺼졌던 경우 backup 으로 마지막 결과 복구.
+  await recoverBackupIfAny().catch((err) => {
+    console.error("[edusyncpro-front] backup 복구 실패:", err);
   });
-  if (!pick.buttonId) return;
-  const chosen = classes.find((c) => c.classId === pick.buttonId);
-  if (!chosen) return;
-  await checkInAttendance({ studentId: student.id, classId: chosen.classId });
-  await sdk.template.show({
-    title: "출석 완료",
-    body: `${student.name} · ${chosen.className}`,
-    buttons: [{ id: "ok", label: "확인", style: "primary" }],
-  });
+
+  sdk.template.renderIdlePage();
+  running = true;
+  scheduleNextPoll();
 }
 
-async function runPayment(student: StudentSummary) {
-  const { invoices } = await fetchInvoices(student.id);
-  if (invoices.length === 0) {
-    await sdk.template.show({
-      title: "결제할 항목이 없어요",
-      body: "이번 달·지난 달 미납이 없습니다.",
-      buttons: [{ id: "ok", label: "확인" }],
+async function recoverBackupIfAny() {
+  const backup = await sdk.payment.getBackupPaymentKey();
+  if (!backup) return;
+  const result = await sdk.payment.getPayment({ paymentKey: backup });
+  if (result && result.type === "SUCCESS") {
+    // 서버는 dispatchId 를 몰라도 confirmPayment 만으로 원장에 반영한다 (idempotent).
+    await confirmPaymentFromSdk(result.response).catch((err) => {
+      console.error("[edusyncpro-front] backup confirm 실패:", err);
     });
+  } else if (result && (result.type === "CANCELED" || result.type === "TIMEOUT" || result.type === "FAILED")) {
+    // 결제 실패 backup 은 서버에 굳이 알릴 필요 없다 (dispatch 는 서버 타이머로 만료됨).
+  }
+  await sdk.payment.resetBackupPaymentKey();
+}
+
+function scheduleNextPoll() {
+  if (!running) return;
+  setTimeout(pollOnce, POLL_INTERVAL_MS);
+}
+
+async function pollOnce() {
+  if (!running) return;
+  if (busy) {
+    scheduleNextPoll();
     return;
   }
-  const pick = await sdk.template.show({
-    title: "결제할 청구서를 골라 주세요",
-    body: invoices.map((iv: Invoice) => ({
-      id: iv.token,
-      title: `${iv.className} (${iv.paymentMonth})`,
-      subtitle: `${iv.amountDue.toLocaleString()}원`,
-    })),
-    buttons: invoices.map((iv, i) => ({
-      id: iv.token,
-      label: `${iv.className} ${iv.amountDue.toLocaleString()}원`,
-    })),
-  });
-  const chosen = invoices.find((iv) => iv.token === pick.buttonId);
-  if (!chosen) return;
-
-  // 서버가 paymentKey를 미리 발급 → SDK에 넘겨 결제창을 띄운다.
-  const intent = await createPaymentIntent(chosen.token);
-  let sdkResult: PaymentResult;
   try {
-    sdkResult = await sdk.payment.requestPayment({
-      paymentKey: intent.paymentKey,
-      orderId: intent.orderId,
-      amount: intent.amount,
-      orderName: intent.orderName,
-      method: "CARD",
-    });
-  } catch (err) {
-    // 사용자가 취소했거나 SDK가 실패했으면 intent를 CANCELED로 표시.
-    // 서버 상태를 방치하지 않기 위한 조치.
-    try {
-      await cancelPayment(intent.paymentKey, "sdk cancelled");
-    } catch {
-      /* 무시 — 관리자 화면에서 만료로 정리된다 */
+    const { pending } = await fetchPendingDispatch();
+    if (pending) {
+      busy = true;
+      try {
+        await handleDispatch(pending);
+      } finally {
+        busy = false;
+        sdk.template.renderIdlePage();
+      }
     }
-    throw err;
+  } catch (err) {
+    console.error("[edusyncpro-front] 폴링 오류:", err);
+  } finally {
+    scheduleNextPoll();
+  }
+}
+
+async function handleDispatch(d: PendingDispatch) {
+  // DELIVERED 표시. 이 단계에서 서버 실패는 무시하지 않는다 —
+  // ack 못 하면 다른 단말이 같은 dispatch 를 잡을 수도 있으니 중단이 안전하다.
+  await ackDispatch(d.dispatchId);
+
+  // 즉시 결제창. 확인 버튼 없이 바로 카드 프롬프트.
+  let result: PaymentResult;
+  try {
+    result = await sdk.payment.requestPayment({
+      paymentKey: d.paymentKey,
+      orderId: d.orderId,
+      amount: d.amount,
+      orderName: d.orderName,
+    });
+  } catch (err: any) {
+    await reportDispatchResult(d.dispatchId, {
+      status: "FAILED",
+      reason: err?.message ?? String(err),
+    }).catch(() => {});
+    await cancelPayment(d.paymentKey, "sdk exception").catch(() => {});
+    return;
   }
 
-  // 서버로 확정. idempotent라 재시도 안전.
+  if (result.type === "SUCCESS") {
+    // 서버 원장 반영 → dispatch APPROVED 는 confirmPayment 내부에서 함께 처리된다.
+    await confirmPaymentFromSdk(result.response);
+    // confirmPayment 성공 후 명시적으로 결과도 통지 (SSE 알림·통계용).
+    await reportDispatchResult(d.dispatchId, { status: "APPROVED" }).catch(() => {});
+    return;
+  }
+  if (result.type === "CANCELED") {
+    await reportDispatchResult(d.dispatchId, {
+      status: "CANCELED",
+      reason: result.reason,
+    }).catch(() => {});
+    await cancelPayment(d.paymentKey, result.reason ?? "user cancel").catch(() => {});
+    return;
+  }
+  if (result.type === "TIMEOUT") {
+    await reportDispatchResult(d.dispatchId, {
+      status: "TIMEOUT",
+      reason: result.reason,
+    }).catch(() => {});
+    await cancelPayment(d.paymentKey, "timeout").catch(() => {});
+    return;
+  }
+  // FAILED
+  await reportDispatchResult(d.dispatchId, {
+    status: "FAILED",
+    reason: (result as any).message ?? (result as any).code,
+  }).catch(() => {});
+  await cancelPayment(d.paymentKey, "sdk failed").catch(() => {});
+}
+
+async function confirmPaymentFromSdk(r: PaymentResponseSuccess) {
   await confirmPayment({
-    paymentKey: sdkResult.paymentKey,
-    orderId: sdkResult.orderId,
-    amount: sdkResult.amount,
-    paymentMethod: sdkResult.paymentMethod,
-    approvalNumber: sdkResult.approvalNumber,
-    approvedTimestamp: sdkResult.approvedTimestamp,
-    van: sdkResult.van,
-    tid: sdkResult.tid,
-    vanTransactionKey: sdkResult.vanTransactionKey,
-    maskedCardNumber: sdkResult.maskedCardNumber,
-    issuerName: sdkResult.issuerName,
-    acquirerName: sdkResult.acquirerName,
-    cardType: sdkResult.cardType,
-    installment: sdkResult.installment ?? 0,
-    rawResponse: sdkResult.raw,
-  });
-
-  await sdk.template.show({
-    title: "결제 완료",
-    body: `${student.name} · ${chosen.className} · ${chosen.amountDue.toLocaleString()}원`,
-    buttons: [{ id: "ok", label: "확인", style: "primary" }],
+    paymentKey: r.paymentKey,
+    orderId: r.orderId,
+    amount: r.amount,
+    paymentMethod: r.paymentMethod,
+    approvalNumber: r.approvalNumber ?? r.card?.approveNo ?? "",
+    approvedTimestamp: r.approvedAt,
+    van: r.van ?? null,
+    tid: r.tid ?? null,
+    vanTransactionKey: r.vanTransactionKey ?? null,
+    maskedCardNumber: r.card?.number ?? null,
+    issuerName: r.card?.issuerName ?? null,
+    acquirerName: r.card?.acquirerName ?? null,
+    cardType: r.card?.cardType ?? null,
+    installment: r.card?.installmentMonths ?? 0,
+    rawResponse: r.raw,
   });
 }
 
-async function showErrorAndContinue(err: unknown) {
-  const msg = err instanceof Error ? err.message : String(err);
-  await sdk.template.show({
-    title: "오류",
-    body: msg,
-    buttons: [{ id: "ok", label: "확인" }],
-  });
-}
-
-// SDK 부팅 훅에 등록. 실제 SDK 시그니처에 맞춰 어댑터로 붙인다.
-// 여기서는 export만 하고 SDK가 이 함수를 호출하도록 매니페스트에서 지시한다.
+// SDK 부팅 훅. 매니페스트에서 이 심볼을 진입점으로 지정한다.
 (globalThis as any).__eduSyncPluginBootstrap = bootstrap;

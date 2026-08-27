@@ -1,28 +1,38 @@
 /**
- * Toss Open API 웹훅 수신.
+ * Toss Open API v1 웹훅 수신.
  *
- * 왜 웹훅이 필요한가:
- *   confirm 요청이 네트워크 문제로 서버에 도달하지 못한 경우, 카드 승인은 실제
- *   났지만 우리 payments에는 안 남는다. 그러면 학원비가 이중청구되거나 미납으로
- *   잘못 표시된다. Toss는 승인이 확정된 뒤 별도로 웹훅을 쏘므로, 이걸 최종
- *   진실의 원본으로 삼아 confirm이 빠뜨린 건을 뒤에서 채운다.
+ * 스펙 (Toss 공식 Open API v1):
+ *   HTTP 헤더:
+ *     x-toss-timestamp   유닉스 밀리초. 서명 검증 message 의 앞쪽.
+ *     x-toss-signature   base64(HMAC-SHA256(secret, `${timestamp}.${rawBody}`))
+ *     x-toss-webhook-id  전송 단위 식별자. 재전송 시 값이 같음 → 멱등 키.
+ *   HTTP 본문(JSON):
+ *     {
+ *       "type": "payment.payment.approved.v1" | "payment.payment.cancelled.v1",
+ *       "merchantId": "<mid>",
+ *       "data": {
+ *         "payment": {
+ *           "id":          "<paymentKey>",
+ *           "orderId":     "<orderId>",
+ *           "state":       "APPROVED" | "CANCELED" | "...",
+ *           "amount":      <int, 원 단위>,
+ *           "approvedAt":  "<ISO>" | null,
+ *           "cancelledAt": "<ISO>" | null
+ *         }
+ *       }
+ *     }
  *
- * 왜 rawBody가 필요한가:
- *   HMAC 서명은 원문 문자열에 대해 계산된다. Express가 JSON을 파싱해 다시
- *   JSON.stringify하면 공백·키 순서가 달라져 서명이 안 맞는다. index.ts의
- *   express.json({ verify }) 콜백에서 웹훅 경로에 한해 req.rawBody를 채워 둔다.
+ * 처리:
+ *   1. rawBody + x-toss-timestamp 로 HMAC-SHA256 검증
+ *   2. tossWebhookEvents 에 원문 저장 (webhookId 유니크 → 재전송 자동 중복 방지)
+ *   3. body.type 스위치:
+ *        - payment.payment.approved.v1  → intent APPROVED, payments 삽입 (confirm 유실 보완)
+ *        - payment.payment.cancelled.v1 → 전액 취소만 처리 (부분 취소는 v1 기본 스펙 밖으로 취급)
+ *   4. 서명 실패 = 401, 처리 성공 = 200. 200 을 돌려주면 Toss 는 재발송을 중단한다.
  *
- * 왜 x-toss-webhook-id를 PK로 두는가:
- *   Toss는 배송 실패 시 같은 webhook_id로 재전송한다. PK 유니크로 자동 중복 방지.
- *   서명 검증 실패도 status=FAILED로 저장한다 — 공격 시도의 흔적을 남기기 위해.
- *
- * 처리 흐름:
- *   1. rawBody + x-toss-timestamp로 HMAC-SHA256 계산 → x-toss-signature와 비교
- *   2. tossWebhookEvents에 원문 삽입 (webhookId 중복이면 이전 처리 결과 반환)
- *   3. eventType에 따라 재조정 로직 수행:
- *      - PAYMENT_APPROVED: paymentKey로 intent 찾아 APPROVED로 확정, payments 없으면 삽입
- *      - PAYMENT_CANCELED: 취소 반영 (음수 payments 행 삽입)
- *   4. 성공이면 200 OK, 항상 200을 돌려 Toss의 재시도를 줄인다 (서명 오류 제외).
+ * 왜 rawBody 인가:
+ *   서명은 원문 문자열에 대해 계산되므로 JSON 파싱 후 재직렬화하면 값이 달라져 검증 실패.
+ *   index.ts 의 express.json({ verify }) 에서 req.rawBody 를 채워 둔다.
  */
 
 import { Router, Request, Response } from "express";
@@ -65,7 +75,8 @@ router.post("/webhooks", async (req: Request, res: Response) => {
   const webhookId = (req.headers["x-toss-webhook-id"] as string) || "";
   const timestamp = (req.headers["x-toss-timestamp"] as string) || "";
   const signature = (req.headers["x-toss-signature"] as string) || "";
-  const eventType = (req.headers["x-toss-event-type"] as string) || "";
+  // v1 이후 이벤트 타입은 body.type 이 진실의 원본. 헤더는 하위 호환용으로만 참조한다.
+  const legacyHeaderEventType = (req.headers["x-toss-event-type"] as string) || "";
   const eventId = (req.headers["x-toss-event-id"] as string) || "";
   const deliveryId = (req.headers["x-toss-delivery-id"] as string) || "";
   const rawBody = (req as any).rawBody as string | undefined;
@@ -78,7 +89,7 @@ router.post("/webhooks", async (req: Request, res: Response) => {
     await insertOrIgnoreEvent(webhookId, {
       eventId,
       deliveryId,
-      eventType,
+      eventType: legacyHeaderEventType,
       signatureValid: false,
       status: "FAILED",
       payloadJson: rawBody ?? "",
@@ -92,7 +103,7 @@ router.post("/webhooks", async (req: Request, res: Response) => {
     await insertOrIgnoreEvent(webhookId, {
       eventId,
       deliveryId,
-      eventType,
+      eventType: legacyHeaderEventType,
       signatureValid: false,
       status: "FAILED",
       payloadJson: rawBody,
@@ -102,6 +113,26 @@ router.post("/webhooks", async (req: Request, res: Response) => {
     // 계속 재시도하게 두면 로그 폭탄이 된다.
     return res.status(401).json({ error: "서명이 유효하지 않습니다." });
   }
+
+  // JSON 파싱은 서명 검증 이후에 (서명 미검증 payload 를 파서에 흘리지 않기 위함)
+  let body: any;
+  try {
+    body = JSON.parse(rawBody);
+  } catch (err: any) {
+    await insertOrIgnoreEvent(webhookId, {
+      eventId,
+      deliveryId,
+      eventType: legacyHeaderEventType,
+      signatureValid: true,
+      status: "FAILED",
+      payloadJson: rawBody,
+      errorMessage: "invalid json",
+    });
+    return res.status(400).json({ error: "본문이 JSON이 아닙니다." });
+  }
+
+  // v1 이벤트 타입은 body.type 이 원본. 헤더는 폴백.
+  const eventType: string = typeof body?.type === "string" ? body.type : legacyHeaderEventType;
 
   // 이미 처리된 webhookId면 그대로 200 반환. Toss 재전송을 안전하게 삼킨다.
   const existing = await db
@@ -126,8 +157,7 @@ router.post("/webhooks", async (req: Request, res: Response) => {
 
   // 재조정 수행
   try {
-    const parsed = JSON.parse(rawBody);
-    await reconcile(eventType, parsed);
+    await reconcile(eventType, body);
     await db
       .update(tossWebhookEvents)
       .set({ status: "PROCESSED", processedAt: new Date() })
@@ -150,16 +180,22 @@ router.post("/webhooks", async (req: Request, res: Response) => {
 
 // ─── 재조정 ────────────────────────────────────────────────────────────
 /**
- * 웹훅 payload에서 paymentKey를 뽑아 payment_intents를 찾고, 상태·payments 행을
- * 실제 승인 결과에 맞춘다. 웹훅이 confirm보다 먼저 오는 경우도 있어서, intent만
- * 있고 payments가 아직 없으면 이 자리에서 채운다.
+ * Open API v1 payload 에서 payment 정보를 뽑아 재조정한다.
  *
- * confirm 흐름과 겹칠 수 있으므로 트랜잭션 안에서 FOR UPDATE로 잠근다.
+ * v1 페이로드 예:
+ *   { type, merchantId, data: { payment: { id, orderId, state, amount, approvedAt, cancelledAt } } }
+ *
+ * id 가 곧 paymentKey. state 는 서버 상태와 비교하기 위한 사후 검증 용도로만 참고.
+ *
+ * 이 함수는 idempotent 해야 한다. confirm 이 먼저 성공했으면 여기서는 아무 것도 안 한다.
+ * 취소는 전액 취소만 처리 (부분 취소는 v1 기본 스펙에서 다루지 않는다).
  */
-async function reconcile(eventType: string, payload: any) {
-  const paymentKey: string | undefined = payload?.paymentKey ?? payload?.data?.paymentKey;
+async function reconcile(eventType: string, body: any) {
+  const payment = body?.data?.payment;
+  const paymentKey: string | undefined =
+    payment?.id ?? body?.paymentKey ?? body?.data?.paymentKey; // 마지막 두 개는 하위 호환
   if (!paymentKey) {
-    // 결제 관련이 아닌 이벤트(예: 가맹점 정책 변경 알림)는 조용히 무시.
+    // 결제와 무관한 이벤트(정책·가맹점 알림 등)는 조용히 무시.
     return;
   }
 
@@ -175,27 +211,31 @@ async function reconcile(eventType: string, payload: any) {
       return;
     }
 
-    if (eventType === "PAYMENT_APPROVED" || payload?.status === "DONE") {
+    const isApproved = eventType === "payment.payment.approved.v1";
+    const isCanceled = eventType === "payment.payment.cancelled.v1";
+
+    if (isApproved) {
       // 이미 confirm으로 처리됐으면 아무것도 안 함.
       if (intent.status === "APPROVED") return;
 
       // confirm이 오지 못한 상태 — 웹훅으로 확정한다.
-      // rawResponseJson에 웹훅 원문을 넣어 두어 사후 대사 가능.
+      // v1 페이로드에는 카드 상세가 포함되지 않을 수 있으므로 최소 정보로 삽입.
+      const approvedAtIso = payment?.approvedAt ?? new Date().toISOString();
       const [txRow] = await tx
         .insert(tossPaymentTransactions)
         .values({
           tenantId: intent.tenant_id,
           paymentKey,
           intentId: intent.id,
-          paymentMethod: (payload?.method as any) ?? "CARD",
-          approvalNumber: payload?.approvalNumber ?? "WEBHOOK",
-          approvedTimestamp: String(payload?.approvedAt ?? Date.now()),
-          maskedCardNumber: payload?.card?.number ?? null,
-          issuerName: payload?.card?.issuerName ?? null,
-          acquirerName: payload?.card?.acquirerName ?? null,
-          cardType: payload?.card?.cardType ?? null,
-          installment: payload?.card?.installmentPlanMonths ?? 0,
-          rawResponseJson: JSON.stringify({ source: "webhook", payload }),
+          paymentMethod: "CARD",
+          approvalNumber: "WEBHOOK",
+          approvedTimestamp: approvedAtIso,
+          maskedCardNumber: null,
+          issuerName: null,
+          acquirerName: null,
+          cardType: null,
+          installment: 0,
+          rawResponseJson: JSON.stringify({ source: "webhook.v1", body }),
         })
         .onConflictDoNothing({ target: tossPaymentTransactions.paymentKey })
         .returning();
@@ -223,9 +263,9 @@ async function reconcile(eventType: string, payload: any) {
             type: "원비",
             method: "카드",
             paymentMonth: intent.payment_month,
-            paidDate: new Date(),
+            paidDate: new Date(approvedAtIso),
             createdBy: systemUserId,
-            notes: `Toss Front (webhook) · ${paymentKey}`,
+            notes: `Toss Front (webhook v1) · ${paymentKey}`,
             externalProvider: "TOSSPLACE",
             externalPaymentKey: paymentKey,
             externalTransactionId: txRow.id,
@@ -235,13 +275,19 @@ async function reconcile(eventType: string, payload: any) {
 
       await tx
         .update(paymentIntents)
-        .set({ status: "APPROVED", approvedAt: new Date() })
+        .set({ status: "APPROVED", approvedAt: new Date(approvedAtIso) })
         .where(eq(paymentIntents.id, intent.id));
-    } else if (eventType === "PAYMENT_CANCELED" || eventType === "PAYMENT_PARTIAL_CANCELED") {
-      // 취소 반영 — 원래 승인 금액만큼 음수 payments 행을 넣어 회계 순액을 맞춘다.
-      // 부분 취소는 payload.cancelAmount를 우선 사용.
-      const cancelAmount: number = Number(payload?.cancelAmount ?? intent.amount);
-      if (cancelAmount <= 0) return;
+      return;
+    }
+
+    if (isCanceled) {
+      // v1 전액 취소만 처리. 금액은 intent.amount 를 신뢰한다 (v1 페이로드에 금액이 없거나
+      // 카드 원단위와 우리 원장 단위가 어긋날 위험을 없애기 위해).
+      // 이미 CANCELED 로 마감된 intent 는 중복 반영 방지를 위해 스킵.
+      if (intent.status === "CANCELED") return;
+
+      const cancelAmount: number = intent.amount;
+      const cancelledAtIso = payment?.cancelledAt ?? new Date().toISOString();
 
       const email = `system+toss-front@${intent.tenant_id}.local`;
       const userRows = await tx.execute(sql`SELECT id FROM users WHERE email = ${email} LIMIT 1`);
@@ -254,9 +300,9 @@ async function reconcile(eventType: string, payload: any) {
           type: "환불",
           method: "카드",
           paymentMonth: intent.payment_month,
-          paidDate: new Date(),
+          paidDate: new Date(cancelledAtIso),
           createdBy: systemUserId,
-          notes: `Toss Front 취소 (webhook) · ${paymentKey}`,
+          notes: `Toss Front 취소 (webhook v1) · ${paymentKey}`,
           externalProvider: "TOSSPLACE",
           externalPaymentKey: paymentKey,
           paidVia: "TOSS_FRONT",
@@ -265,10 +311,13 @@ async function reconcile(eventType: string, payload: any) {
 
       await tx
         .update(paymentIntents)
-        .set({ status: "CANCELED", cancelledAt: new Date() })
+        .set({ status: "CANCELED", cancelledAt: new Date(cancelledAtIso) })
         .where(eq(paymentIntents.id, intent.id));
+      return;
     }
-    // 알 수 없는 eventType은 무시. 감사 로그에는 그대로 남는다.
+
+    // 그 외 이벤트(예: payment.payment.partial_cancelled.v1) 는 v1 기본 스펙 밖으로 취급.
+    // 감사 로그에는 이미 저장되어 있으므로 여기서는 조용히 통과.
   });
 }
 

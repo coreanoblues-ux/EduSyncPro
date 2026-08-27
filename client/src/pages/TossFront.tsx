@@ -29,6 +29,17 @@ interface Device {
   createdAt: string;
 }
 
+// 학생용 태블릿(/student-kiosk) 을 위한 별도 장기키.
+// Toss Front 하드웨어와 인증 경로가 분리되어 있다.
+interface KioskDevice {
+  id: string;
+  displayName: string;
+  pairedFrontDeviceId: string | null;
+  isActive: boolean;
+  lastSeenAt: string | null;
+  createdAt: string;
+}
+
 interface Summary {
   todayIntentsByStatus: Array<{ status: string; count: number }>;
   todayApprovedAmount: number;
@@ -84,6 +95,12 @@ export default function TossFront() {
   const [displayName, setDisplayName] = useState("");
   const [issuedKey, setIssuedKey] = useState<string | null>(null);
 
+  // 태블릿(kiosk) 등록 상태 — Toss Front 단말기 등록과 다이얼로그 분리
+  const [kioskEnrollOpen, setKioskEnrollOpen] = useState(false);
+  const [kioskName, setKioskName] = useState("");
+  const [kioskPairedFrontId, setKioskPairedFrontId] = useState<string>("");
+  const [issuedKioskKey, setIssuedKioskKey] = useState<string | null>(null);
+
   const { data: summary } = useQuery<Summary>({
     queryKey: ["/api/toss-front/admin/summary"],
     refetchInterval: 30_000,
@@ -117,6 +134,37 @@ export default function TossFront() {
       (await apiRequest("DELETE", `/api/toss-front/devices/${id}`)).json(),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/toss-front/devices"] }),
   });
+
+  // ─── 태블릿(kiosk) API ───────────────────────────────────────────────
+  const { data: kioskDevices = [] } = useQuery<KioskDevice[]>({
+    queryKey: ["/api/toss-kiosk/devices"],
+  });
+
+  const enrollKioskMutation = useMutation({
+    mutationFn: async (input: { displayName: string; pairedFrontDeviceId?: string }) =>
+      (await apiRequest("POST", "/api/toss-kiosk/devices/enroll", input)).json(),
+    onSuccess: (data: any) => {
+      setIssuedKioskKey(data.kioskKey);
+      setKioskName("");
+      setKioskPairedFrontId("");
+      qc.invalidateQueries({ queryKey: ["/api/toss-kiosk/devices"] });
+    },
+    onError: (e: Error) =>
+      toast({ title: "태블릿 등록 실패", description: e.message, variant: "destructive" }),
+  });
+
+  const deleteKioskMutation = useMutation({
+    mutationFn: async (id: string) =>
+      (await apiRequest("DELETE", `/api/toss-kiosk/devices/${id}`)).json(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/toss-kiosk/devices"] }),
+  });
+
+  const closeKioskDialog = () => {
+    setKioskEnrollOpen(false);
+    setIssuedKioskKey(null);
+    setKioskName("");
+    setKioskPairedFrontId("");
+  };
 
   const closeEnrollDialog = () => {
     setEnrollOpen(false);
@@ -241,6 +289,77 @@ export default function TossFront() {
                     </td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* 학생 태블릿 (kiosk) */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <div>
+            <CardTitle>학생 태블릿</CardTitle>
+            <p className="text-xs text-muted-foreground mt-1">
+              카운터 옆 태블릿의 <span className="font-mono">/student-kiosk/setup</span> 에 붙여 넣을 장기키.
+              발급된 kioskKey 는 재조회할 수 없으니 태블릿에 즉시 저장하세요.
+            </p>
+          </div>
+          <Button size="sm" onClick={() => setKioskEnrollOpen(true)}>
+            새 태블릿 등록
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {kioskDevices.length === 0 ? (
+            <div className="text-sm text-muted-foreground">등록된 태블릿이 없습니다.</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="text-left text-muted-foreground">
+                <tr>
+                  <th className="py-2">이름</th>
+                  <th>페어링 결제 단말기</th>
+                  <th>상태</th>
+                  <th>마지막 접속</th>
+                  <th className="text-right">작업</th>
+                </tr>
+              </thead>
+              <tbody>
+                {kioskDevices.map((k) => {
+                  const paired = devices.find((d) => d.id === k.pairedFrontDeviceId);
+                  return (
+                    <tr key={k.id} className="border-t">
+                      <td className="py-2">{k.displayName}</td>
+                      <td className="text-xs text-muted-foreground">
+                        {paired ? paired.displayName : "자동 라우팅"}
+                      </td>
+                      <td>
+                        {k.isActive ? (
+                          <Badge className="bg-emerald-100 text-emerald-800">활성</Badge>
+                        ) : (
+                          <Badge className="bg-slate-100 text-slate-500">비활성</Badge>
+                        )}
+                      </td>
+                      <td className="text-muted-foreground">
+                        {k.lastSeenAt ? new Date(k.lastSeenAt).toLocaleString("ko-KR") : "—"}
+                      </td>
+                      <td className="text-right">
+                        {k.isActive && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              if (confirm("이 태블릿을 폐기하시겠어요? 태블릿 세션이 즉시 무효화됩니다.")) {
+                                deleteKioskMutation.mutate(k.id);
+                              }
+                            }}
+                          >
+                            폐기
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -376,6 +495,65 @@ export default function TossFront() {
               </p>
               <DialogFooter>
                 <Button onClick={closeEnrollDialog}>확인</Button>
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* 태블릿 등록 다이얼로그 */}
+      <Dialog open={kioskEnrollOpen} onOpenChange={(v) => (!v ? closeKioskDialog() : setKioskEnrollOpen(v))}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>새 태블릿 등록</DialogTitle>
+          </DialogHeader>
+          {!issuedKioskKey ? (
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                태블릿 이름과, 이 태블릿의 결제요청을 어느 결제 단말기로 보낼지 선택하세요.
+              </p>
+              <Input
+                value={kioskName}
+                onChange={(e) => setKioskName(e.target.value)}
+                placeholder="태블릿 이름 (예: 카운터 옆 태블릿)"
+              />
+              <select
+                value={kioskPairedFrontId}
+                onChange={(e) => setKioskPairedFrontId(e.target.value)}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="">자동 라우팅 (활성 결제 단말기 중 최근 접속)</option>
+                {devices.filter((d) => d.isActive).map((d) => (
+                  <option key={d.id} value={d.id}>{d.displayName}</option>
+                ))}
+              </select>
+              <DialogFooter>
+                <Button variant="outline" onClick={closeKioskDialog}>취소</Button>
+                <Button
+                  disabled={!kioskName.trim() || enrollKioskMutation.isPending}
+                  onClick={() =>
+                    enrollKioskMutation.mutate({
+                      displayName: kioskName.trim(),
+                      pairedFrontDeviceId: kioskPairedFrontId || undefined,
+                    })
+                  }
+                >
+                  발급
+                </Button>
+              </DialogFooter>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-sm font-medium">
+                kioskKey 가 발급됐습니다.{" "}
+                <span className="text-red-600">이 창을 닫으면 다시 볼 수 없습니다.</span>
+              </p>
+              <div className="p-3 bg-slate-100 rounded font-mono text-xs break-all">{issuedKioskKey}</div>
+              <p className="text-xs text-muted-foreground">
+                태블릿에서 <span className="font-mono">/student-kiosk/setup</span> 을 열고 이 값을 붙여넣으세요.
+              </p>
+              <DialogFooter>
+                <Button onClick={closeKioskDialog}>확인</Button>
               </DialogFooter>
             </div>
           )}

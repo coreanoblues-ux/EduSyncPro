@@ -443,6 +443,9 @@ export const paymentDispatches = pgTable("payment_dispatches", {
   // 어느 프론트로 보냈는가 (SSE 채널 라우팅 키)
   tossDeviceId: varchar("toss_device_id").references(() => tossFrontDevices.id, { onDelete: "set null" }).notNull(),
   amount: integer("amount").notNull(),
+  // sdk.payment.requestPayment 에 그대로 넘길 두 값. 프론트 폴링 응답에도 포함되어야 하므로 여기에 저장한다.
+  orderId: text("order_id").notNull(),
+  orderName: text("order_name").notNull(),
   status: paymentDispatchStatusEnum("status").default("PENDING").notNull(),
   // 프론트가 실제로 받아간 시각. NULL이면 아직 전달 안 됨.
   deliveredAt: timestamp("delivered_at"),

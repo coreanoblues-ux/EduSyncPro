@@ -21,6 +21,8 @@ import Dashboard from "@/components/Dashboard";
 import SuperAdminDashboard from "@/components/SuperAdminDashboard";
 import SystemAdmin from "@/pages/SystemAdmin";
 import TossFront from "@/pages/TossFront";
+import StudentKiosk from "@/pages/StudentKiosk";
+import StudentKioskSetup from "@/pages/StudentKioskSetup";
 import AcademySidebar from "@/components/AcademySidebar";
 import ThemeToggle from "@/components/ThemeToggle";
 
@@ -255,6 +257,23 @@ function App() {
     "--sidebar-width": "20rem",
     "--sidebar-width-icon": "4rem",
   };
+
+  // 학생 태블릿 경로는 로그인 게이트 밖에서 처리한다.
+  // 태블릿은 원장 계정이 없으며 kioskKey만으로 동작한다.
+  const pathname = typeof window !== "undefined" ? window.location.pathname : "";
+  if (pathname === "/student-kiosk" || pathname === "/student-kiosk/setup") {
+    return (
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <Switch>
+            <Route path="/student-kiosk/setup" component={StudentKioskSetup} />
+            <Route path="/student-kiosk" component={StudentKiosk} />
+          </Switch>
+          <Toaster />
+        </TooltipProvider>
+      </QueryClientProvider>
+    );
+  }
 
   return (
     <QueryClientProvider client={queryClient}>

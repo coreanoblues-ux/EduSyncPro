@@ -17,38 +17,47 @@
 ## 흐름 (공식 결제 단말기 모드)
 
 ```
-학생용 태블릿(EduSyncPro 웹) ─결제하기─▶ 서버
-                                       │  paymentIntent 생성 (paymentKey 발급)
-                                       ▼
-                                   payment_dispatches (PENDING)
-                                       │  SSE push
-                                       ▼
-                              Toss Front 플러그인
-                                       │  sdk.payment.requestPayment
-                                       ▼
-                              카드/삼성페이/애플페이 승인
-                                       │  결과 업로드
-                                       ▼
-                                       서버 (payments 삽입, dispatch APPROVED)
-                                       ▼
-                                       태블릿 폴링으로 완료 확인
+학생용 태블릿(EduSyncPro 웹, /student-kiosk) ─결제하기─▶ 서버
+                                                       │  paymentIntent 생성 (paymentKey 발급)
+                                                       ▼
+                                                 payment_dispatches (PENDING)
+                                                       │  1초 폴링
+                                                       ▼
+                                              Toss Front 플러그인
+                                                       │  ackDispatch → sdk.payment.requestPayment
+                                                       ▼
+                                            카드/삼성페이/애플페이 승인
+                                                       │  reportDispatchResult + confirmPayment
+                                                       ▼
+                                                     서버 (payments 삽입, dispatch APPROVED)
+                                                       ▼
+                                                     태블릿 폴링으로 완료 확인
 ```
+
+플러그인 화면은 오직 `sdk.template.renderIdlePage()` 로 렌더되는 표준 유휴 화면과
+Toss 표준 결제창(sdk.payment.requestPayment)뿐이다. 커스텀 HTML/CSS 없음, 확인 버튼 없음.
+
+## 폴링 방식 (1초 API 폴링)
+
+- 매 1초마다 `GET /api/toss-front/dispatch/pending` 호출.
+- PENDING 이 잡히면 즉시 `POST /dispatch/:id/ack` → `sdk.payment.requestPayment(...)`.
+- 결제창이 열려 있는 동안은 폴링 잠금(`busy = true`)으로 재진입 방지.
+- SSE 대비 장점: EventSource 재연결·프록시 유휴 종료 대응 코드가 필요 없고
+  단말당 1 req/s 는 서버 부하 무시 가능한 수준. 지연은 최대 1초.
 
 ## 복구·안전장치
 
-- 승인 후 결과 업로드 전에 화면이 재시작되면 `sdk.payment.getBackupPaymentKey()`
-  로 이전 paymentKey를 얻고 `sdk.payment.getPayment({ paymentKey })`로 승인 결과를
-  복구해 서버로 재업로드한다. 재업로드 성공 시 `sdk.payment.resetBackupPaymentKey()`.
-- SSE 연결이 끊기면 `EventSource` 자동 재연결. 30초 이상 실패 시 폴백 폴링
-  (`GET /api/toss-front/dispatch/pending`)으로 전환.
+- 승인 후 결과 업로드 전에 화면이 재시작되면 부팅 시퀀스에서
+  `sdk.payment.getBackupPaymentKey()` → `sdk.payment.getPayment({ paymentKey })`
+  로 승인 결과를 복구해 서버로 재업로드한 뒤 `sdk.payment.resetBackupPaymentKey()`.
 - 같은 프론트에 동시 결제 두 건이 잡히지 않도록 서버가 활성 dispatch 중복 시 409 반환.
-- 결과 업로드 실패 시 로컬 큐에 저장해 지수 백오프로 재시도.
+- 서버 dispatch 는 3분 무응답 시 만료(TIMEOUT) 로 자동 정리.
 
 ## 파일
 
-- `manifest.json` — 개발자센터 값과 동기화
-- `src/index.ts` — 부팅·SSE 수신·결제 실행·결과 업로드·복구
-- `src/api.ts` — 서버 REST 래퍼 (dispatch pull, confirm, cancel)
+- `manifest.json` — 개발자센터 값과 동기화 (id `edusyncpro-front`)
+- `src/index.ts` — 부팅·폴링·결제 실행·결과 업로드·backup 복구
+- `src/api.ts` — 서버 REST 래퍼 (dispatch pull/ack/result, confirm, cancel)
 
 ## 환경변수
 

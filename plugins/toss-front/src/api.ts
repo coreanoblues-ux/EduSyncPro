@@ -13,7 +13,7 @@
 
 const SERVER_URL =
   (globalThis as any).TOSS_PLUGIN_SERVER_URL ||
-  "https://edusync-pro-production-dcfe.up.railway.app";
+  "https://edusyncpro-production-dcfe.up.railway.app";
 
 let accessToken: string | null = null;
 let accessTokenExpiresAt = 0;

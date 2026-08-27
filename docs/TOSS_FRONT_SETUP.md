@@ -27,8 +27,8 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 2. **내 애플리케이션 → 생성하기 → 프론트 플러그인** 선택
 3. `plugins/toss-front/manifest.json`의 값을 폼에 옮겨 넣는다:
    - 이름: `EduSyncPro Kiosk`
-   - 서버 URL: `https://edusync-pro-production-dcfe.up.railway.app` (Railway 접미어 `-dcfe` 반드시 포함)
-   - 웹훅 URL: `https://edusync-pro-production-dcfe.up.railway.app/api/toss-front/webhooks`
+   - 서버 URL: `https://edusyncpro-production-dcfe.up.railway.app` (Railway 접미어 `-dcfe` 반드시 포함)
+   - 웹훅 URL: `https://edusyncpro-production-dcfe.up.railway.app/api/toss-front/webhooks`
    - 필요 권한: `template.render`, `payment.card`, `payment.cancel`, `network.https`
 4. 웹훅 시크릿 발급받아 Railway `TOSS_WEBHOOK_SECRET`에 넣기
 5. 가맹점 ID를 `TOSS_MERCHANT_ID`에 넣기

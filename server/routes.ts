@@ -32,6 +32,7 @@ import tossFrontPaymentsRouter from "./toss-front/payments";
 import tossFrontAttendanceRouter from "./toss-front/attendance";
 import tossFrontWebhooksRouter from "./toss-front/webhooks";
 import tossFrontAdminRouter from "./toss-front/admin";
+import tossKioskRouter from "./toss-front/kioskRoutes";
 import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
 import { parseDays, parseSchedule } from "@shared/timetable";
@@ -1804,6 +1805,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.use("/api/toss-front", tossFrontAttendanceRouter);
   app.use("/api/toss-front", tossFrontWebhooksRouter);
   app.use("/api/toss-front", tossFrontAdminRouter);
+  // 학생용 태블릿 웹앱 전용 API. 완전히 별도 인증(kioskGuard) 경로.
+  app.use("/api/toss-kiosk", tossKioskRouter);
 
   const httpServer = createServer(app);
   return httpServer;

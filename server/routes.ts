@@ -30,6 +30,7 @@ import { parseInput, NlpConfigError } from "./lib/nlpParser";
 import tossFrontRouter from "./toss-front/routes";
 import tossFrontPaymentsRouter from "./toss-front/payments";
 import tossFrontAttendanceRouter from "./toss-front/attendance";
+import tossFrontWebhooksRouter from "./toss-front/webhooks";
 import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
 import { parseDays, parseSchedule } from "@shared/timetable";
@@ -1800,6 +1801,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.use("/api/toss-front", tossFrontRouter);
   app.use("/api/toss-front", tossFrontPaymentsRouter);
   app.use("/api/toss-front", tossFrontAttendanceRouter);
+  app.use("/api/toss-front", tossFrontWebhooksRouter);
 
   const httpServer = createServer(app);
   return httpServer;

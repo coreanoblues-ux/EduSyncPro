@@ -12,7 +12,18 @@ const app = express();
 //   • secure cookies are correctly marked as secure
 app.set("trust proxy", 1);
 
-app.use(express.json());
+// Toss 웹훅은 HMAC 서명 검증을 위해 원문 body가 필요하다. JSON.stringify로 재직렬화하면
+// Toss가 만든 원문과 공백·키 순서가 달라져 서명이 안 맞는다. 그래서 verify 콜백에서
+// 웹훅 경로에 한해서만 rawBody를 request에 붙여 둔다. 다른 경로는 영향 없다.
+app.use(
+  express.json({
+    verify: (req, _res, buf) => {
+      if ((req as any).url?.startsWith("/api/toss-front/webhooks")) {
+        (req as any).rawBody = buf.toString("utf8");
+      }
+    },
+  })
+);
 app.use(express.urlencoded({ extended: false }));
 
 app.use((req, res, next) => {

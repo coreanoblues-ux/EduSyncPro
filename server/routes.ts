@@ -29,6 +29,7 @@ import {
 import { parseInput, NlpConfigError } from "./lib/nlpParser";
 import tossFrontRouter from "./toss-front/routes";
 import tossFrontPaymentsRouter from "./toss-front/payments";
+import tossFrontAttendanceRouter from "./toss-front/attendance";
 import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
 import { parseDays, parseSchedule } from "@shared/timetable";
@@ -1798,6 +1799,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // 단말기 deviceGuard가 엔드포인트별로 분리돼 있다).
   app.use("/api/toss-front", tossFrontRouter);
   app.use("/api/toss-front", tossFrontPaymentsRouter);
+  app.use("/api/toss-front", tossFrontAttendanceRouter);
 
   const httpServer = createServer(app);
   return httpServer;

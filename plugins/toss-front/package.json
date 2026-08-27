@@ -1,0 +1,11 @@
+{
+  "name": "@edusyncpro/toss-front-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "EduSyncPro의 Toss Front 2 단말기용 프론트 플러그인. 학원 로비 태블릿에서 실행된다.",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "echo '토스 개발자센터의 플러그인 빌드 파이프라인을 사용하세요.'"
+  },
+  "dependencies": {}
+}

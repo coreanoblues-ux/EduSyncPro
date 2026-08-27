@@ -1,0 +1,21 @@
+{
+  "name": "EduSyncPro Kiosk",
+  "vendor": "Page One Academy",
+  "version": "0.1.0",
+  "description": "학원 학부모·학생용 로비 키오스크. 부모 번호 뒤 4자리로 학생 조회, 출석 체크, 학원비 결제를 처리합니다.",
+  "type": "front-plugin",
+  "sdk": "toss-front-2",
+  "entry": "src/index.ts",
+  "permissions": [
+    "template.render",
+    "payment.card",
+    "payment.cancel",
+    "network.https"
+  ],
+  "endpoints": {
+    "server": "https://edusync-pro-production-dcfe.up.railway.app"
+  },
+  "envRequired": [
+    "TOSS_FRONT_DEVICE_KEY"
+  ]
+}

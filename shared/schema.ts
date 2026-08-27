@@ -51,6 +51,22 @@ export const paidViaEnum = pgEnum("paid_via", ["MANUAL", "TOSS_FRONT"]);
 // 출석 체크가 어느 경로로 들어왔는지. KIOSK = Toss Front, MANUAL = 원장/강사 수기.
 export const attendanceSourceEnum = pgEnum("attendance_source", ["MANUAL", "KIOSK"]);
 
+// ─── Toss "결제 단말기 모드"용 dispatch 상태 ───────────────────────────
+// 태블릿(학생용 키오스크 웹)이 서버에 결제요청을 보내면, 서버가 특정 프론트 단말기에
+// dispatch 레코드를 만들고 SSE로 밀어낸다. 프론트가 실제 승인까지 성공하면
+// 이 dispatch도 APPROVED로 마감된다. payment_intents.status와는 별도 트랙:
+//   - payment_intents: paymentKey 관점 (한 결제 시도의 승인 여부)
+//   - payment_dispatches: 태블릿-프론트 라우팅 관점 (전달·수신·응답 상태)
+// 두 상태가 항상 1:1로 도는 이유는 dispatch 하나가 정확히 하나의 paymentKey에 묶이기 때문.
+export const paymentDispatchStatusEnum = pgEnum("payment_dispatch_status", [
+  "PENDING",   // 서버가 큐에 담음, 프론트가 아직 수신 안 함
+  "DELIVERED", // 프론트가 SSE 또는 폴링으로 받아감
+  "APPROVED",  // 결제 승인 완료 (프론트가 결과 업로드)
+  "CANCELED",  // 사용자가 태블릿에서 취소 or 프론트에서 취소
+  "TIMEOUT",   // 만료(3분)까지 아무 응답 없음
+  "FAILED",    // 프론트가 결제 실패 응답을 업로드
+]);
+
 // 상담 진행 상태
 // 흐름: 상담문의 → 레벨테스트예정 → 레벨테스트완료 → 반배정상담 → 최종등록 / 대기등록 / 보류
 // 레벨테스트 3단계를 명시적으로 트래킹해서 원장이 "지금 어느 단계에 몇 명 있는지"를
@@ -389,6 +405,55 @@ export const tossWebhookEvents = pgTable("toss_webhook_events", {
   errorMessage: text("error_message"),
   receivedAt: timestamp("received_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   processedAt: timestamp("processed_at"),
+});
+
+// ─── Kiosk devices (학생용 태블릿 웹앱 인증) ────────────────────────────
+// 이건 Toss Front 하드웨어가 아니다. 학원 로비에 세워두는 일반 태블릿의 브라우저에서
+// 여는 EduSyncPro 학생 키오스크 웹페이지 전용 인증 토큰이다.
+// 원장이 관리자 화면에서 발급 → 태블릿 setup 페이지에 한 번 붙여넣기 → localStorage 저장.
+// 이후 이 태블릿은 로그인 없이 학생 검색·청구서 조회·결제요청 만 할 수 있다.
+export const kioskDevices = pgTable("kiosk_devices", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  // 태블릿이 지닌 장기키의 해시. Toss Front device와 같은 방식.
+  kioskKeyHash: text("kiosk_key_hash").notNull().unique(),
+  displayName: text("display_name").notNull(), // "로비 태블릿 1" 등
+  // 이 태블릿에서 만든 dispatch를 어느 Toss Front로 보낼지. NULL이면 tenant 내 첫 활성 프론트로 자동 라우팅.
+  // 실무: 학원에 프론트 1대뿐이면 NULL이 편하고, 여러 대면 명시적으로 매핑.
+  pairedFrontDeviceId: varchar("paired_front_device_id").references(() => tossFrontDevices.id, { onDelete: "set null" }),
+  isActive: boolean("is_active").default(true).notNull(),
+  lastSeenAt: timestamp("last_seen_at"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// ─── Payment dispatches (태블릿 → 프론트 라우팅 큐) ────────────────────
+// "결제 단말기 모드"의 핵심 테이블. 태블릿 웹에서 결제하기를 눌렀을 때 서버가 이 행을 만들고
+// SSE로 프론트에 밀어낸다. 프론트가 실패해도 재시도할 수 있게 감사기록으로 남긴다.
+//
+// paymentKey를 UNIQUE로 두는 이유: 같은 결제요청이 두 번 dispatch되면 안 된다.
+// 프론트 재시작 후 폴백 폴링으로 다시 받아도 이 UNIQUE가 방어.
+export const paymentDispatches = pgTable("payment_dispatches", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  paymentKey: text("payment_key").notNull().unique(),
+  intentId: varchar("intent_id").references(() => paymentIntents.id, { onDelete: "cascade" }).notNull().unique(),
+  // 어느 태블릿에서 시작됐는가 (감사·화면 표시)
+  kioskDeviceId: varchar("kiosk_device_id").references(() => kioskDevices.id, { onDelete: "set null" }),
+  // 어느 프론트로 보냈는가 (SSE 채널 라우팅 키)
+  tossDeviceId: varchar("toss_device_id").references(() => tossFrontDevices.id, { onDelete: "set null" }).notNull(),
+  amount: integer("amount").notNull(),
+  status: paymentDispatchStatusEnum("status").default("PENDING").notNull(),
+  // 프론트가 실제로 받아간 시각. NULL이면 아직 전달 안 됨.
+  deliveredAt: timestamp("delivered_at"),
+  // 프론트가 결과를 업로드한 시각.
+  respondedAt: timestamp("responded_at"),
+  // 만료 시각 (기본 3분). intent expiresAt과 정렬.
+  expiresAt: timestamp("expires_at").notNull(),
+  // 실패·취소 원인 요약 (개인정보 없음)
+  failureReason: text("failure_reason"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
 // Relations

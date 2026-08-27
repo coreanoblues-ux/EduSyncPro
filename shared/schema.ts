@@ -12,6 +12,45 @@ export const paymentStatusEnum = pgEnum("payment_status", ["paid", "overdue", "p
 export const paymentMethodEnum = pgEnum("payment_method", ["계좌이체", "카드", "현금"]);
 export const paymentTypeEnum = pgEnum("payment_type", ["원비", "환불", "지출", "기타"]);
 
+// ─── Toss Front 2 통합 관련 enum ────────────────────────────────────────────
+// 결제 의도(payment intent)의 상태 머신. 프론트 SDK → 서버 confirm → 웹훅 재검증까지의
+// 흐름에서 상태가 잘못 바뀌면 이중 납부 또는 미납 오탐이 생긴다. 그래서 enum으로 강제한다.
+// CREATED → PROCESSING → APPROVED (성공 경로)
+// CREATED → PROCESSING → CANCELED / TIMEOUT / FAILED (실패 경로)
+export const paymentIntentStatusEnum = pgEnum("payment_intent_status", [
+  "CREATED",
+  "PROCESSING",
+  "APPROVED",
+  "CANCELED",
+  "TIMEOUT",
+  "FAILED",
+]);
+
+// 웹훅 처리 상태. FAILED는 서명 검증 실패 또는 서버 오류로 처리 못 한 이벤트.
+// IGNORED는 우리 시스템에서 다루지 않는 이벤트라 의도적으로 건너뛴 것.
+export const webhookStatusEnum = pgEnum("toss_webhook_status", [
+  "RECEIVED",
+  "PROCESSED",
+  "IGNORED",
+  "FAILED",
+]);
+
+// 결제 방법 (SDK 응답 기반). CARD가 압도적으로 많지만 현금영수증·바코드도 온다.
+export const tossPaymentMethodEnum = pgEnum("toss_payment_method", [
+  "CARD",
+  "CASH",
+  "BARCODE",
+]);
+
+// 외부 결제 제공자. 지금은 TOSSPLACE 하나지만, 나중에 KIS 등이 추가될 수 있어 enum으로 둔다.
+export const externalProviderEnum = pgEnum("external_provider", ["TOSSPLACE"]);
+
+// 결제가 어느 경로로 들어왔는지. TOSS_FRONT는 로비 무인 결제, MANUAL은 원장이 관리자 화면에서 수기 입력.
+export const paidViaEnum = pgEnum("paid_via", ["MANUAL", "TOSS_FRONT"]);
+
+// 출석 체크가 어느 경로로 들어왔는지. KIOSK = Toss Front, MANUAL = 원장/강사 수기.
+export const attendanceSourceEnum = pgEnum("attendance_source", ["MANUAL", "KIOSK"]);
+
 // 상담 진행 상태
 // 흐름: 상담문의 → 레벨테스트예정 → 레벨테스트완료 → 반배정상담 → 최종등록 / 대기등록 / 보류
 // 레벨테스트 3단계를 명시적으로 트래킹해서 원장이 "지금 어느 단계에 몇 명 있는지"를
@@ -136,6 +175,14 @@ export const payments = pgTable("payments", {
   notes: text("notes"),
   // 자연어 입력으로 생성된 건지 표시 (원본 문장 보관 → 나중에 오분류 추적용)
   sourceText: text("source_text"),
+  // ─── 외부 결제 시스템 연결 (Toss Front 2 등) ──────────────────────────
+  // 이 결제가 외부 승인망을 통해 들어온 경우, 어떤 제공자·어떤 결제키로 왔는지 기록한다.
+  // manual 수기 입력은 세 컬럼 모두 null이고 paidVia="MANUAL".
+  // 웹훅 재수신 시 external_payment_key로 원거래를 되짚어 상태를 되돌린다.
+  externalProvider: externalProviderEnum("external_provider"),
+  externalPaymentKey: text("external_payment_key"), // Toss paymentKey (unique index로 중복 승인 차단)
+  externalTransactionId: varchar("external_transaction_id"), // toss_payment_transactions.id
+  paidVia: paidViaEnum("paid_via").default("MANUAL").notNull(),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
@@ -225,6 +272,123 @@ export const aiAuditLogs = pgTable("ai_audit_logs", {
   entityId: text("entity_id"),
   result: text("result"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// ─── Attendance table (출석) ───────────────────────────────────────────
+// 학생이 학원 로비 태블릿(Toss Front 또는 자체 키오스크)에서 등원 체크한 기록.
+// 원장·강사가 관리자 화면에서 수기 입력한 것도 여기 쌓인다.
+// unique(studentId, classId, date)로 같은 수업의 하루 이중 출석을 DB에서 막는다.
+export const attendance = pgTable("attendance", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  studentId: varchar("student_id").references(() => students.id, { onDelete: "cascade" }).notNull(),
+  classId: varchar("class_id").references(() => classes.id, { onDelete: "cascade" }).notNull(),
+  // 출석 대상 수업의 날짜 (YYYY-MM-DD). timestamp가 아니라 문자열로 두는 이유는
+  // "18시 수업에 밤 9시에 체크인해도 그날 출석"으로 계산해야 하는데 UTC로 저장하면
+  // 자정 근처 체크인이 다음날 기록으로 넘어간다. 하루 단위 기능이라 날짜 문자열이 맞다.
+  attendedDate: text("attended_date").notNull(),
+  // 실제 체크인이 일어난 시각. 정각 출석/지각 판정에 쓴다.
+  checkedInAt: timestamp("checked_in_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  source: attendanceSourceEnum("source").default("MANUAL").notNull(),
+  // 키오스크 체크인이면 어느 기기에서 왔는지. MANUAL은 null.
+  deviceId: varchar("device_id"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// ─── Toss Front devices (등록된 로비 단말기) ──────────────────────────
+// 학원마다 로비에 한두 대씩 배치되는 Toss Front 2 태블릿을 여기서 관리한다.
+// 원장이 관리자 화면에서 페어링 코드로 등록하면 이 테이블에 행이 생기고,
+// 이후 기기가 서버에 접근할 때 deviceKeyHash로 인증한다.
+export const tossFrontDevices = pgTable("toss_front_devices", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  // 토스 가맹점 ID. 학원마다 한 개이며 tenants와 1:1이지만 여기 중복 저장해 조회 편의성 확보.
+  merchantId: text("merchant_id").notNull(),
+  // 기기 인증용 장기키의 해시(bcrypt 또는 sha256). 원본 키는 기기에만 존재.
+  // 서버가 원본을 갖지 않아야 DB 유출 시에도 기기 위조가 불가능하다.
+  deviceKeyHash: text("device_key_hash").notNull().unique(),
+  displayName: text("display_name").notNull(), // "페이지원 로비 프론트" 등
+  isActive: boolean("is_active").default(true).notNull(),
+  lastSeenAt: timestamp("last_seen_at"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// ─── Payment intents (결제 의도) ───────────────────────────────────────
+// 학생이 "결제하기"를 누른 시점에 서버가 미리 만드는 예약 레코드.
+// paymentKey를 여기서 생성해 프론트로 넘기고, SDK 승인 후 confirm으로 되돌아온다.
+// 같은 청구에 대해 여러 번 시도가 있을 수 있어 unique(paymentKey)만 유지.
+export const paymentIntents = pgTable("payment_intents", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  paymentKey: text("payment_key").notNull().unique(),
+  studentId: varchar("student_id").references(() => students.id, { onDelete: "cascade" }).notNull(),
+  // 어떤 수강 등록에 대한 결제인가. invoice 테이블이 없어서 enrollment + paymentMonth로 대체.
+  enrollmentId: varchar("enrollment_id").references(() => enrollments.id, { onDelete: "cascade" }).notNull(),
+  // 청구월 (YYYY-MM). enrollment + 이 값이 논리적 청구 건을 특정한다.
+  paymentMonth: text("payment_month").notNull(),
+  deviceId: varchar("device_id").references(() => tossFrontDevices.id, { onDelete: "set null" }),
+  // 금액 필드는 확정 시점의 값을 그대로 저장한다. 프론트가 조작한 금액을 신뢰하지 않기 위해
+  // confirm 시 이 값과 SDK 응답 금액을 대조한다.
+  amount: integer("amount").notNull(),
+  tax: integer("tax").default(0).notNull(),
+  supplyValue: integer("supply_value").default(0).notNull(),
+  taxExemptValue: integer("tax_exempt_value").default(0).notNull(),
+  status: paymentIntentStatusEnum("status").default("CREATED").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  approvedAt: timestamp("approved_at"),
+  cancelledAt: timestamp("cancelled_at"),
+  // 실패·타임아웃 원인 요약 (디버깅용, 개인정보 없음)
+  failureReason: text("failure_reason"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// ─── Toss payment transactions (승인 결과 원본) ─────────────────────────
+// 실제 카드 승인 결과를 그대로 보관하는 감사 테이블. 세금계산·환불·영수증 재발행에 쓴다.
+// 승인번호·TID·van transaction key는 pgcrypto로 암호화 저장하는 것이 이상적이지만
+// 1차 버전에서는 text로 두고, 애플리케이션 레이어에서 접근을 최소화한다.
+// 카드 원본번호는 절대 저장하지 않으며, 마스킹된 번호만 저장한다.
+export const tossPaymentTransactions = pgTable("toss_payment_transactions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  paymentKey: text("payment_key").notNull().unique(),
+  intentId: varchar("intent_id").references(() => paymentIntents.id, { onDelete: "cascade" }).notNull().unique(),
+  paymentMethod: tossPaymentMethodEnum("payment_method").notNull(),
+  van: text("van"),
+  tid: text("tid"), // 거래 TID (취소 시 필요). 앱 레이어에서 접근 제한.
+  vanTransactionKey: text("van_transaction_key"), // 무카드 취소용
+  approvalNumber: text("approval_number").notNull(),
+  approvedTimestamp: text("approved_timestamp").notNull(), // SDK가 준 timestamp (밀리초, 정밀도 보존 위해 text)
+  maskedCardNumber: text("masked_card_number"),
+  issuerName: text("issuer_name"),
+  acquirerName: text("acquirer_name"),
+  cardType: text("card_type"),
+  installment: integer("installment").default(0).notNull(),
+  // SDK 원본 응답의 최소 필드만 JSON으로 감사용 저장. 카드 원본번호 필드는 저장 전에 삭제.
+  rawResponseJson: text("raw_response_json"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// ─── Toss webhook events (수신한 웹훅 감사) ──────────────────────────────
+// TossPlace Open API가 보내는 결제 승인/취소 웹훅을 여기 먼저 원문 그대로 저장한다.
+// x-toss-webhook-id를 PK로 두어 재전송 시 자동 중복 방지.
+// 서명 검증 실패도 status=FAILED로 저장해 공격 시도를 로그로 남긴다.
+export const tossWebhookEvents = pgTable("toss_webhook_events", {
+  webhookId: text("webhook_id").primaryKey(), // x-toss-webhook-id
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }),
+  eventId: text("event_id"),      // x-toss-event-id
+  deliveryId: text("delivery_id"), // x-toss-delivery-id (재전송마다 달라짐)
+  eventType: text("event_type"),
+  signatureValid: boolean("signature_valid").default(false).notNull(),
+  status: webhookStatusEnum("status").default("RECEIVED").notNull(),
+  // 원문 body 그대로 (JSON 문자열). 사후 대사에 필요.
+  payloadJson: text("payload_json"),
+  errorMessage: text("error_message"),
+  receivedAt: timestamp("received_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  processedAt: timestamp("processed_at"),
 });
 
 // Relations
@@ -420,6 +584,29 @@ export const insertTaskSchema = createInsertSchema(tasks).omit({
 });
 export const insertAiAuditLogSchema = createInsertSchema(aiAuditLogs).omit({ id: true, createdAt: true });
 
+// ─── Toss Front 통합 insert 스키마 ───────────────────────────────────────
+export const insertAttendanceSchema = createInsertSchema(attendance).omit({ id: true, createdAt: true });
+export const insertTossFrontDeviceSchema = createInsertSchema(tossFrontDevices).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export const insertPaymentIntentSchema = createInsertSchema(paymentIntents).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  expiresAt: z.coerce.date(),
+});
+export const insertTossPaymentTransactionSchema = createInsertSchema(tossPaymentTransactions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export const insertTossWebhookEventSchema = createInsertSchema(tossWebhookEvents).omit({
+  receivedAt: true,
+});
+
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "날짜는 YYYY-MM-DD 형식이어야 합니다.");
 
 export const createTaskBodySchema = insertTaskSchema
@@ -468,6 +655,12 @@ export type Consultation = typeof consultations.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type TaskSlot = Task["slot"];
 export type AiAuditLog = typeof aiAuditLogs.$inferSelect;
+export type Attendance = typeof attendance.$inferSelect;
+export type TossFrontDevice = typeof tossFrontDevices.$inferSelect;
+export type PaymentIntent = typeof paymentIntents.$inferSelect;
+export type PaymentIntentStatus = PaymentIntent["status"];
+export type TossPaymentTransaction = typeof tossPaymentTransactions.$inferSelect;
+export type TossWebhookEvent = typeof tossWebhookEvents.$inferSelect;
 
 export type InsertTenant = z.infer<typeof insertTenantSchema>;
 export type InsertUser = z.infer<typeof insertUserSchema>;

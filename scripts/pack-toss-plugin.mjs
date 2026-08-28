@@ -173,8 +173,18 @@ function collect(dir, prefix = "") {
   return out;
 }
 
+/**
+ * 산출물은 releases/ 에 떨군다.
+ *
+ * 이 폴더만 .gitignore 예외라서, 여기 놓이는 순간 저장소에 함께 남는다.
+ * 플러그인 폴더 여기저기에 ZIP 이 굴러다니면 개발자센터에 옛 버전을 올리게 되는데,
+ * 0.2.0 검은 화면 사고가 정확히 그런 식으로 났다. 올릴 파일이 있는 곳은 한 군데뿐이어야 한다.
+ */
+const releaseDir = path.join(pluginDir, "releases");
+fs.mkdirSync(releaseDir, { recursive: true });
+
 const zipName = `edusyncpro-front-${manifest.version}.zip`;
-const zipPath = path.join(pluginDir, zipName);
+const zipPath = path.join(releaseDir, zipName);
 fs.rmSync(zipPath, { force: true });
 
 const entries = collect(stageDir);

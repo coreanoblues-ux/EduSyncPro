@@ -9,9 +9,17 @@ server/public
 vite.config.ts.*
 *.tar.gz
 
-# Toss Front 플러그인 배포 산출물 — 개발자센터에 업로드하는 ZIP 은 저장소에 넣지 않는다.
-# 매 배포마다 vite build 후 다시 생성하는 것이 원칙 (재현 가능해야 함).
+# Toss Front 플러그인 ZIP.
+#
+# 작업 중 생긴 ZIP 은 저장소에 넣지 않는다. 손에 굴러다니는 압축본이 여러 개면
+# 개발자센터에 엉뚱한 걸 올리게 되고, 그게 바로 0.2.0 검은 화면 사고였다.
+#
+# 예외는 releases/ 하나. 여기엔 "개발자센터에 실제로 업로드한 것"만 넣는다.
+# 파일명에 버전이 박혀 있어(edusyncpro-front-0.3.0.zip) 소스와 조용히 어긋날 수 없고,
+# 집·학원 어느 컴퓨터에서든 다시 빌드하지 않고 꺼내 쓸 수 있다.
 plugins/**/*.zip
+!plugins/toss-front/releases/
+!plugins/toss-front/releases/*.zip
 
 # DB 덤프 — 학생 개인정보와 결제 기록이 통째로 들어 있다. 절대 커밋 금지.
 *.dump

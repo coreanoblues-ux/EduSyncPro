@@ -18,7 +18,6 @@ import { db } from "../db";
 import { storage } from "../storage";
 import {
   students,
-  payments,
   kioskDevices,
   tossFrontDevices,
 } from "@shared/schema";
@@ -29,8 +28,7 @@ import {
   hashKioskKey,
   issueAccessTokenFromKioskKey,
 } from "./kioskAuth";
-import { signVirtualInvoice } from "./virtualInvoice";
-import { todayKst } from "@shared/day";
+import { computeStudentInvoices } from "./invoicesHelper";
 
 const router = Router();
 
@@ -194,69 +192,8 @@ router.get("/students/:id/invoices", kioskGuard, async (req: Request, res: Respo
     return res.status(404).json({ error: "학생을 찾을 수 없습니다." });
   }
 
-  const enrollmentsRows = await storage.getActiveEnrollmentsWithClass(tenantId, student.id);
-
-  const today = todayKst();
-  const thisMonth = today.slice(0, 7);
-  const [y, m] = thisMonth.split("-").map(Number);
-  const prevYear = m === 1 ? y - 1 : y;
-  const prevMonth = m === 1 ? 12 : m - 1;
-  const lastMonth = `${prevYear}-${String(prevMonth).padStart(2, "0")}`;
-  const months = [lastMonth, thisMonth];
-
-  const invoices: Array<{
-    token: string;
-    paymentMonth: string;
-    enrollmentId: string;
-    className: string;
-    subject: string;
-    amountDue: number;
-    amountPaid: number;
-  }> = [];
-
-  for (const e of enrollmentsRows) {
-    const tuition = e.tuition ?? e.defaultTuition;
-    if (!tuition || tuition <= 0) continue;
-
-    for (const month of months) {
-      const rows = await db
-        .select({ amount: payments.amount })
-        .from(payments)
-        .where(
-          and(
-            eq(payments.enrollmentId, e.id),
-            eq(payments.paymentMonth, month),
-            eq(payments.tenantId, tenantId)
-          )
-        );
-      const amountPaid = rows.reduce((s, r) => s + r.amount, 0);
-      const remaining = tuition - amountPaid;
-      if (remaining <= 0) continue;
-
-      // 서명된 청구서 토큰. 태블릿이 결제하기를 누르면 이 토큰을 그대로 서버로 되보내
-      // dispatch를 만든다. 금액 조작 방지가 목적.
-      const token = signVirtualInvoice({
-        tenantId,
-        studentId: student.id,
-        studentName: student.name,
-        enrollmentId: e.id,
-        paymentMonth: month,
-        amount: remaining,
-        className: e.className,
-      });
-      invoices.push({
-        token,
-        paymentMonth: month,
-        enrollmentId: e.id,
-        className: e.className,
-        subject: e.classSubject,
-        amountDue: remaining,
-        amountPaid,
-      });
-    }
-  }
-
   // 태블릿에는 학생 이름을 그대로 노출한다 (본인이 이미 선택한 학생이므로).
+  const invoices = await computeStudentInvoices(tenantId, student.id, student.name);
   return res.json({ studentId: student.id, studentName: student.name, invoices });
 });
 

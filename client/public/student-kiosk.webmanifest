@@ -1,0 +1,21 @@
+{
+  "name": "PageOne 학원 자동 수납",
+  "short_name": "PageOne 수납",
+  "description": "Lenovo 태블릿 학생용 학원비 자동 수납 화면 (PWA standalone).",
+  "lang": "ko-KR",
+  "dir": "ltr",
+  "start_url": "/student-kiosk",
+  "scope": "/student-kiosk",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#020617",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "/pageone-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,0 +1,118 @@
+/**
+ * 학생 미납/선납 청구서 계산 공유 헬퍼.
+ *
+ * 왜 헬퍼로 뺐나:
+ *   deviceGuard(routes.ts) 와 kioskGuard(kioskRoutes.ts) 두 라우터가 미납 청구서 조회를
+ *   똑같이 하고 있었다. 0.3.2 이전에는 항상 [지난달, 이번달] 두 달만 봤는데, 이번 커밋에서
+ *   "선납 최대 6개월" 을 열어 주면 두 곳을 각각 고치다가 어긋난다. 한 곳으로 몰아 둔다.
+ *
+ * 반환 순서:
+ *   과거(미납) → 현재 → 미래(선납) 순으로 붙는다. 태블릿·플러그인 화면에서 위에서
+ *   아래로 읽었을 때 "오래된 미납이 먼저 눈에 띄도록" 하기 위함이다. 원장 실무에서
+ *   미납이 있는데 선납부터 하는 케이스는 예외 취급.
+ *
+ * 잔액 계산:
+ *   payments.amount 부호 규칙 — 원비 양수, 환불 음수. 그대로 SUM 하면 순 결제액.
+ *   (해당 학생/등록/월 기준). tuition - paidSoFar > 0 이면 청구서로 남긴다.
+ *   미래 월도 아직 낸 게 없으면 remaining == tuition 이 그대로 남아 선납 대상이 된다.
+ */
+
+import { and, eq } from "drizzle-orm";
+import { db } from "../db";
+import { storage } from "../storage";
+import { payments } from "@shared/schema";
+import { signVirtualInvoice } from "./virtualInvoice";
+import { todayKst } from "@shared/day";
+
+export interface ComputedInvoice {
+  token: string;
+  paymentMonth: string;
+  enrollmentId: string;
+  className: string;
+  subject: string;
+  amountDue: number;      // 지금 남은 실제 잔액 (선납 대상이면 tuition 전액)
+  amountPaid: number;
+}
+
+/**
+ * 지난달 + 이번달 + 향후 N개월(기본 6) 에 대한 미납/선납 청구서 목록.
+ *
+ * monthsForward:
+ *   현재 스펙은 6. UX 관점에서 반년 이상 미리 결제하는 케이스는 학원 실무에 없다고 봤고,
+ *   너무 크게 잡으면 태블릿 화면 스크롤이 늘어난다. 값을 파라미터로 뺀 건 나중에 조절
+ *   여지를 두기 위함이지 지금 다양한 값을 넣기 위함이 아니다.
+ */
+export async function computeStudentInvoices(
+  tenantId: string,
+  studentId: string,
+  studentName: string,
+  monthsForward = 6
+): Promise<ComputedInvoice[]> {
+  const enrollmentsRows = await storage.getActiveEnrollmentsWithClass(tenantId, studentId);
+
+  const today = todayKst();
+  const thisMonth = today.slice(0, 7);
+  const [y, m] = thisMonth.split("-").map(Number);
+
+  // 지난 달 (미납분)
+  const prevYear = m === 1 ? y - 1 : y;
+  const prevMonth = m === 1 ? 12 : m - 1;
+  const lastMonth = `${prevYear}-${String(prevMonth).padStart(2, "0")}`;
+
+  // 향후 monthsForward 개월 (선납분)
+  const futureMonths: string[] = [];
+  for (let i = 1; i <= monthsForward; i++) {
+    const fm = m + i;
+    const fy = y + Math.floor((fm - 1) / 12);
+    const fmm = ((fm - 1) % 12) + 1;
+    futureMonths.push(`${fy}-${String(fmm).padStart(2, "0")}`);
+  }
+
+  const months = [lastMonth, thisMonth, ...futureMonths];
+
+  const invoices: ComputedInvoice[] = [];
+
+  for (const e of enrollmentsRows) {
+    const tuition = e.tuition ?? e.defaultTuition;
+    if (!tuition || tuition <= 0) continue;
+
+    for (const month of months) {
+      const rows = await db
+        .select({ amount: payments.amount })
+        .from(payments)
+        .where(
+          and(
+            eq(payments.enrollmentId, e.id),
+            eq(payments.paymentMonth, month),
+            eq(payments.tenantId, tenantId)
+          )
+        );
+      const amountPaid = rows.reduce((s, r) => s + r.amount, 0);
+      const remaining = tuition - amountPaid;
+      if (remaining <= 0) continue;
+
+      // 서명된 청구서 토큰. `amount` 는 지금 시점의 잔액 상한이며 dispatch 단계에서
+      // 다시 DB 로 실제 잔액을 계산해 확인한다 (요청 금액은 min(signedAmount, dbRemaining) 이하).
+      const token = signVirtualInvoice({
+        tenantId,
+        studentId,
+        studentName,
+        enrollmentId: e.id,
+        paymentMonth: month,
+        amount: remaining,
+        className: e.className,
+      });
+      invoices.push({
+        token,
+        paymentMonth: month,
+        enrollmentId: e.id,
+        className: e.className,
+        subject: e.classSubject,
+        amountDue: remaining,
+        amountPaid,
+      });
+    }
+  }
+
+  return invoices;
+}

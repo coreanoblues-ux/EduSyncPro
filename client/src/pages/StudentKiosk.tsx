@@ -20,7 +20,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { useLocation } from "wouter";
 import { KIOSK_KEY_STORAGE } from "./StudentKioskSetup";
 
-type Stage = "phone" | "students" | "invoices" | "paying" | "done" | "error";
+type Stage = "phone" | "students" | "invoices" | "amount" | "paying" | "done" | "error";
 
 interface StudentHit {
   id: string;
@@ -85,6 +85,8 @@ export default function StudentKiosk() {
   const [selectedStudent, setSelectedStudent] = useState<StudentHit | null>(null);
   const [studentName, setStudentName] = useState<string>("");
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
+  const [payingAmount, setPayingAmount] = useState<number>(0);
   const [dispatchId, setDispatchId] = useState<string | null>(null);
   const [payingMessage, setPayingMessage] = useState<string>("결제 단말기에서 카드를 넣어주세요.");
   const [error, setError] = useState<string | null>(null);
@@ -108,6 +110,8 @@ export default function StudentKiosk() {
     setSelectedStudent(null);
     setStudentName("");
     setInvoices([]);
+    setSelectedInvoice(null);
+    setPayingAmount(0);
     setDispatchId(null);
     setError(null);
     setStage("phone");
@@ -153,16 +157,33 @@ export default function StudentKiosk() {
     }
   };
 
-  const startPayment = async (inv: Invoice) => {
+  // 청구서 선택 → 금액 선택 화면으로. 결제 API 호출은 다음 단계에서.
+  const pickInvoice = (inv: Invoice) => {
     setError(null);
+    setSelectedInvoice(inv);
+    setPayingAmount(inv.amountDue); // 기본값 전액
+    setStage("amount");
+  };
+
+  const startPayment = async (inv: Invoice, requestedAmount: number) => {
+    setError(null);
+    // 클라이언트 상한 확인 (서버가 다시 검증하지만 왕복 절약)
+    if (!Number.isInteger(requestedAmount) || requestedAmount <= 0 || requestedAmount > inv.amountDue) {
+      setError(`결제 금액은 1원 이상, ${inv.amountDue.toLocaleString()}원 이하여야 합니다.`);
+      return;
+    }
     try {
       const r = await authedFetch("/api/toss-kiosk/dispatch", {
         method: "POST",
-        body: JSON.stringify({ invoiceToken: inv.token }),
+        body: JSON.stringify({
+          invoiceToken: inv.token,
+          requestedAmount,
+        }),
       });
       const body = await r.json();
       if (!r.ok) throw new Error(body.error || "결제 요청 실패");
       setDispatchId(body.dispatchId);
+      setPayingAmount(body.amount ?? requestedAmount);
       setPayingMessage("결제 단말기에서 카드를 넣거나 태그해주세요.");
       setStage("paying");
       // 1.5초 폴링. 결제 완료까지 최대 3분.
@@ -255,13 +276,25 @@ export default function StudentKiosk() {
             <InvoicePickStage
               studentName={studentName}
               invoices={invoices}
-              onPick={startPayment}
+              onPick={pickInvoice}
+              error={error}
+            />
+          )}
+          {stage === "amount" && selectedInvoice && (
+            <AmountPickStage
+              invoice={selectedInvoice}
+              onConfirm={(amt) => startPayment(selectedInvoice, amt)}
+              onBack={() => {
+                setSelectedInvoice(null);
+                setError(null);
+                setStage("invoices");
+              }}
               error={error}
             />
           )}
           {stage === "paying" && (
             <PayingStage
-              amount={invoices.find((i) => true)?.amountDue ?? 0}
+              amount={payingAmount}
               message={payingMessage}
               onCancel={cancelPayment}
             />
@@ -395,6 +428,125 @@ function InvoicePickStage(props: {
             </div>
           </button>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 결제 금액 선택 화면 (선납·부분결제 지원, 0.3.2~).
+ *
+ * 옵션:
+ *   - 전액 결제: 청구서에 적힌 잔액을 그대로 결제.
+ *   - 직접 입력: 학부모가 원하는 금액만 결제 (예: 이번 달 15만 원 중 10만 원만).
+ *
+ * 상한선(inv.amountDue)은 UI 에서 막지만, 서버 dispatch 가 다시 DB 실 잔액을 재계산해
+ * 최종 검증한다. 즉 이 화면의 검증은 UX 편의이지 보안 방어가 아니다.
+ */
+function AmountPickStage(props: {
+  invoice: Invoice;
+  onConfirm: (amount: number) => void;
+  onBack: () => void;
+  error: string | null;
+}) {
+  const [mode, setMode] = useState<"full" | "partial">("full");
+  const [partialText, setPartialText] = useState<string>("");
+
+  const partialAmount = (() => {
+    const digitsOnly = partialText.replace(/[^0-9]/g, "");
+    const n = digitsOnly ? parseInt(digitsOnly, 10) : 0;
+    return Number.isFinite(n) ? n : 0;
+  })();
+
+  const finalAmount = mode === "full" ? props.invoice.amountDue : partialAmount;
+  const overCap = finalAmount > props.invoice.amountDue;
+  const invalid = finalAmount <= 0 || overCap;
+
+  return (
+    <div className="space-y-8" data-testid="stage-amount">
+      <div className="text-center">
+        <h1 className="text-2xl font-bold">결제 금액 선택</h1>
+        <p className="text-slate-400 mt-2">
+          {props.invoice.className} · {props.invoice.paymentMonth}
+        </p>
+        <p className="text-slate-500 text-sm mt-1">
+          잔액 <span className="text-orange-400 font-semibold">
+            {props.invoice.amountDue.toLocaleString()}원
+          </span>
+        </p>
+      </div>
+
+      <div className="grid gap-3 max-w-xl mx-auto">
+        <button
+          onClick={() => setMode("full")}
+          className={`p-6 rounded-lg text-left border-2 transition-colors ${
+            mode === "full"
+              ? "bg-slate-800 border-orange-500"
+              : "bg-slate-900 border-slate-700 hover:bg-slate-800"
+          }`}
+          data-testid="amount-mode-full"
+        >
+          <div className="text-lg font-semibold">전액 결제</div>
+          <div className="text-2xl font-bold text-orange-400 mt-1">
+            {props.invoice.amountDue.toLocaleString()}원
+          </div>
+        </button>
+
+        <button
+          onClick={() => setMode("partial")}
+          className={`p-6 rounded-lg text-left border-2 transition-colors ${
+            mode === "partial"
+              ? "bg-slate-800 border-orange-500"
+              : "bg-slate-900 border-slate-700 hover:bg-slate-800"
+          }`}
+          data-testid="amount-mode-partial"
+        >
+          <div className="text-lg font-semibold">일부 결제 (부분·선납)</div>
+          {mode === "partial" && (
+            <div className="mt-3 flex items-center gap-2">
+              <input
+                type="tel"
+                inputMode="numeric"
+                autoFocus
+                value={partialText}
+                onChange={(e) => setPartialText(e.target.value)}
+                placeholder="예: 100000"
+                className="flex-1 px-4 py-3 rounded-md bg-slate-950 border border-slate-700 text-2xl font-mono text-right"
+                data-testid="amount-partial-input"
+              />
+              <span className="text-xl text-slate-400">원</span>
+            </div>
+          )}
+          {mode === "partial" && overCap && (
+            <div className="text-red-400 text-sm mt-2">
+              잔액을 초과할 수 없습니다.
+            </div>
+          )}
+        </button>
+      </div>
+
+      {props.error && <div className="text-red-400 text-center">{props.error}</div>}
+
+      <div className="flex gap-3 justify-center max-w-xl mx-auto">
+        <button
+          onClick={props.onBack}
+          className="flex-1 py-4 rounded-lg bg-slate-800 hover:bg-slate-700 text-lg"
+          data-testid="button-amount-back"
+        >
+          뒤로
+        </button>
+        <button
+          onClick={() => props.onConfirm(finalAmount)}
+          disabled={invalid}
+          className={`flex-[2] py-4 rounded-lg text-lg font-bold ${
+            invalid
+              ? "bg-slate-800 text-slate-600"
+              : "bg-orange-500 hover:bg-orange-400 text-white"
+          }`}
+          data-testid="button-amount-confirm"
+        >
+          {finalAmount > 0 ? `${finalAmount.toLocaleString()}원 결제` : "금액 입력"}
+        </button>
       </div>
     </div>
   );

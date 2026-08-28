@@ -6,6 +6,19 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@100;300;400;500;700;900&family=Inter:wght@100;200;300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <!--
+      PWA (Lenovo 태블릿 학생용 수납 화면 전용).
+      manifest 는 scope 을 /student-kiosk 로 좁혀 놓았고, service worker 는
+      main.tsx 안에서 /student-kiosk 경로일 때만 조건부로 등록된다.
+      원장 화면·수업 화면 등 EduSyncPro 다른 경로에는 영향이 없다.
+    -->
+    <link rel="manifest" href="/student-kiosk.webmanifest" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="PageOne 수납" />
+    <link rel="apple-touch-icon" href="/pageone-icon.svg" />
+    <link rel="icon" type="image/svg+xml" href="/pageone-icon.svg" />
     <title>시대영재 학원관리</title>
   </head>
   <body>

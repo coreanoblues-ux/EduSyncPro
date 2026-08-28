@@ -25,7 +25,11 @@ import {
   paymentDispatches,
   tossFrontDevices,
   kioskDevices,
+  payments,
+  enrollments,
+  classes,
   type PaymentDispatchStatus,
+  type PaymentIntentStatus,
 } from "@shared/schema";
 import { kioskGuard } from "./kioskAuth";
 import { deviceGuard } from "./deviceAuth";
@@ -61,6 +65,17 @@ function generatePaymentKey(): string {
   return "tf_" + crypto.randomBytes(16).toString("hex");
 }
 
+/**
+ * 32-bit signed CRC-like 해시. pg_advisory_xact_lock(int, int) 키 생성용.
+ * 충돌해도 잘못된 결과가 나오는 게 아니라 서로 관련 없는 두 요청이 잠깐 직렬화될 뿐이라
+ * 완벽할 필요가 없어 SHA-256 앞 4 바이트를 그대로 int32 로 해석한다.
+ */
+function crc32(input: string): number {
+  const buf = crypto.createHash("sha256").update(input).digest();
+  // int32 signed 로 해석 (pg advisory lock 키가 signed 4-byte 두 개).
+  return buf.readInt32BE(0);
+}
+
 function generateOrderId(): string {
   const now = new Date();
   const yyyymmdd =
@@ -77,11 +92,22 @@ function generateOrderId(): string {
 
 const dispatchBodySchema = z.object({
   invoiceToken: z.string().min(1),
+  // 부분결제(=선납/분납) 지원: 태블릿이 원하는 결제 금액을 함께 보낸다.
+  //   - 없으면 청구서 금액(=발급 시점 잔액) 전액으로 진행 (기존 동작)
+  //   - 있으면 서버가 DB 를 다시 봐서 실제 잔액을 계산하고 0 < 요청금액 ≤ 실제잔액 인 경우만 승인
+  requestedAmount: z.number().int().positive().optional(),
 });
 
 /**
  * POST /api/toss-kiosk/dispatch
  * 태블릿이 결제하기를 누르면 호출. paymentIntent + payment_dispatch를 만들고 프론트에 push.
+ *
+ * 금액 확정 원칙 (0.3.2~):
+ *   프론트가 보낸 requestedAmount 를 절대 그대로 믿지 않는다. 아래 두 상한을 모두 만족해야 한다.
+ *     1) invoiceToken 서명값(amount) — 발급 시점의 잔액 상한. 토큰 위조 방지.
+ *     2) 트랜잭션 안에서 DB payments SUM 을 다시 조회한 "지금 이 순간의 실제 잔액".
+ *   같은 (enrollment, month) 에 대해 미마감 intent 가 이미 있으면 새 dispatch 를 거절해
+ *   두 태블릿이 동시에 초과 결제를 만드는 케이스를 막는다.
  */
 kioskDispatchRouter.post("/dispatch", kioskGuard, async (req: Request, res: Response) => {
   const parsed = dispatchBodySchema.safeParse(req.body);
@@ -95,6 +121,12 @@ kioskDispatchRouter.post("/dispatch", kioskGuard, async (req: Request, res: Resp
     return res.status(403).json({ error: "다른 학원의 청구서입니다." });
   }
   if (invoice.amount <= 0) return res.status(400).json({ error: "결제 금액이 0원 이하입니다." });
+
+  // 태블릿이 지정한 요청 금액 상한 (없으면 청구서 전액)
+  const requestedAmount = parsed.data.requestedAmount ?? invoice.amount;
+  if (requestedAmount > invoice.amount) {
+    return res.status(400).json({ error: "요청 금액이 청구서 잔액보다 큽니다." });
+  }
 
   // 라우팅 대상 프론트 결정
   let tossDeviceId = kiosk.pairedFrontDeviceId;
@@ -112,14 +144,14 @@ kioskDispatchRouter.post("/dispatch", kioskGuard, async (req: Request, res: Resp
   }
 
   // 동시 결제 잠금: 이 프론트에 아직 마감되지 않은 dispatch가 있으면 409
-  const openStates: PaymentDispatchStatus[] = ["PENDING", "DELIVERED"];
+  const openDispatchStates: PaymentDispatchStatus[] = ["PENDING", "DELIVERED"];
   const [busy] = await db
     .select({ id: paymentDispatches.id })
     .from(paymentDispatches)
     .where(
       and(
         eq(paymentDispatches.tossDeviceId, tossDeviceId),
-        inArray(paymentDispatches.status, openStates)
+        inArray(paymentDispatches.status, openDispatchStates)
       )
     )
     .limit(1);
@@ -129,11 +161,90 @@ kioskDispatchRouter.post("/dispatch", kioskGuard, async (req: Request, res: Resp
 
   const paymentKey = generatePaymentKey();
   const orderId = generateOrderId();
-  const orderName = `${invoice.studentName} · ${invoice.className} · ${invoice.paymentMonth}`;
   const expiresAt = new Date(Date.now() + DISPATCH_TTL_MS);
 
+  // 트랜잭션 밖으로 검증 실패를 전달하기 위한 신호. 트랜잭션은 throw 되어야 롤백되기 때문에
+  // 사용자 오류는 아래 클래스로 감싸서 던지고 catch 에서 HTTP 응답으로 바꾼다.
+  class DispatchReject extends Error {
+    constructor(public httpStatus: number, message: string) {
+      super(message);
+    }
+  }
+
   try {
-    const dispatch = await db.transaction(async (tx) => {
+    const built = await db.transaction(async (tx) => {
+      // (0) pg advisory lock — 같은 (enrollment, month) 에 대한 동시 요청을 직렬화.
+      //   테이블 DDL 을 건드리지 않고 race 를 막는 표준 트릭. 트랜잭션 종료 시 자동 해제.
+      //   두 32-bit 해시로 pg_advisory_xact_lock(int, int) 를 사용한다.
+      const lockKeyA = crc32(invoice.enrollmentId);
+      const lockKeyB = crc32(invoice.paymentMonth);
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${lockKeyA}, ${lockKeyB})`);
+
+      // (A) 등록 확인 + tuition 재조회
+      const [enrollRow] = await tx
+        .select({
+          enrollment: enrollments,
+          defaultTuition: classes.defaultTuition,
+        })
+        .from(enrollments)
+        .innerJoin(classes, eq(enrollments.classId, classes.id))
+        .where(
+          and(
+            eq(enrollments.id, invoice.enrollmentId),
+            eq(enrollments.tenantId, invoice.tenantId)
+          )
+        );
+      if (!enrollRow) throw new DispatchReject(404, "수강 등록을 찾을 수 없습니다.");
+      const tuition = enrollRow.enrollment.tuition ?? enrollRow.defaultTuition;
+      if (!tuition || tuition <= 0) {
+        throw new DispatchReject(409, "이 반의 수강료가 설정돼 있지 않습니다.");
+      }
+
+      // (B) 같은 (enrollment, month) 에 미마감 intent 존재 시 거절 (동시 결제 방지)
+      const openIntentStates: PaymentIntentStatus[] = ["CREATED", "PROCESSING"];
+      const [openIntent] = await tx
+        .select({ id: paymentIntents.id })
+        .from(paymentIntents)
+        .where(
+          and(
+            eq(paymentIntents.enrollmentId, invoice.enrollmentId),
+            eq(paymentIntents.paymentMonth, invoice.paymentMonth),
+            eq(paymentIntents.tenantId, invoice.tenantId),
+            inArray(paymentIntents.status, openIntentStates)
+          )
+        )
+        .limit(1);
+      if (openIntent) {
+        throw new DispatchReject(409, "이 수강월에 대해 처리 중인 결제가 있습니다. 완료 후 다시 시도하세요.");
+      }
+
+      // (C) DB 잔액 재계산 (payments 부호 규칙: 원비 양수, 환불 음수)
+      const paidRows = await tx
+        .select({ amount: payments.amount })
+        .from(payments)
+        .where(
+          and(
+            eq(payments.enrollmentId, invoice.enrollmentId),
+            eq(payments.paymentMonth, invoice.paymentMonth),
+            eq(payments.tenantId, invoice.tenantId)
+          )
+        );
+      const paidSoFar = paidRows.reduce((s, r) => s + r.amount, 0);
+      const actualRemaining = tuition - paidSoFar;
+      if (actualRemaining <= 0) throw new DispatchReject(409, "이 수강월은 이미 완납되었습니다.");
+      if (requestedAmount > actualRemaining) {
+        throw new DispatchReject(
+          409,
+          `요청 금액이 실제 잔액을 초과합니다. (실제 잔액: ${actualRemaining.toLocaleString()}원)`
+        );
+      }
+
+      // (D) intent + dispatch 생성
+      const finalAmount = requestedAmount;
+      const orderName = `${invoice.studentName} · ${invoice.className} · ${invoice.paymentMonth}${
+        finalAmount < actualRemaining ? " (부분결제)" : ""
+      }`;
+
       const [intent] = await tx
         .insert(paymentIntents)
         .values({
@@ -143,9 +254,9 @@ kioskDispatchRouter.post("/dispatch", kioskGuard, async (req: Request, res: Resp
           enrollmentId: invoice.enrollmentId,
           paymentMonth: invoice.paymentMonth,
           deviceId: tossDeviceId,
-          amount: invoice.amount,
+          amount: finalAmount,
           tax: 0,
-          supplyValue: invoice.amount,
+          supplyValue: finalAmount,
           taxExemptValue: 0,
           status: "CREATED",
           expiresAt,
@@ -160,7 +271,7 @@ kioskDispatchRouter.post("/dispatch", kioskGuard, async (req: Request, res: Resp
           intentId: intent.id,
           kioskDeviceId: kiosk.id,
           tossDeviceId: tossDeviceId!,
-          amount: invoice.amount,
+          amount: finalAmount,
           orderId,
           orderName,
           status: "PENDING",
@@ -168,15 +279,15 @@ kioskDispatchRouter.post("/dispatch", kioskGuard, async (req: Request, res: Resp
         })
         .returning();
 
-      return { intent, disp };
+      return { intent, disp, orderName, finalAmount };
     });
 
     const pushPayload = {
-      dispatchId: dispatch.disp.id,
+      dispatchId: built.disp.id,
       paymentKey,
       orderId,
-      orderName,
-      amount: invoice.amount,
+      orderName: built.orderName,
+      amount: built.finalAmount,
       studentName: invoice.studentName,
       className: invoice.className,
       paymentMonth: invoice.paymentMonth,
@@ -187,14 +298,17 @@ kioskDispatchRouter.post("/dispatch", kioskGuard, async (req: Request, res: Resp
     publish(tossDeviceId, "payment.dispatch", pushPayload);
 
     return res.status(201).json({
-      dispatchId: dispatch.disp.id,
+      dispatchId: built.disp.id,
       paymentKey,
       orderId,
-      amount: invoice.amount,
+      amount: built.finalAmount,
       expiresAt,
       tossDeviceId,
     });
   } catch (err: any) {
+    if (err instanceof DispatchReject) {
+      return res.status(err.httpStatus).json({ error: err.message });
+    }
     if (err?.code === "23505") {
       return res.status(409).json({ error: "결제 요청이 중복되었습니다." });
     }

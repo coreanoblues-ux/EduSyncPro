@@ -32,7 +32,27 @@ import { deviceGuard } from "./deviceAuth";
 import { verifyVirtualInvoice } from "./virtualInvoice";
 import { publish, subscribe } from "./dispatchBus";
 
-const router = Router();
+/**
+ * 라우터를 두 개로 분리한 이유 (2026-08 버그 수정):
+ *
+ *   예전엔 router 하나에 태블릿 경로를 "/kiosk/dispatch" 로 적어 두고
+ *   app.use("/api/toss-kiosk", router) 로 마운트했다. 그 결과 실제 경로가
+ *   "/api/toss-kiosk/kiosk/dispatch" 가 되어 버렸는데, 태블릿(StudentKiosk.tsx)은
+ *   "/api/toss-kiosk/dispatch" 를 호출했다. 아무 라우트에도 걸리지 않으니
+ *   server/index.ts 의 /api 폴백이 "존재하지 않는 API 경로입니다." 를 돌려줬고,
+ *   학생 화면에는 미납 목록이 잘 보이는데 결제 버튼만 빨간 오류가 났다.
+ *
+ *   같은 router 를 /api/toss-front 에도 마운트하고 있어서 kioskGuard 경로가
+ *   프론트 프리픽스로도 노출됐다. 인증 미들웨어가 서로 다른 두 그룹이 한 라우터에
+ *   섞여 있으면 이런 사고가 반복된다. 그래서 파일 안에서 아예 갈라 둔다.
+ *
+ *   - kioskDispatchRouter → app.use("/api/toss-kiosk", ...) 로만 마운트
+ *   - frontDispatchRouter → app.use("/api/toss-front", ...) 로만 마운트
+ *
+ *   두 라우터 모두 경로에 프리픽스를 중복해서 적지 않는다.
+ */
+export const kioskDispatchRouter = Router();
+export const frontDispatchRouter = Router();
 
 // 결제 단말기 모드 TTL: 3분. 결제하기를 누른 뒤 3분 안에 프론트에서 승인·취소·타임아웃 중 하나로 마감.
 const DISPATCH_TTL_MS = 3 * 60 * 1000;
@@ -60,10 +80,10 @@ const dispatchBodySchema = z.object({
 });
 
 /**
- * POST /kiosk/dispatch
+ * POST /api/toss-kiosk/dispatch
  * 태블릿이 결제하기를 누르면 호출. paymentIntent + payment_dispatch를 만들고 프론트에 push.
  */
-router.post("/kiosk/dispatch", kioskGuard, async (req: Request, res: Response) => {
+kioskDispatchRouter.post("/dispatch", kioskGuard, async (req: Request, res: Response) => {
   const parsed = dispatchBodySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message });
 
@@ -182,8 +202,8 @@ router.post("/kiosk/dispatch", kioskGuard, async (req: Request, res: Response) =
   }
 });
 
-/** GET /kiosk/dispatch/:id — 태블릿이 자기 결제 상태를 1.5초 주기로 폴링 */
-router.get("/kiosk/dispatch/:id", kioskGuard, async (req: Request, res: Response) => {
+/** GET /api/toss-kiosk/dispatch/:id — 태블릿이 자기 결제 상태를 1.5초 주기로 폴링 */
+kioskDispatchRouter.get("/dispatch/:id", kioskGuard, async (req: Request, res: Response) => {
   const kiosk = req.kiosk!;
   const [row] = await db
     .select()
@@ -206,8 +226,8 @@ router.get("/kiosk/dispatch/:id", kioskGuard, async (req: Request, res: Response
   });
 });
 
-/** POST /kiosk/dispatch/:id/cancel — 태블릿에서 사용자가 취소를 눌렀을 때 */
-router.post("/kiosk/dispatch/:id/cancel", kioskGuard, async (req: Request, res: Response) => {
+/** POST /api/toss-kiosk/dispatch/:id/cancel — 태블릿에서 사용자가 취소를 눌렀을 때 */
+kioskDispatchRouter.post("/dispatch/:id/cancel", kioskGuard, async (req: Request, res: Response) => {
   const kiosk = req.kiosk!;
   const openStates: PaymentDispatchStatus[] = ["PENDING", "DELIVERED"];
   const result = await db
@@ -240,7 +260,7 @@ router.post("/kiosk/dispatch/:id/cancel", kioskGuard, async (req: Request, res: 
  * 만약 EventSource만 가능한 환경이면 accessToken 쿼리를 허용해야 하지만, 로그 유출 위험 때문에
  * 지금은 헤더 방식만 지원한다.
  */
-router.get("/dispatch/stream", deviceGuard, async (req: Request, res: Response) => {
+frontDispatchRouter.get("/dispatch/stream", deviceGuard, async (req: Request, res: Response) => {
   const device = req.device!;
 
   res.setHeader("Content-Type", "text/event-stream");
@@ -285,7 +305,7 @@ router.get("/dispatch/stream", deviceGuard, async (req: Request, res: Response) 
  * 필요한 필드를 그대로 갖도록 정규화한다. status='PENDING' 만 픽업 (DELIVERED 는 이미 다른
  * 폴링 사이클이 잡아 결제창까지 띄운 것이므로 재진입 금지).
  */
-router.get("/dispatch/pending", deviceGuard, async (req: Request, res: Response) => {
+frontDispatchRouter.get("/dispatch/pending", deviceGuard, async (req: Request, res: Response) => {
   const device = req.device!;
   // paymentIntents 와 JOIN 해서 tax/supplyValue/taxExemptValue 를 함께 돌려준다.
   // 플러그인이 SDK 에 넘길 세금·공급가·비과세 값은 서버가 확정한 값만 신뢰한다 (프론트 계산 금지).
@@ -338,8 +358,18 @@ router.get("/dispatch/pending", deviceGuard, async (req: Request, res: Response)
   });
 });
 
-/** POST /dispatch/:id/ack — 프론트가 dispatch를 수신했음을 확정. DELIVERED로 표시 */
-router.post("/dispatch/:id/ack", deviceGuard, async (req: Request, res: Response) => {
+/**
+ * POST /dispatch/:id/ack — 프론트가 dispatch를 수신했음을 확정. DELIVERED로 표시.
+ *
+ * 여기서 intent도 CREATED → PROCESSING 으로 함께 올린다. 이 전이가 없으면
+ * intent 는 결제창이 떠 있는 내내 CREATED 로 남아, 관리자 화면에서 "아직 아무도
+ * 집어가지 않은 요청"과 "지금 카드 꽂는 중"이 구분되지 않았다. 상태 기계는
+ * CREATED → PROCESSING → APPROVED/CANCELED/TIMEOUT/FAILED 로 한 방향이다.
+ *
+ * PENDING → DELIVERED 갱신 자체가 조건부 UPDATE 라 두 단말기가 동시에 ack 해도
+ * 한 쪽만 1행을 얻는다. 이게 dispatch 를 집어가는 claim(선점) 역할을 한다.
+ */
+frontDispatchRouter.post("/dispatch/:id/ack", deviceGuard, async (req: Request, res: Response) => {
   const device = req.device!;
   const result = await db
     .update(paymentDispatches)
@@ -351,8 +381,20 @@ router.post("/dispatch/:id/ack", deviceGuard, async (req: Request, res: Response
         eq(paymentDispatches.status, "PENDING")
       )
     )
-    .returning({ id: paymentDispatches.id });
+    .returning({ id: paymentDispatches.id, paymentKey: paymentDispatches.paymentKey });
   if (result.length === 0) return res.status(409).json({ error: "이 dispatch는 PENDING 상태가 아닙니다." });
+
+  await db
+    .update(paymentIntents)
+    .set({ status: "PROCESSING" })
+    .where(
+      and(
+        eq(paymentIntents.paymentKey, result[0].paymentKey),
+        eq(paymentIntents.tenantId, device.tenantId),
+        eq(paymentIntents.status, "CREATED")
+      )
+    );
+
   return res.json({ ok: true });
 });
 
@@ -373,7 +415,7 @@ const resultBodySchema = z.object({
   failureReason: z.string().max(300).optional(),
 });
 
-router.post("/dispatch/:id/result", deviceGuard, async (req: Request, res: Response) => {
+frontDispatchRouter.post("/dispatch/:id/result", deviceGuard, async (req: Request, res: Response) => {
   const parsed = resultBodySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message });
   const device = req.device!;
@@ -453,5 +495,3 @@ export function startDispatchExpirySweeper(intervalMs = 30_000) {
   // 첫 tick은 즉시
   tick();
 }
-
-export default router;

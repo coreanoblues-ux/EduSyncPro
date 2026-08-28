@@ -33,7 +33,12 @@ import tossFrontAttendanceRouter from "./toss-front/attendance";
 import tossFrontWebhooksRouter from "./toss-front/webhooks";
 import tossFrontAdminRouter from "./toss-front/admin";
 import tossKioskRouter from "./toss-front/kioskRoutes";
-import tossDispatchRouter, { startDispatchExpirySweeper } from "./toss-front/dispatch";
+import {
+  kioskDispatchRouter,
+  frontDispatchRouter,
+  startDispatchExpirySweeper,
+} from "./toss-front/dispatch";
+import tossPluginLogRouter from "./toss-front/pluginLogs";
 import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
 import { parseDays, parseSchedule } from "@shared/timetable";
@@ -1806,12 +1811,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.use("/api/toss-front", tossFrontAttendanceRouter);
   app.use("/api/toss-front", tossFrontWebhooksRouter);
   app.use("/api/toss-front", tossFrontAdminRouter);
+  // 플러그인 라이프사이클 로그 수집. Front 단말기가 화면에 아무것도 못 그리는
+  // 상황에서도 원인을 볼 수 있게, 인증 이전 단계의 로그까지 받아 준다.
+  app.use("/api/toss-front", tossPluginLogRouter);
   // 학생용 태블릿 웹앱 전용 API. 완전히 별도 인증(kioskGuard) 경로.
   app.use("/api/toss-kiosk", tossKioskRouter);
-  // 결제 단말기 모드 dispatch. 태블릿→서버, 서버→프론트 SSE, 프론트→서버 결과.
-  // /kiosk/dispatch* 는 kioskGuard, /dispatch/* 는 deviceGuard로 각각 인증.
-  app.use("/api/toss-kiosk", tossDispatchRouter);
-  app.use("/api/toss-front", tossDispatchRouter);
+  // 결제 단말기 모드 dispatch. 두 라우터는 인증 미들웨어가 서로 달라서
+  // 프리픽스별로 하나씩만 마운트한다 (교차 마운트 금지 — 경로 이중화 사고의 원인이었다).
+  app.use("/api/toss-kiosk", kioskDispatchRouter);   // kioskGuard: 태블릿
+  app.use("/api/toss-front", frontDispatchRouter);   // deviceGuard: Front 단말기
   // 만료(3분 초과)된 dispatch를 30초 주기로 TIMEOUT으로 정리.
   startDispatchExpirySweeper();
 

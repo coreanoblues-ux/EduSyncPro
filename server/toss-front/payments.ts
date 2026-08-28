@@ -22,7 +22,7 @@
 import { Router, Request, Response } from "express";
 import { z } from "zod";
 import crypto from "crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   paymentIntents,
@@ -330,6 +330,11 @@ router.post(
       return res.status(400).json({ error: parsed.error.issues[0]?.message });
     }
     const tenantId = req.device!.tenantId;
+    // CREATED 뿐 아니라 PROCESSING 도 취소 대상이다.
+    // dispatch ack 시점에 intent 가 CREATED → PROCESSING 으로 올라가므로,
+    // CREATED 만 허용하면 "결제창까지 떴다가 사용자가 취소" 라는 가장 흔한 경로에서
+    // 항상 409 가 나고 intent 가 만료될 때까지 PROCESSING 으로 남는다.
+    const cancellable: PaymentIntentStatus[] = ["CREATED", "PROCESSING"];
     const result = await db
       .update(paymentIntents)
       .set({
@@ -341,7 +346,7 @@ router.post(
         and(
           eq(paymentIntents.paymentKey, parsed.data.paymentKey),
           eq(paymentIntents.tenantId, tenantId),
-          eq(paymentIntents.status, "CREATED" as PaymentIntentStatus)
+          inArray(paymentIntents.status, cancellable)
         )
       )
       .returning({ id: paymentIntents.id });

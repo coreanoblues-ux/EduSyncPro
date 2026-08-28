@@ -62,6 +62,24 @@ interface Intent {
   createdAt: string;
 }
 
+// 단말기 플러그인이 서버로 밀어 올린 라이프사이클 로그.
+// 단말기에 개발자도구를 붙일 수 없으므로 원장은 이 표가 유일한 창구다.
+interface PluginLog {
+  receivedAt: string;
+  at: string | null;
+  level: "info" | "warn" | "error";
+  event: string;
+  message: string;
+  deviceId: string | null;
+  pluginVersion: string | null;
+}
+
+interface TestCandidate {
+  enrollmentId: string;
+  studentName: string;
+  className: string | null;
+}
+
 interface WebhookEvent {
   webhookId: string;
   eventType: string | null;
@@ -100,6 +118,12 @@ export default function TossFront() {
   const [kioskName, setKioskName] = useState("");
   const [kioskPairedFrontId, setKioskPairedFrontId] = useState<string>("");
   const [issuedKioskKey, setIssuedKioskKey] = useState<string | null>(null);
+
+  // 진단 도구 (플러그인 로그 / 100원 테스트)
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [testOpen, setTestOpen] = useState(false);
+  const [testEnrollmentId, setTestEnrollmentId] = useState("");
+  const [testDeviceId, setTestDeviceId] = useState("");
 
   const { data: summary } = useQuery<Summary>({
     queryKey: ["/api/toss-front/admin/summary"],
@@ -157,6 +181,47 @@ export default function TossFront() {
     mutationFn: async (id: string) =>
       (await apiRequest("DELETE", `/api/toss-kiosk/devices/${id}`)).json(),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/toss-kiosk/devices"] }),
+  });
+
+  // ─── 진단: 플러그인 로그 ─────────────────────────────────────────────
+  // 검은 화면을 보고 있는 동안에도 갱신돼야 하므로 5초. 서버는 메모리 링버퍼라
+  // 이 정도 주기로 읽어도 DB 부담이 없다.
+  const { data: pluginLogs } = useQuery<{ logs: PluginLog[]; total: number }>({
+    queryKey: ["/api/toss-front/plugin-logs"],
+    refetchInterval: logsOpen ? 5_000 : false,
+    enabled: logsOpen,
+  });
+
+  const clearLogsMutation = useMutation({
+    mutationFn: async () => (await apiRequest("DELETE", "/api/toss-front/plugin-logs")).json(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/toss-front/plugin-logs"] }),
+  });
+
+  // ─── 진단: 100원 테스트 결제 ─────────────────────────────────────────
+  const { data: testCandidates = [] } = useQuery<TestCandidate[]>({
+    queryKey: ["/api/toss-front/admin/test-payment/candidates"],
+    enabled: testOpen,
+  });
+
+  const testPaymentMutation = useMutation({
+    mutationFn: async () =>
+      (
+        await apiRequest("POST", "/api/toss-front/admin/test-payment", {
+          enrollmentId: testEnrollmentId,
+          tossDeviceId: testDeviceId || undefined,
+        })
+      ).json(),
+    onSuccess: (data: any) => {
+      setTestOpen(false);
+      toast({
+        title: "100원 테스트 결제를 단말기로 보냈습니다",
+        description: data.notice ?? "단말기 화면을 확인하세요.",
+      });
+      qc.invalidateQueries({ queryKey: ["/api/toss-front/admin/intents"] });
+      qc.invalidateQueries({ queryKey: ["/api/toss-front/admin/summary"] });
+    },
+    onError: (e: Error) =>
+      toast({ title: "테스트 결제 실패", description: e.message, variant: "destructive" }),
   });
 
   const closeKioskDialog = () => {
@@ -366,6 +431,34 @@ export default function TossFront() {
         </CardContent>
       </Card>
 
+      {/* 진단 도구 — 단말기가 검은 화면일 때 원장이 제일 먼저 여는 곳 */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <div>
+            <CardTitle>단말기 진단</CardTitle>
+            <p className="text-xs text-muted-foreground mt-1">
+              결제 단말기 화면이 검거나 반응이 없을 때, 플러그인이 어디까지 갔는지 여기서 봅니다.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => setLogsOpen(true)}>
+              플러그인 로그
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setTestOpen(true)}>
+              100원 테스트 결제
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <p className="text-xs text-muted-foreground">
+            정상 부팅이면 로그에{" "}
+            <span className="font-mono">plugin entry started → SDK initialized → terminal
+            authenticated → backend connection OK → polling started → waiting payment intent</span>{" "}
+            순서로 6줄이 남습니다. 중간에서 멈춘 지점이 곧 고장 지점입니다.
+          </p>
+        </CardContent>
+      </Card>
+
       {/* intent 목록 */}
       <Card>
         <CardHeader>
@@ -457,6 +550,128 @@ export default function TossFront() {
           )}
         </CardContent>
       </Card>
+
+      {/* 플러그인 로그 뷰어 */}
+      <Dialog open={logsOpen} onOpenChange={setLogsOpen}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Front 플러그인 로그</DialogTitle>
+          </DialogHeader>
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>
+              최근 {pluginLogs?.logs.length ?? 0}건 (서버 보관 {pluginLogs?.total ?? 0}건) · 5초마다 갱신
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => clearLogsMutation.mutate()}
+              disabled={clearLogsMutation.isPending}
+            >
+              비우기
+            </Button>
+          </div>
+          <div className="max-h-[60vh] overflow-y-auto rounded border">
+            {!pluginLogs || pluginLogs.logs.length === 0 ? (
+              <div className="p-4 text-sm text-muted-foreground">
+                아직 들어온 로그가 없습니다. 단말기에서 EduSyncPro 플러그인을 실행하면 여기에
+                한 줄씩 쌓입니다. 실행했는데도 계속 비어 있다면 플러그인 스크립트 자체가 로드되지
+                않은 것입니다 (ZIP 을 다시 올려 주세요).
+              </div>
+            ) : (
+              <table className="w-full text-xs">
+                <tbody>
+                  {pluginLogs.logs.map((l, i) => (
+                    <tr key={i} className="border-b last:border-0 align-top">
+                      <td className="py-1.5 px-2 whitespace-nowrap text-muted-foreground">
+                        {new Date(l.receivedAt).toLocaleTimeString("ko-KR")}
+                      </td>
+                      <td className="py-1.5 px-2">
+                        <Badge
+                          className={
+                            l.level === "error"
+                              ? "bg-red-100 text-red-800"
+                              : l.level === "warn"
+                                ? "bg-amber-100 text-amber-800"
+                                : "bg-slate-100 text-slate-800"
+                          }
+                        >
+                          {l.level}
+                        </Badge>
+                      </td>
+                      <td className="py-1.5 px-2 font-mono whitespace-nowrap">{l.event}</td>
+                      <td className="py-1.5 px-2 break-all">{l.message}</td>
+                      <td className="py-1.5 px-2 whitespace-nowrap text-muted-foreground">
+                        {l.pluginVersion ?? ""}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setLogsOpen(false)}>닫기</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 100원 테스트 결제 */}
+      <Dialog open={testOpen} onOpenChange={setTestOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>100원 테스트 결제</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              단말기까지 결제가 실제로 도달하는지 확인하는 용도입니다. 금액은 서버가 100원으로
+              고정하며, 청구월이 <span className="font-mono">TEST-…</span> 로 기록되어 학생의 월별
+              미납 계산에는 들어가지 않습니다. 학생 태블릿에는 이 버튼이 보이지 않습니다.
+            </p>
+            <div>
+              <label className="text-xs text-muted-foreground">대상 수강 등록</label>
+              <select
+                value={testEnrollmentId}
+                onChange={(e) => setTestEnrollmentId(e.target.value)}
+                className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="">선택하세요</option>
+                {testCandidates.map((c) => (
+                  <option key={c.enrollmentId} value={c.enrollmentId}>
+                    {c.studentName}
+                    {c.className ? ` · ${c.className}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground">보낼 결제 단말기</label>
+              <select
+                value={testDeviceId}
+                onChange={(e) => setTestDeviceId(e.target.value)}
+                className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="">자동 (최근 접속한 활성 단말기)</option>
+                {devices.filter((d) => d.isActive).map((d) => (
+                  <option key={d.id} value={d.id}>{d.displayName}</option>
+                ))}
+              </select>
+            </div>
+            <p className="text-xs text-amber-700">
+              Railway 환경변수에 <span className="font-mono">TOSS_FRONT_TEST_PAYMENT=on</span> 이
+              없으면 서버가 거절합니다. 테스트가 끝나면 이 값을 지우세요.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTestOpen(false)}>취소</Button>
+            <Button
+              disabled={!testEnrollmentId || testPaymentMutation.isPending}
+              onClick={() => testPaymentMutation.mutate()}
+            >
+              100원 결제 보내기
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* 등록 다이얼로그 */}
       <Dialog open={enrollOpen} onOpenChange={(v) => (!v ? closeEnrollDialog() : setEnrollOpen(v))}>

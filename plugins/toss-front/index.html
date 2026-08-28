@@ -6,15 +6,61 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>EduSyncPro Toss Front</title>
     <!--
-      결제 단말기 모드 진입점. 화면 렌더는 전부 sdk.template.* 이 담당하므로
-      이 HTML 은 SDK 부팅 훅을 실행할 스크립트만 로드한다.
-      커스텀 UI 요소를 두지 않는다 (Toss 심사 정책 준수).
+      결제 단말기 모드 진입점.
+
+      화면 렌더는 원칙적으로 sdk.template.* 이 담당한다. 다만 0.2.x 에서
+      background:#000 만 두었다가, 스크립트가 아예 실행되지 않았을 때
+      "완전한 검은 화면"이 되어 아무 진단도 못 하는 사고가 났다.
+
+      그래서 부팅 문구를 HTML 에 직접 심어 둔다. 이 문구가 그대로 남아 있다면
+      "번들 스크립트가 로드조차 되지 않았다"는 뜻이고, 문구가 바뀌었다면
+      플러그인 코드는 최소한 실행됐다는 뜻이다. 현장에서 이 구분이 결정적이다.
+      플러그인이 부팅되면 screen.ts 가 이 노드를 덮어쓴다.
     -->
     <style>
-      html, body { margin: 0; padding: 0; height: 100%; background: #000; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #0f172a;
+        color: #e2e8f0;
+        font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+      }
+      #boot {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        text-align: center;
+        padding: 24px;
+        box-sizing: border-box;
+      }
+      #boot .brand {
+        font-size: 15px;
+        letter-spacing: 2px;
+        color: #64748b;
+        font-weight: 700;
+      }
+      #boot .title {
+        font-size: 30px;
+        font-weight: 800;
+        color: #f97316;
+      }
+      #boot .sub {
+        font-size: 16px;
+        color: #94a3b8;
+      }
     </style>
   </head>
   <body>
+    <div id="boot">
+      <div class="brand">PAGE ONE · EDUSYNCPRO</div>
+      <div class="title">플러그인을 시작하는 중</div>
+      <div class="sub">이 화면이 계속 보이면 플러그인 스크립트가 로드되지 않은 것입니다.</div>
+    </div>
     <script type="module" src="./src/index.ts"></script>
   </body>
 </html>

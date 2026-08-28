@@ -14,19 +14,26 @@
  *   3. 401 을 받으면 자동 재세션 후 1회 재시도
  */
 
-const SERVER_URL =
+export const SERVER_URL =
   (globalThis as any).TOSS_PLUGIN_SERVER_URL ||
   "https://edusyncpro-production-dcfe.up.railway.app";
+
+export interface DeviceInfo {
+  id: string;
+  tenantId: string;
+  displayName: string;
+}
 
 let accessToken: string | null = null;
 let accessTokenExpiresAt = 0;
 let deviceKey: string | null = null;
+let lastDevice: DeviceInfo | null = null;
 
 export function setDeviceKey(key: string) {
   deviceKey = key;
 }
 
-async function refreshSession(): Promise<void> {
+async function refreshSession(): Promise<DeviceInfo> {
   if (!deviceKey) {
     throw new Error("deviceKey가 없습니다. 관리자 화면에서 등록 코드를 받으세요.");
   }
@@ -35,10 +42,33 @@ async function refreshSession(): Promise<void> {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ deviceKey }),
   });
-  if (!res.ok) throw new Error(`세션 발급 실패: ${res.status}`);
-  const j: { accessToken: string; expiresInSeconds: number } = await res.json();
+  if (!res.ok) {
+    // 본문에 원인이 담겨 있다 (비활성 단말기 / 키 불일치). 로그에 그대로 남기면
+    // 현장에서 "등록을 다시 해야 하는지"를 바로 판단할 수 있다.
+    const detail = await res.text().catch(() => "");
+    throw new Error(`세션 발급 실패: ${res.status} ${detail.slice(0, 200)}`);
+  }
+  const j: { accessToken: string; expiresInSeconds: number; device: DeviceInfo } = await res.json();
   accessToken = j.accessToken;
   accessTokenExpiresAt = Date.now() + (j.expiresInSeconds - 60) * 1000;
+  lastDevice = j.device;
+  return j.device;
+}
+
+/**
+ * 부팅 시 서버 연결과 단말기 인증을 한 번에 확인한다.
+ * 실패하면 던진다 — 호출부가 화면과 로그에 원인을 남긴다.
+ */
+export async function pingServer(): Promise<DeviceInfo> {
+  const device = await refreshSession();
+  // 세션만으로는 라우팅까지 정상인지 알 수 없으니 실제 폴링 경로를 한 번 두드린다.
+  await fetchPendingDispatch();
+  return device;
+}
+
+/** 마지막으로 인증된 단말기 정보. 로그 태깅용. */
+export function getDeviceInfo(): DeviceInfo | null {
+  return lastDevice;
 }
 
 async function ensureAccessToken(): Promise<string> {

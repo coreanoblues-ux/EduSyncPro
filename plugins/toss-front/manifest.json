@@ -2,11 +2,11 @@
   "name": "EduSyncPro 학원 출결 수납",
   "id": "edusyncpro-front",
   "vendor": "Page One Academy",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "학원 결제 단말기 모드: EduSyncPro 서버로부터 결제요청을 받아 카드·간편결제 승인을 처리합니다. 학생 검색과 청구서 선택은 태블릿 웹앱이 담당.",
   "type": "front-plugin",
   "sdk": "toss-front-2",
-  "entry": "src/index.ts",
+  "entry": "index.html",
   "permissions": [
     "payment.card",
     "payment.cancel",

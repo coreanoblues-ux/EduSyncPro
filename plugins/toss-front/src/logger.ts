@@ -25,7 +25,7 @@ interface QueuedEntry {
   at: string;
 }
 
-const PLUGIN_VERSION = "0.3.1";
+const PLUGIN_VERSION = "0.3.2";
 const FLUSH_INTERVAL_MS = 700;
 const MAX_QUEUE = 200;
 

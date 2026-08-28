@@ -187,3 +187,32 @@ export function cancelPayment(paymentKey: string, reason?: string) {
     body: JSON.stringify({ paymentKey, reason }),
   });
 }
+
+// ─── 페어링 교환 (0.3.2~) ─────────────────────────────────────────────
+/**
+ * 온보딩에서 사람이 입력한 [매장코드 + PIN] + SDK 가 준 serialNumber 를
+ * 서버로 보내 raw deviceKey 를 받아온다. 이 요청은 인증 헤더 없이 나간다 —
+ * 지금 인증 자격 자체를 발급받는 중이라 accessToken 이 없다.
+ * 응답의 deviceKey 는 이후 setDeviceKey() 로 심고 /session 을 정상 흐름으로 밟는다.
+ */
+export interface PairingExchangeResult {
+  deviceKey: string;
+  device: { id: string; displayName: string };
+}
+
+export async function exchangePairing(input: {
+  pairingCode: string;
+  pin: string;
+  serialNumber: string;
+}): Promise<PairingExchangeResult> {
+  const res = await fetch(`${SERVER_URL}/api/toss-front/devices/exchange`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`페어링 실패: ${res.status} ${detail.slice(0, 200)}`);
+  }
+  return (await res.json()) as PairingExchangeResult;
+}

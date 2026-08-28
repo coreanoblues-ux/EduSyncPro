@@ -13,6 +13,7 @@
  */
 
 import { Router, Request, Response } from "express";
+import crypto from "crypto";
 import { z } from "zod";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db";
@@ -30,6 +31,12 @@ import {
   generateDeviceKey,
   hashDeviceKey,
   issueAccessTokenFromDeviceKey,
+  generatePairingCode,
+  generatePairingPin,
+  hashPairingPin,
+  encryptRawDeviceKey,
+  decryptRawDeviceKey,
+  PAIRING_TTL_MS,
 } from "./deviceAuth";
 import { signVirtualInvoice } from "./virtualInvoice";
 import { todayKst } from "@shared/day";
@@ -76,6 +83,25 @@ router.post(
     const rawKey = generateDeviceKey();
     const keyHash = hashDeviceKey(rawKey);
 
+    // ── 짧은 페어링 코드·PIN 발급 (0.3.2~) ──
+    //   태블릿에서 raw 44자 문자열을 손으로 붙여넣는 것은 오타·개행 삽입 위험이 커서
+    //   6자 매장코드 + 4자리 PIN 을 발급한다. 단말기는 이 두 값 + 자기 시리얼번호로
+    //   POST /devices/exchange 를 쳐서 raw deviceKey 를 받아온다.
+    //   충돌은 매우 드물지만 발생 시 재시도 (32^6 ≈ 10억, 활성 페어링 수십 개 규모라 실무상 무해).
+    let pairingCode = generatePairingCode();
+    for (let i = 0; i < 5; i++) {
+      const dupe = await db
+        .select({ id: tossFrontDevices.id })
+        .from(tossFrontDevices)
+        .where(eq(tossFrontDevices.pairingCode, pairingCode));
+      if (dupe.length === 0) break;
+      pairingCode = generatePairingCode();
+    }
+    const pairingPin = generatePairingPin();
+    const pairingPinHash = hashPairingPin(pairingPin);
+    const pairingRawKeyEncrypted = encryptRawDeviceKey(rawKey);
+    const pairingExpiresAt = new Date(Date.now() + PAIRING_TTL_MS);
+
     const [row] = await db
       .insert(tossFrontDevices)
       .values({
@@ -84,17 +110,123 @@ router.post(
         displayName: parsed.data.displayName,
         deviceKeyHash: keyHash,
         isActive: true,
+        pairingCode,
+        pairingPinHash,
+        pairingRawKeyEncrypted,
+        pairingExpiresAt,
       })
       .returning();
 
     return res.status(201).json({
       id: row.id,
       displayName: row.displayName,
-      deviceKey: rawKey, // ⚠️ 이 응답 한 번만 반환된다.
-      warning: "이 deviceKey는 다시 볼 수 없습니다. 단말기에 저장하세요.",
+      // ── 원장이 태블릿에 입력하는 값 ──
+      pairing: {
+        code: pairingCode,       // 6자 매장코드 (혼동 문자 제외 대문자·숫자)
+        pin: pairingPin,         // 4자리 숫자 PIN
+        expiresAt: pairingExpiresAt.toISOString(),
+        expiresInHours: 24,
+      },
+      // ── 관리자용 폴백 (권장 X) ──
+      //   태블릿이 exchange API 를 부를 수 없는 극단 상황(구 버전 플러그인 등) 을 위해
+      //   raw deviceKey 도 응답에 담아 둔다. 이 값은 응답 이후 서버에서 사라진다
+      //   (해시만 남고, 암호화된 사본은 pairingRawKeyEncrypted 컬럼에만 존재).
+      deviceKey: rawKey,
+      warning:
+        "권장: 태블릿 첫 부팅 화면에서 위 [매장코드 + PIN] 을 입력하세요. deviceKey 문자열은 백업용이며 다시 볼 수 없습니다.",
     });
   }
 );
+
+// ─── 페어링 교환 (단말기 → 서버, 무인증) ─────────────────────────────
+/**
+ * 태블릿 첫 부팅 시 사람이 입력한 [매장코드 + PIN] + SDK 가 준 serialNumber 를 받아
+ * raw deviceKey 를 돌려준다. 성공하면 서버는 raw 를 즉시 잊고 (해시만 남는다),
+ * 그 페어링 슬롯은 이 시리얼 번호에 고정된다 — 다른 시리얼로 재사용 불가.
+ *
+ * 이 엔드포인트는 인증 미들웨어를 붙이지 않는다. 인증에 쓸 자격 자체가 지금 발급되는 중이기 때문.
+ * 대신 다음 세 가지로 방어:
+ *   1. 6자 매장코드 (32^6 ≈ 10억, 활성 슬롯 수십 개라 무차별 대입은 사실상 불가능)
+ *   2. 4자리 PIN (SHA-256 해시 비교, timing-safe)
+ *   3. 24h TTL + serialNumber 바인딩
+ * 그래도 브루트포스 방어가 필요해지면 IP 기반 rate limiter 를 붙이는 순서.
+ */
+const exchangeBodySchema = z.object({
+  pairingCode: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z0-9]{6}$/, "매장코드는 6자입니다."),
+  pin: z.string().trim().regex(/^\d{4}$/, "PIN은 4자리 숫자입니다."),
+  // serialNumber 는 단말기 SDK 가 알려주는 값. Toss 개발 편의 오버라이드 시 '000000000000000' 가 오기도 하니
+  // 형식은 자유(문자열) 로 두고, 빈 값만 거절한다.
+  serialNumber: z.string().trim().min(1, "serialNumber가 필요합니다."),
+});
+
+router.post("/devices/exchange", async (req: Request, res: Response) => {
+  const parsed = exchangeBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "요청이 잘못되었습니다." });
+  }
+  const { pairingCode, pin, serialNumber } = parsed.data;
+
+  const rows = await db
+    .select()
+    .from(tossFrontDevices)
+    .where(eq(tossFrontDevices.pairingCode, pairingCode));
+  const device = rows[0];
+
+  // 존재 여부·PIN 불일치·만료·비활성 — 모두 같은 401 로 응답해 힌트를 주지 않는다.
+  const genericFail = () => res.status(401).json({ error: "매장코드 또는 PIN이 올바르지 않습니다." });
+
+  if (!device) return genericFail();
+  if (!device.isActive) return genericFail();
+  if (!device.pairingPinHash || !device.pairingExpiresAt || !device.pairingRawKeyEncrypted) {
+    // 이 페어링은 이미 소진되었거나(exchange 완료) 애초에 페어링 슬롯 없이 생성된 레코드.
+    return genericFail();
+  }
+  if (device.pairingExpiresAt.getTime() < Date.now()) return genericFail();
+
+  const expected = Buffer.from(device.pairingPinHash, "hex");
+  const actual = Buffer.from(hashPairingPin(pin), "hex");
+  if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
+    return genericFail();
+  }
+
+  // serialNumber 바인딩 검사. 첫 exchange 면 그대로 저장, 이미 저장돼 있으면 같은지 확인.
+  if (device.serialNumber && device.serialNumber !== serialNumber) {
+    return res
+      .status(409)
+      .json({ error: "이 매장코드는 다른 단말기에서 이미 등록되었습니다. 원장에게 재발급을 요청하세요." });
+  }
+
+  let raw: string;
+  try {
+    raw = decryptRawDeviceKey(device.pairingRawKeyEncrypted);
+  } catch {
+    // 암호가 풀리지 않는다 = SECRET 이 재시작으로 바뀌었거나 데이터 손상. 관리자 재발급이 유일.
+    return res.status(410).json({ error: "이 페어링을 복호화할 수 없습니다. 원장에게 재발급을 요청하세요." });
+  }
+
+  // 성공 — raw 저장분을 즉시 지우고 시리얼을 바인딩한다.
+  await db
+    .update(tossFrontDevices)
+    .set({
+      pairingRawKeyEncrypted: null,
+      pairingExpiresAt: null,
+      serialNumber,
+      lastSeenAt: new Date(),
+    })
+    .where(eq(tossFrontDevices.id, device.id));
+
+  return res.json({
+    deviceKey: raw,
+    device: {
+      id: device.id,
+      displayName: device.displayName,
+    },
+  });
+});
 
 /** 원장 화면에서 단말기 목록·상태를 보여준다. */
 router.get(

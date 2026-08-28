@@ -69,6 +69,69 @@ function compareHashes(a: string, b: string): boolean {
   return crypto.timingSafeEqual(aBuf, bBuf);
 }
 
+// ─── 페어링 코드·PIN (0.3.2~) ──────────────────────────────────────────
+/**
+ * 발급 시 태블릿 UX 를 위해 짧은 매장코드 + 4자리 PIN 을 만든다.
+ * 매장코드에서 O/0, I/1 은 사람 눈으로 구별이 어렵고 태블릿 화면에서 오타를 유발해 제외.
+ */
+const PAIRING_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 32자
+export function generatePairingCode(): string {
+  const bytes = crypto.randomBytes(6);
+  let out = "";
+  for (let i = 0; i < 6; i++) {
+    out += PAIRING_CODE_ALPHABET[bytes[i] % PAIRING_CODE_ALPHABET.length];
+  }
+  return out;
+}
+
+/** 4자리 숫자. 앞이 0 이어도 유지되도록 padStart. */
+export function generatePairingPin(): string {
+  return String(crypto.randomInt(0, 10_000)).padStart(4, "0");
+}
+
+export function hashPairingPin(pin: string): string {
+  return crypto.createHash("sha256").update(pin).digest("hex");
+}
+
+// ─── raw deviceKey 임시 보관용 AES-256-GCM ─────────────────────────────
+/**
+ * 페어링 발급 시 raw deviceKey 를 짧게(24h) 서버에 보관해야 exchange 시 단말기에 돌려줄 수 있다.
+ * 평문 저장은 DB 유출 시 즉시 결제 흐름이 열리므로 대칭 암호로 감싼다.
+ * exchange 성공 즉시 이 컬럼을 NULL 로 밀어 서버가 raw 를 완전히 잊게 만든다.
+ *
+ * 키 자료는 SECRET (env: TOSS_FRONT_DEVICE_SECRET → JWT_SECRET → 부팅 랜덤) 을 SHA-256 으로 확장.
+ * SECRET 자체가 부팅마다 랜덤이면 재시작 후 exchange 가 실패한다 (기존 코드도 동일 특성 — 경고 로그 그대로).
+ */
+function encryptionKey(): Buffer {
+  return crypto.createHash("sha256").update(String(SECRET)).digest();
+}
+
+export function encryptRawDeviceKey(raw: string): string {
+  const iv = crypto.randomBytes(12); // GCM 권장 12바이트
+  const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(), iv);
+  const ciphertext = Buffer.concat([cipher.update(raw, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  // 형식: base64url( iv(12) | tag(16) | ciphertext )
+  return Buffer.concat([iv, tag, ciphertext]).toString("base64url");
+}
+
+export function decryptRawDeviceKey(payload: string): string {
+  const buf = Buffer.from(payload, "base64url");
+  const iv = buf.subarray(0, 12);
+  const tag = buf.subarray(12, 28);
+  const ciphertext = buf.subarray(28);
+  const decipher = crypto.createDecipheriv("aes-256-gcm", encryptionKey(), iv);
+  decipher.setAuthTag(tag);
+  const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  return plain.toString("utf8");
+}
+
+/**
+ * 발급 후 24h 안에 단말기가 exchange 하지 않으면 페어링을 무효로 본다.
+ * 학원 영업일 기준으로 하루면 충분하고, 그 이상 놔두면 발급된 코드가 어딘가에 방치될 위험이 커진다.
+ */
+export const PAIRING_TTL_MS = 24 * 60 * 60 * 1000;
+
 // ─── 접근 토큰 ─────────────────────────────────────────────────────────────
 interface DeviceTokenPayload {
   deviceId: string;

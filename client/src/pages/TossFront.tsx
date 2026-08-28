@@ -112,6 +112,14 @@ export default function TossFront() {
   const [enrollOpen, setEnrollOpen] = useState(false);
   const [displayName, setDisplayName] = useState("");
   const [issuedKey, setIssuedKey] = useState<string | null>(null);
+  // 0.3.2~ : 새 페어링 UX. code + PIN 을 태블릿에서 입력받는다. issuedKey (raw) 는 관리자용 폴백.
+  const [issuedPairing, setIssuedPairing] = useState<{
+    code: string;
+    pin: string;
+    expiresAt: string;
+    expiresInHours: number;
+  } | null>(null);
+  const [showRawFallback, setShowRawFallback] = useState(false);
 
   // 태블릿(kiosk) 등록 상태 — Toss Front 단말기 등록과 다이얼로그 분리
   const [kioskEnrollOpen, setKioskEnrollOpen] = useState(false);
@@ -145,7 +153,9 @@ export default function TossFront() {
     mutationFn: async (name: string) =>
       (await apiRequest("POST", "/api/toss-front/devices/enroll", { displayName: name })).json(),
     onSuccess: (data: any) => {
-      setIssuedKey(data.deviceKey);
+      setIssuedKey(data.deviceKey ?? null);
+      setIssuedPairing(data.pairing ?? null);
+      setShowRawFallback(false);
       setDisplayName("");
       qc.invalidateQueries({ queryKey: ["/api/toss-front/devices"] });
     },
@@ -234,6 +244,8 @@ export default function TossFront() {
   const closeEnrollDialog = () => {
     setEnrollOpen(false);
     setIssuedKey(null);
+    setIssuedPairing(null);
+    setShowRawFallback(false);
     setDisplayName("");
   };
 
@@ -679,7 +691,7 @@ export default function TossFront() {
           <DialogHeader>
             <DialogTitle>새 단말기 등록</DialogTitle>
           </DialogHeader>
-          {!issuedKey ? (
+          {!issuedKey && !issuedPairing ? (
             <div className="space-y-3">
               <p className="text-sm text-muted-foreground">
                 단말기 이름을 입력하세요. 예: "로비 프론트 1", "카운터 옆 태블릿".
@@ -700,14 +712,62 @@ export default function TossFront() {
               </DialogFooter>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-4">
               <p className="text-sm font-medium">
-                등록 코드가 발급됐습니다. <span className="text-red-600">이 창을 닫으면 다시 볼 수 없습니다.</span>
+                단말기 페어링 코드가 발급됐습니다.{" "}
+                <span className="text-red-600">이 창을 닫으면 다시 볼 수 없습니다.</span>
               </p>
-              <div className="p-3 bg-slate-100 rounded font-mono text-xs break-all">{issuedKey}</div>
-              <p className="text-xs text-muted-foreground">
-                태블릿의 첫 부팅 화면에 이 코드를 붙여넣기 하세요.
-              </p>
+
+              {issuedPairing && (
+                <>
+                  <div className="rounded-lg border-2 border-orange-300 bg-orange-50 p-4 space-y-3">
+                    <div>
+                      <div className="text-xs text-muted-foreground mb-1">매장 코드</div>
+                      <div className="font-mono text-3xl font-bold tracking-widest text-orange-700">
+                        {issuedPairing.code}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-muted-foreground mb-1">PIN (4자리)</div>
+                      <div className="font-mono text-3xl font-bold tracking-widest text-orange-700">
+                        {issuedPairing.pin}
+                      </div>
+                    </div>
+                    <div className="text-xs text-muted-foreground pt-1 border-t border-orange-200">
+                      유효기간: {issuedPairing.expiresInHours}시간 (
+                      {new Date(issuedPairing.expiresAt).toLocaleString("ko-KR")} 까지)
+                    </div>
+                  </div>
+                  <p className="text-sm text-slate-700">
+                    태블릿(결제 단말기) 첫 부팅 화면에서 위 <b>매장 코드</b> 와 <b>PIN</b> 을
+                    각각 입력하세요. 태블릿이 자기 시리얼 번호를 함께 서버로 보내 페어링을 완료합니다.
+                  </p>
+                </>
+              )}
+
+              {issuedKey && (
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setShowRawFallback((v) => !v)}
+                    className="text-xs text-muted-foreground underline hover:text-slate-700"
+                  >
+                    {showRawFallback ? "▲ 관리자용 raw deviceKey 숨기기" : "▼ 관리자용 raw deviceKey 보기 (권장 X)"}
+                  </button>
+                  {showRawFallback && (
+                    <div className="mt-2 space-y-2">
+                      <div className="p-3 bg-slate-100 rounded font-mono text-xs break-all">
+                        {issuedKey}
+                      </div>
+                      <p className="text-xs text-amber-700">
+                        플러그인 구버전 또는 exchange API 를 사용할 수 없는 상황에서만
+                        태블릿에 이 원문 키를 직접 붙여넣으세요.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <DialogFooter>
                 <Button onClick={closeEnrollDialog}>확인</Button>
               </DialogFooter>

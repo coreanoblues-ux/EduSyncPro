@@ -35,6 +35,7 @@ import {
   reportDispatchResult,
   confirmPayment,
   cancelPayment,
+  exchangePairing,
   type PendingDispatch,
 } from "./api";
 import {
@@ -79,7 +80,7 @@ export async function bootstrap() {
   configureLogger({ serverUrl: SERVER_URL, onScreen: (line) => pushDiagLine(line) });
   installGlobalErrorHandlers();
 
-  log.info("plugin entry started", `version=0.3.1 server=${SERVER_URL}`);
+  log.info("plugin entry started", `version=0.3.2 server=${SERVER_URL}`);
 
   // 1) SDK 확보. 못 찾으면 결제는 불가능하지만, 화면과 로그는 계속 살려 둔다.
   //    (여기서 return 해 버리면 다시 "아무 단서 없는 화면"이 된다)
@@ -348,29 +349,57 @@ async function handleDispatch(d: PendingDispatch) {
 /**
  * 첫 부팅 페어링 흐름.
  *
- * 왜 raw deviceKey 를 직접 입력받나:
- *   Toss plugin runtime 은 매니페스트 envRequired 값을 bundle 에 주입해 주지 않는다
- *   (공식 template 에도 manifest.json 자체가 없다). Railway 환경변수는 서버쪽 값이라
- *   plugin JS 에는 도달하지 않는다. 그래서 지금 사용 가능한 유일한 경로는:
+ * 0.3.2 에서 바뀐 것:
+ *   0.3.1 은 44자 raw deviceKey 를 태블릿 온보딩에 직접 붙여넣는 방식이었는데,
+ *   현장에서 오타·공백·개행 삽입으로 실패가 잦았다. 공식 template `onboarding.html`
+ *   의 패턴(이메일/비번 정도의 짧은 자격증명만 사람이 치고, 긴 문자열은 서버가 응답으로
+ *   내려준 뒤 sdk.storage.set 으로 자동 저장) 을 따라 다음과 같이 바꿈:
  *
- *     원장이 관리자 화면(POST /devices/enroll 응답) 에서 raw deviceKey 를 발급받아
- *     단말기 온보딩 화면에 한 번 입력 → 이후 sdk.storage 에 남아 재부팅에도 유지.
- *
- *   6자리 pairing-code 를 통해 짧은 코드만 입력하게 만드는 상위 layer 는 다음 커밋에서
- *   서버 스키마를 확장한 뒤 추가한다. 이번 회차는 44자 base64url raw key 직접 입력.
- *
- * 왜 서버 /session 을 즉시 호출해 검증하나:
- *   저장부터 하면 잘못 입력한 값이 그대로 남아 다음 부팅에서도 계속 실패한다.
- *   /session 이 200 을 돌려주면 그때만 저장한다.
+ *     1) 사용자는 6자 매장코드 + 4자리 PIN 만 입력
+ *     2) 플러그인이 sdk.app.getSerialNumber() 로 단말 시리얼을 자동 첨부
+ *     3) POST /api/toss-front/devices/exchange 로 { code, pin, serialNumber } 전송
+ *     4) 서버가 raw deviceKey 를 응답 → 그 값으로 pingServer() 로 세션 검증
+ *     5) 검증 성공 시에만 sdk.storage 에 저장. 실패면 다음 부팅에서 화면이 다시 뜬다.
  */
 async function runPairingFlow(): Promise<string> {
-  const attempt = async (rawKey: string): Promise<string> => {
+  // 사전에 시리얼 번호를 확보. 없으면(개발 오버라이드 등) 빈 문자열 대신 '000000000000000' 를 쓴다.
+  let serialNumber = "";
+  try {
+    if (sdk?.app?.getSerialNumber) {
+      const r = await sdk.app.getSerialNumber();
+      serialNumber = (r?.serialNumber ?? "").trim();
+    }
+  } catch (err) {
+    log.warn("페어링: getSerialNumber 실패", describeErr(err));
+  }
+  if (!serialNumber) {
+    // 공식 sdk.js 개발 오버라이드도 이 값을 씀. 서버는 min(1) 만 검사하므로 통과된다.
+    serialNumber = "000000000000000";
+    log.warn("페어링: serialNumber 미확인", "임시로 '000000000000000' 를 사용합니다.");
+  }
+  log.info("페어링 준비", `serialNumber=${serialNumber}`);
+
+  const attempt = async (pairingCode: string, pin: string): Promise<string> => {
+    const { deviceKey: rawKey, device: enrolled } = await exchangePairing({
+      pairingCode,
+      pin,
+      serialNumber,
+    });
+    log.info("exchange 성공", `device=${enrolled.displayName}, deviceKey 수신 완료`);
     setDeviceKey(rawKey);
     // pingServer 는 /session 발급 + /dispatch/pending 한번 두드리기까지 수행한다.
     const device = await pingServer();
     setLogDeviceId(device.id);
     log.info("페어링 검증 성공", `device=${device.displayName}`);
     return rawKey;
+  };
+
+  const validate = (values: { pairingCode?: string; pin?: string }): string | null => {
+    const code = String(values.pairingCode ?? "").trim().toUpperCase();
+    const pin = String(values.pin ?? "").trim();
+    if (!/^[A-Z0-9]{6}$/.test(code)) return "매장 코드는 6자 (영문 대문자·숫자) 여야 합니다.";
+    if (!/^\d{4}$/.test(pin)) return "PIN은 4자리 숫자여야 합니다.";
+    return null;
   };
 
   // 공식 SDK 의 renderOnboardingPage 가 있으면 그걸 쓰고, 없으면 자체 화면으로 폴백.
@@ -381,19 +410,24 @@ async function runPairingFlow(): Promise<string> {
         t.renderOnboardingPage({
           title: "EduSyncPro 단말기 등록",
           inputs: {
-            deviceKey: {
-              label: "등록 코드 (44자)",
+            pairingCode: {
+              label: "매장 코드 (6자)",
               type: "text",
-              placeholder: "원장 화면 → Toss Front → 새 단말기 발급 후 복사한 값",
+              placeholder: "예: A2K7ZM",
+            },
+            pin: {
+              label: "PIN (4자리)",
+              type: "password",
+              placeholder: "예: 4837",
             },
           },
           onSubmit: async (values: any) => {
-            const raw = String(values?.deviceKey ?? "").trim();
-            if (!raw) {
-              throw new Error("등록 코드를 입력해 주세요.");
-            }
+            const msg = validate(values);
+            if (msg) throw new Error(msg);
+            const code = String(values.pairingCode).trim().toUpperCase();
+            const pin = String(values.pin).trim();
             try {
-              const ok = await attempt(raw);
+              const ok = await attempt(code, pin);
               resolve(ok);
             } catch (e) {
               log.error("페어링 검증 실패", e, "다시 입력받습니다.");
@@ -410,21 +444,39 @@ async function runPairingFlow(): Promise<string> {
   // Fallback: 자체 온보딩 폼.
   return await new Promise<string>((resolve, reject) => {
     showPairing({
-      title: "단말기 등록 필요",
+      title: "단말기 등록",
       subtitle:
-        "원장 화면 → Toss Front → 새 단말기 발급 버튼을 눌러 나온 등록 코드를 아래에 입력해 주세요.",
-      inputPlaceholder: "등록 코드를 붙여넣기",
+        "원장 화면 → Toss Front → 새 단말기 발급을 누르면 매장 코드와 PIN이 뜹니다. 두 값을 아래에 입력하세요.",
       submitLabel: "등록",
-      onSubmit: async (rawKey) => {
-        const raw = rawKey.trim();
-        if (!raw) return "등록 코드를 입력해 주세요.";
+      inputs: [
+        {
+          name: "pairingCode",
+          label: "매장 코드 (6자)",
+          placeholder: "예: A2K7ZM",
+          type: "text",
+          uppercase: true,
+          maxLength: 6,
+        },
+        {
+          name: "pin",
+          label: "PIN (4자리 숫자)",
+          placeholder: "예: 4837",
+          type: "tel",
+          maxLength: 4,
+        },
+      ],
+      onSubmit: async (values) => {
+        const msg = validate(values);
+        if (msg) return msg;
+        const code = String(values.pairingCode).trim().toUpperCase();
+        const pin = String(values.pin).trim();
         try {
-          const ok = await attempt(raw);
+          const ok = await attempt(code, pin);
           resolve(ok);
           return null;
         } catch (e: any) {
           log.error("페어링 검증 실패", e, "다시 입력받습니다.");
-          return e?.message ? String(e.message).slice(0, 200) : "등록 실패. 코드를 확인해 주세요.";
+          return e?.message ? String(e.message).slice(0, 200) : "등록 실패. 매장코드와 PIN을 확인해 주세요.";
         }
       },
       onCancel: () => reject(new Error("사용자가 온보딩을 취소했습니다.")),

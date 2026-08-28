@@ -327,6 +327,22 @@ export const tossFrontDevices = pgTable("toss_front_devices", {
   displayName: text("display_name").notNull(), // "페이지원 로비 프론트" 등
   isActive: boolean("is_active").default(true).notNull(),
   lastSeenAt: timestamp("last_seen_at"),
+  // ─── 짧은 페어링 코드 (0.3.2~) ────────────────────────────────────────
+  // 태블릿에서 44자 raw deviceKey 를 손으로 치는 것은 실수 유발. 대신 사람이
+  // 외울 수 있는 6자 매장코드 + 4자리 PIN 을 발급하고, 온보딩 시 서버가
+  // {매장코드, PIN, serialNumber} 를 받아 raw deviceKey 를 응답으로 돌려준다.
+  //   pairingCode: 6자 대문자+숫자 (혼동 문자 O/0, I/1 제외), 발급 후 unique
+  //   pairingPinHash: PIN(문자열 4자리)의 SHA-256 hex — 원문은 서버에 안 남긴다
+  //   pairingRawKeyEncrypted: 발급 시 raw deviceKey 를 AES-256-GCM 으로 감싼 값.
+  //     교환 완료 시 이 컬럼을 NULL 로 밀어 서버에서 raw 를 완전히 잊는다.
+  //   pairingExpiresAt: 24h TTL. 지나면 exchange 가 거절한다.
+  //   serialNumber: 최초 exchange 때 단말기 SDK 가 알려주는 시리얼. 이 값이 채워지면
+  //     그 이후 exchange 는 같은 시리얼이 아닌 이상 거절한다 (도난·재사용 방어).
+  pairingCode: text("pairing_code").unique(),
+  pairingPinHash: text("pairing_pin_hash"),
+  pairingRawKeyEncrypted: text("pairing_raw_key_encrypted"),
+  pairingExpiresAt: timestamp("pairing_expires_at"),
+  serialNumber: text("serial_number"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });

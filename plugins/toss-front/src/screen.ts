@@ -164,10 +164,24 @@ export function clearOwnScreen() {
 export interface PairingScreenOptions {
   title: string;
   subtitle: string;
-  inputPlaceholder: string;
   submitLabel: string;
+  /**
+   * 표시할 입력 필드들. 배열 순서대로 세로로 쌓인다.
+   * name 은 onSubmit 콜백의 values 오브젝트 키가 된다.
+   */
+  inputs: Array<{
+    name: string;
+    label: string;
+    placeholder: string;
+    /** "text" | "tel" — 소프트키보드 종류에 영향. 숫자만 받으려면 tel 이 편하다. */
+    type?: "text" | "tel";
+    /** 자동 대문자화 (매장코드 입력용). */
+    uppercase?: boolean;
+    /** 최대 길이 제한. 매장코드 6자, PIN 4자 같은 짧은 값에 씀. */
+    maxLength?: number;
+  }>;
   /** 성공이면 null, 실패면 원인 문자열을 돌려준다. 화면이 그 값을 오류 박스에 띄운다. */
-  onSubmit: (value: string) => Promise<string | null>;
+  onSubmit: (values: Record<string, string>) => Promise<string | null>;
   onCancel?: () => void;
 }
 
@@ -187,31 +201,59 @@ export function showPairing(opts: PairingScreenOptions) {
     [
       "display:flex",
       "flex-direction:column",
-      "gap:10px",
+      "gap:12px",
       "width:min(560px,92vw)",
       "margin-top:8px",
     ].join(";")
   );
 
-  const input = document.createElement("input");
-  input.type = "text";
-  input.autocomplete = "off";
-  input.spellcheck = false;
-  input.placeholder = opts.inputPlaceholder;
-  input.setAttribute(
-    "style",
-    [
-      "padding:14px 16px",
-      "font-size:16px",
-      "border-radius:10px",
-      "border:1px solid rgba(255,255,255,0.14)",
-      "background:#111827",
-      "color:#e5e7eb",
-      "outline:none",
-      "font-family:ui-monospace,SFMono-Regular,Consolas,monospace",
-    ].join(";")
-  );
-  form.appendChild(input);
+  // 필드별 라벨 + input 을 생성. 첫 필드에 자동 포커스.
+  const inputEls: Array<HTMLInputElement> = [];
+  opts.inputs.forEach((spec, idx) => {
+    const wrap = document.createElement("div");
+    wrap.setAttribute("style", "display:flex;flex-direction:column;gap:6px");
+
+    const label = document.createElement("label");
+    label.textContent = spec.label;
+    label.setAttribute("style", "font-size:13px;color:#94a3b8;padding-left:2px");
+    wrap.appendChild(label);
+
+    const input = document.createElement("input");
+    input.type = spec.type ?? "text";
+    input.name = spec.name;
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.placeholder = spec.placeholder;
+    if (spec.maxLength) input.maxLength = spec.maxLength;
+    if (spec.uppercase) {
+      input.addEventListener("input", () => {
+        const p = input.selectionStart;
+        input.value = input.value.toUpperCase();
+        if (p != null) input.setSelectionRange(p, p);
+      });
+    }
+    input.setAttribute(
+      "style",
+      [
+        "padding:14px 16px",
+        "font-size:20px",
+        "letter-spacing:2px",
+        "border-radius:10px",
+        "border:1px solid rgba(255,255,255,0.14)",
+        "background:#111827",
+        "color:#e5e7eb",
+        "outline:none",
+        "font-family:ui-monospace,SFMono-Regular,Consolas,monospace",
+      ].join(";")
+    );
+    wrap.appendChild(input);
+    inputEls.push(input);
+    if (idx === 0) {
+      // 자동 포커스: 단말기 소프트키보드가 바로 뜨도록
+      try { setTimeout(() => input.focus(), 0); } catch { /* 일부 웹뷰는 focus 를 제한한다 */ }
+    }
+    form.appendChild(wrap);
+  });
 
   const err = document.createElement("div");
   err.setAttribute(
@@ -249,7 +291,11 @@ export function showPairing(opts: PairingScreenOptions) {
     submit.disabled = true;
     submit.textContent = "확인 중...";
     try {
-      const failMsg = await opts.onSubmit(input.value);
+      const values: Record<string, string> = {};
+      inputEls.forEach((el) => {
+        values[el.name] = el.value.trim();
+      });
+      const failMsg = await opts.onSubmit(values);
       if (failMsg) {
         err.textContent = failMsg;
       }
@@ -260,7 +306,4 @@ export function showPairing(opts: PairingScreenOptions) {
       submit.textContent = opts.submitLabel;
     }
   });
-
-  // 자동 포커스: 단말기 소프트키보드가 바로 뜨도록
-  try { input.focus(); } catch { /* 일부 웹뷰는 focus 를 제한한다 */ }
 }

@@ -67,22 +67,51 @@ export interface TossFrontSdk {
     getPayment?(input: { paymentKey: string }): Promise<PaymentResult | null>;
     resetBackupPaymentKey?(): Promise<void>;
   };
+  /**
+   * Toss 공식 sdk.storage 는 객체 인자를 받는다:
+   *   await sdk.storage.set({ key: "token", value: "..." });
+   *   const { value } = await sdk.storage.get({ key: "token" });
+   * 일부 펌웨어에 legacy 스타일(getItem/setItem) 이 남아 있을 수 있어 둘 다 지원한다.
+   */
   storage?: {
-    getItem(key: string): Promise<string | null>;
-    setItem(key: string, value: string): Promise<void>;
+    get?(input: { key: string }): Promise<{ value: string | null } | null>;
+    set?(input: { key: string; value: string }): Promise<void>;
+    getItem?(key: string): Promise<string | null>;
+    setItem?(key: string, value: string): Promise<void>;
+  };
+  app?: {
+    getSerialNumber?(): Promise<{ serialNumber: string }>;
+    getMerchant?(): Promise<{ id: number; name: string; businessNumber: string }>;
+    isDebugMode?(): Promise<{ isDebugMode: boolean }>;
+    restartOnboarding?(): Promise<void>;
+    openSetting?(): Promise<void>;
+    setIdle?(): Promise<void>;
   };
 }
 
 /**
- * 단말기 펌웨어 버전에 따라 주입 이름이 달라질 수 있어 후보를 순서대로 본다.
- * 앞쪽이 문서상 표준 이름, 뒤쪽은 과거/변형 이름이다.
+ * SDK 전역 이름 후보.
+ *
+ * ── 이번 회차에서 확정된 사실 (Toss 공식 템플릿 sdk.js 인용) ──
+ *   var sdk = window.TossFrontSDK;
+ *
+ *   출처: github.com/tossplace/toss-front-plugin-template
+ *         → front-plugin-js/sdk.js
+ *         → front-plugin-js/index.html (< script src="https://cdn.tossplace.com/toss-front-sdk/v0/index.js">)
+ *
+ *   즉 표준 이름은 정확히 `TossFrontSDK` 하나이며, 이건 CDN 스크립트가 실행돼야 생긴다.
+ *   0.3.0 로그가 `실제 전역 후보=[TossFront]` 만 남긴 이유는 CDN 스크립트를 로드하지
+ *   않아 `TossFrontSDK` 가 생성되지 않았기 때문이다. index.html 에 script 태그를
+ *   붙여 그 문제는 해결했고, 여기서는 표준 이름을 맨 앞으로 올려 명확히 우선한다.
+ *
+ *   나머지 후보는 만에 하나 펌웨어 별칭이 있을 경우의 안전망이지, 이제 기본 경로는 아니다.
  */
 const SDK_GLOBAL_CANDIDATES = [
+  "TossFrontSDK", // Toss 공식 이름 (CDN 스크립트가 만든다)
+  "sdk",          // 공식 예제 코드는 `var sdk = window.TossFrontSDK` 로 alias 를 만들어 이 이름을 함께 쓴다
+  "TossFront",    // 일부 펌웨어에 남아 있는 legacy 별칭 관찰
   "tossFront",
-  "TossFront",
   "tossFrontSdk",
-  "TossFrontSDK",
-  "sdk",
   "__tossFront",
   "tossplace",
   "TossPlace",
@@ -184,10 +213,23 @@ export function renderIdle(sdk: TossFrontSdk | null, fallback: () => void) {
 /**
  * SDK storage 가 없는 단말기를 위한 대체 저장소.
  * deviceKey 는 단말기에 남아야 재부팅 후에도 페어링이 유지된다.
+ *
+ * 우선순위:
+ *   1) sdk.storage.get / set  (공식 객체 인자 형태, Toss 템플릿과 동일)
+ *   2) sdk.storage.getItem / setItem  (legacy 스타일이 남아 있을 수 있어 지원)
+ *   3) localStorage  (개발용 브라우저 fallback)
  */
 export const storage = {
   async getItem(sdk: TossFrontSdk | null, key: string): Promise<string | null> {
-    if (sdk?.storage && typeof sdk.storage.getItem === "function") {
+    if (sdk?.storage?.get && typeof sdk.storage.get === "function") {
+      try {
+        const r = await sdk.storage.get({ key });
+        return r?.value ?? null;
+      } catch (err) {
+        log.error("sdk.storage.get 실패", err, `key=${key} — 다음 경로로 대체합니다.`);
+      }
+    }
+    if (sdk?.storage?.getItem && typeof sdk.storage.getItem === "function") {
       try {
         return await sdk.storage.getItem(key);
       } catch (err) {
@@ -201,7 +243,15 @@ export const storage = {
     }
   },
   async setItem(sdk: TossFrontSdk | null, key: string, value: string): Promise<void> {
-    if (sdk?.storage && typeof sdk.storage.setItem === "function") {
+    if (sdk?.storage?.set && typeof sdk.storage.set === "function") {
+      try {
+        await sdk.storage.set({ key, value });
+        return;
+      } catch (err) {
+        log.error("sdk.storage.set 실패", err, `key=${key} — 다음 경로로 대체합니다.`);
+      }
+    }
+    if (sdk?.storage?.setItem && typeof sdk.storage.setItem === "function") {
       try {
         await sdk.storage.setItem(key, value);
         return;

@@ -2,7 +2,7 @@
   "name": "EduSyncPro 학원 출결 수납",
   "id": "edusyncpro-front",
   "vendor": "Page One Academy",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "학원 결제 단말기 모드: EduSyncPro 서버로부터 결제요청을 받아 카드·간편결제 승인을 처리합니다. 학생 검색과 청구서 선택은 태블릿 웹앱이 담당.",
   "type": "front-plugin",
   "sdk": "toss-front-2",
@@ -16,7 +16,7 @@
     "server": "https://edusyncpro-production-dcfe.up.railway.app",
     "acl": "https://edusyncpro-production-dcfe.up.railway.app"
   },
-  "envRequired": [
-    "TOSS_FRONT_DEVICE_KEY"
-  ]
+  "notes": {
+    "envRequired_removed": "Toss Front runtime 은 매니페스트의 envRequired 값을 plugin JS 에 주입해 주지 않는다 (공식 template 에는 manifest.json 자체가 없음). 그래서 이 필드는 착각의 원천이었다. deviceKey 는 첫 부팅 온보딩에서 sdk.storage.set 으로 저장한다."
+  }
 }

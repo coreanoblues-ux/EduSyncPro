@@ -17,6 +17,15 @@
       플러그인 코드는 최소한 실행됐다는 뜻이다. 현장에서 이 구분이 결정적이다.
       플러그인이 부팅되면 screen.ts 가 이 노드를 덮어쓴다.
     -->
+    <!--
+      Toss Front 2 공식 SDK 로더 — head 안에 두는 이유:
+        vite 는 type="module" 진입 스크립트를 head 로 hoist 한다. 이 CDN 스크립트가
+        그보다 뒤에 놓이면 브라우저가 defer 순서를 잘못 잡을 여지가 있다.
+        head 의 이 위치에 두면 vite 가 뒤에 삽입할 module 스크립트보다 먼저 실행되어
+        window.TossFrontSDK 가 확실히 준비된 상태에서 진입 코드가 돈다.
+        (공식 template github.com/tossplace/toss-front-plugin-template 도 head 에 둔다.)
+    -->
+    <script src="https://cdn.tossplace.com/toss-front-sdk/v0/index.js"></script>
     <style>
       html, body {
         margin: 0;

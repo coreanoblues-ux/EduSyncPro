@@ -12,6 +12,32 @@ const app = express();
 //   • secure cookies are correctly marked as secure
 app.set("trust proxy", 1);
 
+// ─── CORS for Toss Front plugin ────────────────────────────────────────────
+// Toss 공식 troubleshooting 문서에 따르면 front plugin 은 실행 시점에
+// https://<appName>.plugin.tossplace.com  (운영)
+// https://<appName>.plugin-dev.tossplace.com  (테스트)
+// origin 을 갖는다. 이 origin 에서 우리 Railway API 로 fetch 할 때 브라우저 CORS 가
+// 걸리므로 정확히 이 두 패턴만 허용한다. 태블릿 /student-kiosk 는 우리 도메인에서
+// 서빙되므로 same-origin 이라 CORS 미들웨어와 무관.
+//
+// wildcard(*) 로 열지 않는 이유: 결제 승인 상관관계가 걸린 엔드포인트라 정확한 origin 만
+// 허용해 소셜엔지니어링·크로스사이트 오용 여지를 좁힌다.
+const TOSS_PLUGIN_ORIGIN = /^https:\/\/[a-z0-9-]+\.plugin(?:-dev)?\.tossplace\.com$/;
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (typeof origin === "string" && TOSS_PLUGIN_ORIGIN.test(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+    res.header("Vary", "Origin");
+    res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.header("Access-Control-Max-Age", "600");
+    if (req.method === "OPTIONS") {
+      return res.status(204).end();
+    }
+  }
+  next();
+});
+
 // Toss 웹훅은 HMAC 서명 검증을 위해 원문 body가 필요하다. JSON.stringify로 재직렬화하면
 // Toss가 만든 원문과 공백·키 순서가 달라져 서명이 안 맞는다. 그래서 verify 콜백에서
 // 웹훅 경로에 한해서만 rawBody를 request에 붙여 둔다. 다른 경로는 영향 없다.

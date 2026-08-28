@@ -151,3 +151,116 @@ export function clearOwnScreen() {
   const el = document.getElementById(ROOT_ID);
   if (el) el.remove();
 }
+
+/**
+ * 자체 온보딩 화면.
+ *
+ * 공식 sdk.template.renderOnboardingPage 가 있으면 index.ts 는 그걸 먼저 시도한다.
+ * 여기 화면은 그게 없을 때만 나오는 폴백이다 — 그래도 검은 화면보다는 무한히 낫다.
+ *
+ * 입력값은 서버 검증(POST /session) 을 통과할 때까지 저장하지 않는다. 그래서 잘못
+ * 붙여넣어도 다음 부팅에서 페어링 화면이 다시 뜬다.
+ */
+export interface PairingScreenOptions {
+  title: string;
+  subtitle: string;
+  inputPlaceholder: string;
+  submitLabel: string;
+  /** 성공이면 null, 실패면 원인 문자열을 돌려준다. 화면이 그 값을 오류 박스에 띄운다. */
+  onSubmit: (value: string) => Promise<string | null>;
+  onCancel?: () => void;
+}
+
+export function showPairing(opts: PairingScreenOptions) {
+  if (typeof document === "undefined") return;
+  currentTone = "idle";
+  currentTitle = opts.title;
+  currentSubtitle = opts.subtitle;
+  paint();
+
+  const el = root();
+  if (!el) return;
+
+  const form = document.createElement("form");
+  form.setAttribute(
+    "style",
+    [
+      "display:flex",
+      "flex-direction:column",
+      "gap:10px",
+      "width:min(560px,92vw)",
+      "margin-top:8px",
+    ].join(";")
+  );
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.placeholder = opts.inputPlaceholder;
+  input.setAttribute(
+    "style",
+    [
+      "padding:14px 16px",
+      "font-size:16px",
+      "border-radius:10px",
+      "border:1px solid rgba(255,255,255,0.14)",
+      "background:#111827",
+      "color:#e5e7eb",
+      "outline:none",
+      "font-family:ui-monospace,SFMono-Regular,Consolas,monospace",
+    ].join(";")
+  );
+  form.appendChild(input);
+
+  const err = document.createElement("div");
+  err.setAttribute(
+    "style",
+    "font-size:13px;color:#f87171;min-height:18px;text-align:left;padding:0 4px"
+  );
+  form.appendChild(err);
+
+  const buttonRow = document.createElement("div");
+  buttonRow.setAttribute("style", "display:flex;gap:10px;justify-content:flex-end");
+
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.textContent = opts.submitLabel;
+  submit.setAttribute(
+    "style",
+    [
+      "padding:12px 22px",
+      "font-size:16px",
+      "font-weight:700",
+      "border-radius:10px",
+      "border:none",
+      "cursor:pointer",
+      "background:#f97316",
+      "color:#0f172a",
+    ].join(";")
+  );
+  buttonRow.appendChild(submit);
+  form.appendChild(buttonRow);
+  el.appendChild(form);
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    err.textContent = "";
+    submit.disabled = true;
+    submit.textContent = "확인 중...";
+    try {
+      const failMsg = await opts.onSubmit(input.value);
+      if (failMsg) {
+        err.textContent = failMsg;
+      }
+    } catch (e2: any) {
+      err.textContent = e2?.message ? String(e2.message) : "등록 실패";
+    } finally {
+      submit.disabled = false;
+      submit.textContent = opts.submitLabel;
+    }
+  });
+
+  // 자동 포커스: 단말기 소프트키보드가 바로 뜨도록
+  try { input.focus(); } catch { /* 일부 웹뷰는 focus 를 제한한다 */ }
+}

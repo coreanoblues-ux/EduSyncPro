@@ -64,7 +64,18 @@ if (manifest.version !== pkg.version) {
 // ─── 3. 스테이징 ────────────────────────────────────────────────────────
 fs.rmSync(stageDir, { recursive: true, force: true });
 fs.mkdirSync(stageDir, { recursive: true });
-fs.cpSync(distDir, stageDir, { recursive: true });
+// fs.cpSync 는 Windows + 경로에 CJK 문자가 있으면 조용히 exit 127 로 죽는 관찰 사례가
+// 있어 (node v20~24 재현), 스테이징은 재귀 복사를 수동으로 돌린다.
+function copyRecursive(src, dst) {
+  fs.mkdirSync(dst, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const from = path.join(src, entry.name);
+    const to = path.join(dst, entry.name);
+    if (entry.isDirectory()) copyRecursive(from, to);
+    else fs.copyFileSync(from, to);
+  }
+}
+copyRecursive(distDir, stageDir);
 fs.copyFileSync(manifestPath, path.join(stageDir, "manifest.json"));
 
 // 소스맵이 섞여 들어갔으면 제거

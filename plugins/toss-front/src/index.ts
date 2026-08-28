@@ -52,7 +52,7 @@ import {
   type PaymentResult,
   type TossFrontSdk,
 } from "./sdk";
-import { showIdle, showBusy, showFatal, pushDiagLine, clearOwnScreen } from "./screen";
+import { showIdle, showBusy, showFatal, pushDiagLine, clearOwnScreen, showPairing } from "./screen";
 
 // ─── 상태 ──────────────────────────────────────────────────────────────
 
@@ -79,7 +79,7 @@ export async function bootstrap() {
   configureLogger({ serverUrl: SERVER_URL, onScreen: (line) => pushDiagLine(line) });
   installGlobalErrorHandlers();
 
-  log.info("plugin entry started", `version=0.3.0 server=${SERVER_URL}`);
+  log.info("plugin entry started", `version=0.3.1 server=${SERVER_URL}`);
 
   // 1) SDK 확보. 못 찾으면 결제는 불가능하지만, 화면과 로그는 계속 살려 둔다.
   //    (여기서 return 해 버리면 다시 "아무 단서 없는 화면"이 된다)
@@ -96,19 +96,43 @@ export async function bootstrap() {
   }
 
   // 2) merchant / deviceKey 로드
+  //
+  //    ── 0.3.1 에서 바뀐 것 ──
+  //      0.3.0 은 deviceKey 가 없으면 그냥 치명적 화면을 띄우고 멈췄다. 하지만 실제로는
+  //      "단말기에 어떻게 deviceKey 를 넣지?" 자체가 명시된 적이 없었다 (Toss 는 plugin bundle
+  //      에 env 를 주입해 주지 않고, 매니페스트의 envRequired 는 참고 정보일 뿐이다).
+  //      공식 template 의 onboarding 예제(sdk.template.renderOnboardingPage + sdk.storage.set)
+  //      와 동일한 패턴으로, 첫 부팅 때 원장이 관리자 화면에서 발급받은 raw deviceKey 를
+  //      한 번만 입력하면 이후 재부팅에서도 sdk.storage 에 남는다.
   log.info("merchant loaded", "단말기 저장소에서 deviceKey를 읽습니다.");
-  const key = await storage.getItem(sdk, DEVICE_KEY_STORAGE);
+  let key = await storage.getItem(sdk, DEVICE_KEY_STORAGE);
   if (!key) {
-    showFatal(
-      "단말기 등록 필요",
-      "이 단말기에 EduSyncPro 등록 코드가 없습니다. 원장 화면 → Toss Front 에서 단말기를 발급한 뒤 등록해 주세요."
-    );
-    log.error("deviceKey 미설정", new Error("deviceKey 없음"), "관리자에서 단말기 등록이 필요합니다.");
-    await log.flushNow();
-    goIdle();
-    return;
+    log.warn("deviceKey 미설정", "온보딩 화면으로 이동합니다. 관리자에서 발급한 등록 코드를 입력받습니다.");
+    try {
+      key = await runPairingFlow();
+    } catch (err) {
+      log.error("페어링 실패", err, "onboarding 을 완료하지 못했습니다.");
+      showFatal(
+        "단말기 등록 실패",
+        "등록 코드가 잘못됐거나 서버에 연결하지 못했습니다. 원장 화면에서 코드를 다시 확인해 주세요."
+      );
+      await log.flushNow();
+      return;
+    }
+    await storage.setItem(sdk, DEVICE_KEY_STORAGE, key);
+    log.info("페어링 완료", "deviceKey 를 단말기 저장소에 저장했습니다.");
   }
   setDeviceKey(key);
+
+  // 참조용 시리얼 번호 로깅. 이후 사고 발생 시 서버 로그에서 어느 물리 단말인지 매칭 가능.
+  try {
+    if (sdk.app?.getSerialNumber) {
+      const { serialNumber } = await sdk.app.getSerialNumber();
+      log.info("device serial", serialNumber ?? "(unknown)");
+    }
+  } catch (err) {
+    log.warn("getSerialNumber 실패", describeErr(err));
+  }
 
   // 3) 서버 세션 발급 = 단말기 인증
   log.info("terminal auth started", "EduSyncPro 서버에 장치 세션을 요청합니다.");
@@ -317,6 +341,100 @@ async function handleDispatch(d: PendingDispatch) {
   log.error("결제 실패", new Error(failMsg), `dispatch=${d.dispatchId}`);
   await reportDispatchResult(d.dispatchId, { status: "FAILED", reason: failMsg }).catch(() => {});
   await cancelPayment(d.paymentKey, "sdk failed").catch(() => {});
+}
+
+// ─── 페어링 (onboarding) ─────────────────────────────────────────────
+
+/**
+ * 첫 부팅 페어링 흐름.
+ *
+ * 왜 raw deviceKey 를 직접 입력받나:
+ *   Toss plugin runtime 은 매니페스트 envRequired 값을 bundle 에 주입해 주지 않는다
+ *   (공식 template 에도 manifest.json 자체가 없다). Railway 환경변수는 서버쪽 값이라
+ *   plugin JS 에는 도달하지 않는다. 그래서 지금 사용 가능한 유일한 경로는:
+ *
+ *     원장이 관리자 화면(POST /devices/enroll 응답) 에서 raw deviceKey 를 발급받아
+ *     단말기 온보딩 화면에 한 번 입력 → 이후 sdk.storage 에 남아 재부팅에도 유지.
+ *
+ *   6자리 pairing-code 를 통해 짧은 코드만 입력하게 만드는 상위 layer 는 다음 커밋에서
+ *   서버 스키마를 확장한 뒤 추가한다. 이번 회차는 44자 base64url raw key 직접 입력.
+ *
+ * 왜 서버 /session 을 즉시 호출해 검증하나:
+ *   저장부터 하면 잘못 입력한 값이 그대로 남아 다음 부팅에서도 계속 실패한다.
+ *   /session 이 200 을 돌려주면 그때만 저장한다.
+ */
+async function runPairingFlow(): Promise<string> {
+  const attempt = async (rawKey: string): Promise<string> => {
+    setDeviceKey(rawKey);
+    // pingServer 는 /session 발급 + /dispatch/pending 한번 두드리기까지 수행한다.
+    const device = await pingServer();
+    setLogDeviceId(device.id);
+    log.info("페어링 검증 성공", `device=${device.displayName}`);
+    return rawKey;
+  };
+
+  // 공식 SDK 의 renderOnboardingPage 가 있으면 그걸 쓰고, 없으면 자체 화면으로 폴백.
+  const t = sdk?.template as any;
+  if (t && typeof t.renderOnboardingPage === "function") {
+    return await new Promise<string>((resolve, reject) => {
+      try {
+        t.renderOnboardingPage({
+          title: "EduSyncPro 단말기 등록",
+          inputs: {
+            deviceKey: {
+              label: "등록 코드 (44자)",
+              type: "text",
+              placeholder: "원장 화면 → Toss Front → 새 단말기 발급 후 복사한 값",
+            },
+          },
+          onSubmit: async (values: any) => {
+            const raw = String(values?.deviceKey ?? "").trim();
+            if (!raw) {
+              throw new Error("등록 코드를 입력해 주세요.");
+            }
+            try {
+              const ok = await attempt(raw);
+              resolve(ok);
+            } catch (e) {
+              log.error("페어링 검증 실패", e, "다시 입력받습니다.");
+              throw e; // Toss template 은 이 예외를 폼에 표시해 준다.
+            }
+          },
+        });
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  // Fallback: 자체 온보딩 폼.
+  return await new Promise<string>((resolve, reject) => {
+    showPairing({
+      title: "단말기 등록 필요",
+      subtitle:
+        "원장 화면 → Toss Front → 새 단말기 발급 버튼을 눌러 나온 등록 코드를 아래에 입력해 주세요.",
+      inputPlaceholder: "등록 코드를 붙여넣기",
+      submitLabel: "등록",
+      onSubmit: async (rawKey) => {
+        const raw = rawKey.trim();
+        if (!raw) return "등록 코드를 입력해 주세요.";
+        try {
+          const ok = await attempt(raw);
+          resolve(ok);
+          return null;
+        } catch (e: any) {
+          log.error("페어링 검증 실패", e, "다시 입력받습니다.");
+          return e?.message ? String(e.message).slice(0, 200) : "등록 실패. 코드를 확인해 주세요.";
+        }
+      },
+      onCancel: () => reject(new Error("사용자가 온보딩을 취소했습니다.")),
+    });
+  });
+}
+
+function describeErr(err: unknown): string {
+  if (err instanceof Error) return `${err.name}: ${err.message}`;
+  try { return String(err); } catch { return "알 수 없는 오류"; }
 }
 
 async function confirmPaymentFromSdk(r: PaymentResponseSuccess) {

@@ -78,11 +78,21 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
  * 없으면 { pending: null }. 1초마다 폴링한다.
  */
 export interface PendingDispatch {
+  // 상관관계 ID. dispatch 결과 통지 시 서버에 그대로 되돌려 준다.
+  requestId: string;
+  // 서버 내부 라우팅 키. 현 스키마에선 requestId 와 동일한 값이지만 API 이름은 분리.
   dispatchId: string;
   paymentKey: string;
   orderId: string;
   orderName: string;
+  // sdk.payment.requestPayment 는 아래 4개 값을 서버가 확정한 값으로만 넘겨야 한다.
   amount: number;
+  tax: number;
+  supplyValue: number;
+  taxExemptValue: number;
+  tip: number;
+  status: "PENDING";
+  deviceId: string;
   createdAt: string;
   expiresAt: string;
 }

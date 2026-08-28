@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>EduSyncPro Toss Front</title>
+    <!--
+      결제 단말기 모드 진입점. 화면 렌더는 전부 sdk.template.* 이 담당하므로
+      이 HTML 은 SDK 부팅 훅을 실행할 스크립트만 로드한다.
+      커스텀 UI 요소를 두지 않는다 (Toss 심사 정책 준수).
+    -->
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #000; }
+    </style>
+  </head>
+  <body>
+    <script type="module" src="./src/index.ts"></script>
+  </body>
+</html>

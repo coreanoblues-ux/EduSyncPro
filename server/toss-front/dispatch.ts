@@ -287,9 +287,25 @@ router.get("/dispatch/stream", deviceGuard, async (req: Request, res: Response) 
  */
 router.get("/dispatch/pending", deviceGuard, async (req: Request, res: Response) => {
   const device = req.device!;
+  // paymentIntents 와 JOIN 해서 tax/supplyValue/taxExemptValue 를 함께 돌려준다.
+  // 플러그인이 SDK 에 넘길 세금·공급가·비과세 값은 서버가 확정한 값만 신뢰한다 (프론트 계산 금지).
   const [row] = await db
-    .select()
+    .select({
+      dispatchId: paymentDispatches.id,
+      paymentKey: paymentDispatches.paymentKey,
+      orderId: paymentDispatches.orderId,
+      orderName: paymentDispatches.orderName,
+      amount: paymentDispatches.amount,
+      status: paymentDispatches.status,
+      deviceId: paymentDispatches.tossDeviceId,
+      createdAt: paymentDispatches.createdAt,
+      expiresAt: paymentDispatches.expiresAt,
+      tax: paymentIntents.tax,
+      supplyValue: paymentIntents.supplyValue,
+      taxExemptValue: paymentIntents.taxExemptValue,
+    })
     .from(paymentDispatches)
+    .innerJoin(paymentIntents, eq(paymentDispatches.intentId, paymentIntents.id))
     .where(
       and(
         eq(paymentDispatches.tossDeviceId, device.id),
@@ -301,11 +317,21 @@ router.get("/dispatch/pending", deviceGuard, async (req: Request, res: Response)
   if (!row) return res.json({ pending: null });
   return res.json({
     pending: {
-      dispatchId: row.id,
+      // dispatchId 는 서버 내부 라우팅 키, requestId 는 플러그인이 SDK 결과 통지 시 사용할 상관관계 ID.
+      // 현재 스키마에선 둘이 같은 값을 갖지만 이름을 분리해 두면 나중에 별도 요청식별자를 도입할 여지가 있다.
+      requestId: row.dispatchId,
+      dispatchId: row.dispatchId,
       paymentKey: row.paymentKey,
       orderId: row.orderId,
       orderName: row.orderName,
       amount: row.amount,
+      tax: row.tax,
+      supplyValue: row.supplyValue,
+      taxExemptValue: row.taxExemptValue,
+      // tip 은 아직 학원 결제 흐름에 없다. 항상 0 을 명시적으로 내려 준다 (SDK 필수 필드).
+      tip: 0,
+      status: row.status,
+      deviceId: row.deviceId,
       createdAt: row.createdAt,
       expiresAt: row.expiresAt,
     },

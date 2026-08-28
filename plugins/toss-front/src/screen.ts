@@ -185,6 +185,156 @@ export interface PairingScreenOptions {
   onCancel?: () => void;
 }
 
+/**
+ * 승인 완료 후 영수증 출력 여부 선택 화면.
+ *
+ * 등장 시점:
+ *   - 카드 승인 성공
+ *   - 서버 /payments/confirm 성공
+ *   - dispatch APPROVED 마킹 완료
+ *   이 세 단계가 모두 끝난 뒤에만 이 화면이 뜬다. 즉 이 화면이 뜬 시점에는
+ *   결제 자체는 이미 확정 상태이며, 여기서 무엇을 눌러도 결제에는 영향이 없다.
+ *
+ * 동작:
+ *   - 8초 카운트다운을 표시한다.
+ *   - "영수증 출력" 을 누르면 opts.onPrint() 를 1회 호출한다.
+ *   - "영수증 생략" 을 누르면 opts.onSkip() 를 1회 호출한다.
+ *   - 아무것도 안 누르고 카운트다운이 0에 도달하면 opts.onTimeout() 을 1회 호출한다.
+ *   - 어떤 경로로든 결정이 한 번 발생하면 나머지 경로는 봉인된다 (내부 guard).
+ *   - 화면 자체가 중복 클릭도 막는다 (버튼 disabled).
+ *
+ * 왜 이 화면이 own guard 도 가지나:
+ *   외부(index.ts) 에도 상위 guard 가 있지만, 사용자가 두 버튼을 아주 빠르게
+ *   연타하거나 setInterval 콜백이 클릭과 겹치는 극단적 상황을 두 겹으로 막기 위함.
+ *   프린터는 1장 이상 뽑히면 학원 회계 실사에서 곤란해진다.
+ */
+export interface ReceiptChoiceOptions {
+  autoPrintMs: number;
+  onPrint: () => void;
+  onSkip: () => void;
+  onTimeout: () => void;
+}
+
+export function showReceiptChoice(opts: ReceiptChoiceOptions): void {
+  if (typeof document === "undefined") return;
+
+  currentTone = "idle";
+  currentTitle = "결제가 완료되었습니다";
+  currentSubtitle = "영수증을 출력하시겠습니까?";
+  paint();
+
+  const el = root();
+  if (!el) return;
+
+  // 내부 결정 guard. 세 진입점(출력/생략/타임아웃) 중 최초 하나만 실제 콜백을 호출한다.
+  let decided = false;
+  let intervalId: number | null = null;
+  let remainingMs = opts.autoPrintMs;
+
+  const stopTimer = () => {
+    if (intervalId != null) {
+      clearInterval(intervalId);
+      intervalId = null;
+    }
+  };
+
+  const decide = (fire: () => void) => {
+    if (decided) return;
+    decided = true;
+    stopTimer();
+    // 화면상 버튼도 즉시 잠가 double-click 을 차단
+    printBtn.disabled = true;
+    skipBtn.disabled = true;
+    try {
+      fire();
+    } catch (err) {
+      // 콜백 예외는 화면 렌더에 영향 주지 않도록 흡수 — 상위(index.ts) 에서 별도 로깅.
+      // eslint 무효화용: 로컬 콘솔에만 남긴다.
+      // eslint-disable-next-line no-console
+      console.error("[receipt-choice] 콜백 예외", err);
+    }
+  };
+
+  const wrap = document.createElement("div");
+  wrap.setAttribute(
+    "style",
+    ["display:flex", "flex-direction:column", "gap:14px", "align-items:center", "margin-top:6px"].join(";")
+  );
+
+  const countdown = document.createElement("div");
+  countdown.setAttribute(
+    "style",
+    "font-size:15px;color:#94a3b8;letter-spacing:0.3px"
+  );
+  const renderCountdown = () => {
+    const sec = Math.max(0, Math.ceil(remainingMs / 1000));
+    countdown.textContent = `${sec}초 후 자동으로 출력됩니다`;
+  };
+  renderCountdown();
+  wrap.appendChild(countdown);
+
+  const buttonRow = document.createElement("div");
+  buttonRow.setAttribute("style", "display:flex;gap:12px;margin-top:6px");
+
+  const baseBtnStyle = [
+    "padding:14px 26px",
+    "font-size:17px",
+    "font-weight:700",
+    "border-radius:10px",
+    "border:none",
+    "cursor:pointer",
+    "min-width:150px",
+  ].join(";");
+
+  const printBtn = document.createElement("button");
+  printBtn.type = "button";
+  printBtn.textContent = "영수증 출력";
+  printBtn.setAttribute("style", `${baseBtnStyle};background:#f97316;color:#0f172a`);
+  printBtn.addEventListener("click", () => decide(opts.onPrint));
+
+  const skipBtn = document.createElement("button");
+  skipBtn.type = "button";
+  skipBtn.textContent = "영수증 생략";
+  skipBtn.setAttribute(
+    "style",
+    `${baseBtnStyle};background:#1f2937;color:#e5e7eb;border:1px solid rgba(255,255,255,0.14)`
+  );
+  skipBtn.addEventListener("click", () => decide(opts.onSkip));
+
+  buttonRow.appendChild(printBtn);
+  buttonRow.appendChild(skipBtn);
+  wrap.appendChild(buttonRow);
+  el.appendChild(wrap);
+
+  // 1초마다 카운트다운 표시를 갱신하고, 0에 도달하면 자동 출력.
+  const TICK = 250; // 화면 표기는 초 단위지만, 타이머 해상도는 250ms 로 더 촘촘히 (race 축소)
+  intervalId = setInterval(() => {
+    remainingMs -= TICK;
+    if (remainingMs <= 0) {
+      renderCountdown();
+      decide(opts.onTimeout);
+      return;
+    }
+    renderCountdown();
+  }, TICK) as unknown as number;
+}
+
+/**
+ * 영수증 결과 안내 (짧은 안내 화면).
+ *
+ * - 성공 시:  "영수증이 출력되었습니다." (선택 사용, 이번 버전은 사용 안 함 → 즉시 유휴 복귀)
+ * - 실패 시:  "결제는 정상적으로 완료되었습니다. 영수증 출력에 실패했습니다."
+ *
+ * 이 화면은 정보 전달 목적이라 결제 결과를 되돌리지 않는다. 호출부(index.ts) 는
+ * 이 화면 뒤 goIdle 로 자연스럽게 돌아간다.
+ */
+export function showReceiptResult(kind: "ok" | "fail", message: string) {
+  currentTone = kind === "ok" ? "idle" : "error";
+  currentTitle = kind === "ok" ? "영수증 출력 완료" : "영수증 출력 실패";
+  currentSubtitle = message;
+  paint();
+}
+
 export function showPairing(opts: PairingScreenOptions) {
   if (typeof document === "undefined") return;
   currentTone = "idle";

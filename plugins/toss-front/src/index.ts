@@ -53,7 +53,16 @@ import {
   type PaymentResult,
   type TossFrontSdk,
 } from "./sdk";
-import { showIdle, showBusy, showFatal, pushDiagLine, clearOwnScreen, showPairing } from "./screen";
+import {
+  showIdle,
+  showBusy,
+  showFatal,
+  pushDiagLine,
+  clearOwnScreen,
+  showPairing,
+  showReceiptChoice,
+  showReceiptResult,
+} from "./screen";
 
 // ─── 상태 ──────────────────────────────────────────────────────────────
 
@@ -80,7 +89,7 @@ export async function bootstrap() {
   configureLogger({ serverUrl: SERVER_URL, onScreen: (line) => pushDiagLine(line) });
   installGlobalErrorHandlers();
 
-  log.info("plugin entry started", `version=0.3.2 server=${SERVER_URL}`);
+  log.info("plugin entry started", `version=0.3.3 server=${SERVER_URL}`);
 
   // 1) SDK 확보. 못 찾으면 결제는 불가능하지만, 화면과 로그는 계속 살려 둔다.
   //    (여기서 return 해 버리면 다시 "아무 단서 없는 화면"이 된다)
@@ -316,6 +325,22 @@ async function handleDispatch(d: PendingDispatch) {
       );
     }
     await reportDispatchResult(d.dispatchId, { status: "APPROVED" }).catch(() => {});
+
+    // ── 영수증 자동 출력 (승인·원장반영·dispatch 마킹이 모두 끝난 뒤에만 진입) ──
+    //
+    // 여기서 어떤 예외가 나도 결제는 이미 확정 상태다. 프린터 관련 실패는
+    // 절대 위로 전파시키지 않는다. try/catch 로 봉인하고 로그만 남긴다.
+    // 부분결제의 경우 한 dispatch = 한 카드 승인 = 한 paymentKey 이므로,
+    // 이 흐름은 각 카드 승인마다 독립적으로 한 번씩 돌며 각기 다른 영수증을 뽑는다.
+    try {
+      await promptReceiptPrintAfterApproval(result.response.paymentKey);
+    } catch (err) {
+      log.error(
+        "영수증 흐름 예외 (무시)",
+        err,
+        "결제와 원장 반영은 이미 완료되었습니다. 영수증 흐름 오류는 결제 상태에 영향을 주지 않습니다."
+      );
+    }
     return;
   }
 
@@ -342,6 +367,94 @@ async function handleDispatch(d: PendingDispatch) {
   log.error("결제 실패", new Error(failMsg), `dispatch=${d.dispatchId}`);
   await reportDispatchResult(d.dispatchId, { status: "FAILED", reason: failMsg }).catch(() => {});
   await cancelPayment(d.paymentKey, "sdk failed").catch(() => {});
+}
+
+// ─── 영수증 출력 (승인 이후 부가 단계) ───────────────────────────────
+
+/**
+ * 승인 완료 후 영수증 선택 화면을 띄우고, 결정에 따라 프린터를 호출한다.
+ *
+ * 사양 요약:
+ *   - 8초 카운트다운을 표시한다.
+ *   - 사용자가 "영수증 출력" 을 누르면 즉시 printReceipt 1회.
+ *   - "영수증 생략" 을 누르면 프린터를 호출하지 않고 종료.
+ *   - 아무것도 안 누르고 8초가 지나면 자동으로 printReceipt 1회.
+ *   - 위 세 진입점 중 최초 하나만 실제로 프린터를 호출한다 (중복 출력 방지).
+ *
+ * 이중 안전 guard:
+ *   1) 이 함수의 로컬 `printCalledForThisPayment` 플래그 — race 시 최종 방어선.
+ *   2) screen.showReceiptChoice 내부의 `decided` 플래그 — UI 이벤트 자체를 잠근다.
+ *
+ * 이 함수는 예외를 밖으로 던지지 않는다. 프린터가 없거나 실패해도 결제 상태는
+ * 이미 확정이므로 로그만 남기고 조용히 종료. resolve 는 항상 발생한다.
+ */
+async function promptReceiptPrintAfterApproval(paymentKey: string): Promise<void> {
+  // 최종 방어선: 같은 paymentKey 에 대해 이번 흐름에서 printReceipt 는 최대 1회.
+  let printCalledForThisPayment = false;
+
+  return new Promise<void>((resolve) => {
+    const doPrint = async (trigger: "user" | "timeout") => {
+      if (printCalledForThisPayment) {
+        // race 로 두 경로가 거의 동시에 진입해도 여기서 컷.
+        log.info("영수증 중복 호출 방지", `paymentKey=${paymentKey} trigger=${trigger} 이미 처리됨`);
+        resolve();
+        return;
+      }
+      printCalledForThisPayment = true;
+      log.info("영수증 출력 요청", `paymentKey=${paymentKey} trigger=${trigger}`);
+
+      if (!sdk?.printer || typeof sdk.printer.printReceipt !== "function") {
+        // 프린터 미도착·구형 펌웨어 등. 결제 성공에는 영향 없음.
+        log.warn(
+          "printer.printReceipt 미지원",
+          "SDK 에 printer 모듈이 없습니다. 실제 프린터가 연결된 뒤에 재검증합니다."
+        );
+        showReceiptResult("fail", "결제는 정상적으로 완료되었습니다. 프린터를 사용할 수 없습니다.");
+        resolve();
+        return;
+      }
+
+      try {
+        await sdk.printer.printReceipt({ paymentKey, count: 1 });
+        log.info("영수증 출력 완료", `paymentKey=${paymentKey}`);
+        // 성공 시 별도 안내 화면을 오래 띄우지 않는다. 유휴 복귀가 자연스럽다.
+      } catch (err) {
+        // 종이 없음 / 프린터 오프라인 / 권한 거부 등. 결제 상태와 완전히 분리.
+        log.error(
+          "영수증 출력 실패",
+          err,
+          "카드 승인·원장 반영은 이미 완료된 상태이며 이 오류는 결제에 영향을 주지 않습니다."
+        );
+        showReceiptResult("fail", "결제는 정상적으로 완료되었습니다. 영수증 출력에 실패했습니다.");
+      }
+      resolve();
+    };
+
+    const doSkip = () => {
+      if (printCalledForThisPayment) {
+        // 이미 프린터를 부른 뒤라면 skip 은 무시 (사실상 도달 불가한 방어).
+        resolve();
+        return;
+      }
+      // 사용자 명시 생략 — printCalledForThisPayment 는 켜지 않는다 (프린터를 안 부름).
+      // 이후 timeout 콜백이 뒤늦게 들어와도 screen 내부 decided guard 가 이미 잠갔다.
+      log.info("영수증 생략", `paymentKey=${paymentKey} 사용자가 생략을 선택`);
+      resolve();
+    };
+
+    showReceiptChoice({
+      autoPrintMs: 8_000,
+      onPrint: () => {
+        void doPrint("user");
+      },
+      onSkip: () => {
+        doSkip();
+      },
+      onTimeout: () => {
+        void doPrint("timeout");
+      },
+    });
+  });
 }
 
 // ─── 페어링 (onboarding) ─────────────────────────────────────────────

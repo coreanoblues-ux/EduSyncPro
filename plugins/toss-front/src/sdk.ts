@@ -52,6 +52,24 @@ export interface TossFrontSdk {
   template?: {
     renderIdlePage?(): void;
   };
+  /**
+   * 프린터 모듈. 공식 문서 signature 를 그대로 옮겼다.
+   *   sdk.printer.printReceipt({ paymentKey, count, orderInfo?, additionalText? })
+   *
+   * 이번 버전은 승인 완료 후 사용자가 선택(또는 8초 자동)했을 때 { paymentKey, count: 1 } 만
+   * 넘겨 승인 영수증 1장을 뽑는 최소 사용만 한다. orderInfo / additionalText 는 추후 필요 시.
+   *
+   * 런타임에 이 모듈이 없을 수 있어(구형 펌웨어 / 프린터 미연결 단말) optional 로 둔다.
+   * 호출부는 반드시 존재 여부를 확인하고 부재 시 조용히 건너뛴다.
+   */
+  printer?: {
+    printReceipt(input: {
+      paymentKey: string;
+      count: number;
+      orderInfo?: Record<string, unknown>;
+      additionalText?: string;
+    }): Promise<void>;
+  };
   payment: {
     requestPayment(input: {
       paymentKey: string;

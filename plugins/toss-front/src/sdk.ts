@@ -48,9 +48,37 @@ export type PaymentResult =
   | { type: "TIMEOUT"; reason?: string }
   | { type: "FAILED"; code?: string; message?: string };
 
+/**
+ * renderIdlePage 파라미터.
+ *
+ * ⚠️ 이전 버전은 이 함수를 `renderIdlePage?(): void` 로 선언해 두고 있었다. 그건 틀렸다.
+ *    공식 문서(docs.tossplace.com · Template API)를 직접 확인한 결과 인자를 받는다.
+ *    선언이 틀려 있었기 때문에 "대기화면은 Toss 가 그리는 거라 우리가 못 바꾼다"고
+ *    결론 내렸었고, 그래서 단말기에 빨간 IP 주소만 뜨는 화면을 방치했다.
+ *    타입 선언 하나가 기능 하나를 통째로 없앤 셈이다.
+ *
+ * 인자를 생략하면 type:"default" 와 같다 — 지금까지 보던 그 화면이다.
+ */
+export type IdlePageParams =
+  | { type: "default" }
+  | {
+      type: "oneButton";
+      button: { text: string; subText?: string; onClick: () => void };
+      description?: { text: string; subText?: string };
+    }
+  | {
+      type: "twoButton";
+      title: { text1: string; text2: string; text3?: string };
+      description?: { text: string; subText?: string };
+      primaryButton: { text: string; onClick: () => void };
+      secondaryButton: { text: string; onClick: () => void };
+    };
+
 export interface TossFrontSdk {
   template?: {
-    renderIdlePage?(): void;
+    renderIdlePage?(params?: IdlePageParams): void;
+    /** 짧은 안내 문구. 화면 전환 없이 뜬다. */
+    openToast?(params: { message: string }): void;
   };
   /**
    * 프린터 모듈. 공식 문서 signature 를 그대로 옮겼다.
@@ -211,12 +239,12 @@ function describeGlobals(): string {
 /**
  * sdk.template 이 실제로 무엇을 제공하는지 한 줄로 적는다.
  *
- * 왜 필요한가:
- *   대기화면을 우리 로고·문구로 꾸미려면 renderIdlePage 가 인자를 받는지 알아야 하는데,
- *   타입 선언에는 `renderIdlePage?(): void` 로만 적혀 있고 공개 문서를 확인할 수 없었다.
- *   추측으로 인자를 넣어 보는 대신, 실단말기가 스스로 답하게 한다.
- *   함수의 `length` 는 "선언된 인자 개수"다. 0 이면 커스터마이즈 여지가 없다는 뜻이고,
- *   1 이상이면 옵션을 받는다는 뜻이므로 그때 정확한 형태를 맞춰 넣으면 된다.
+ * 왜 남겨 두나:
+ *   시그니처는 이제 공식 문서로 확인했다(renderIdlePage 는 params 를 받는다).
+ *   그래도 이 진단은 계속 둔다 — 펌웨어 버전마다 template 에 있는 메서드가 다를 수 있고,
+ *   "우리 대기화면이 왜 안 나오지" 를 단말기 앞에서 판단하려면 그 단말기가 실제로
+ *   무엇을 갖고 있는지 봐야 한다. 함수의 `length` 는 선언된 인자 개수다. 0 이 찍히면
+ *   그 펌웨어는 구형이라 커스터마이즈가 안 되는 것이고, 그때는 기본 화면으로 내려간다.
  *
  * 결과는 로그로 서버에 올라가고 대기화면 진단 줄에도 찍히므로, 단말기 앞에서
  * 바로 읽을 수 있다.
@@ -240,15 +268,24 @@ let templateApiLogged = false;
 /**
  * 유휴 화면을 그린다.
  *
- * 공식 SDK 의 renderIdlePage 가 있으면 그것을 쓴다 (Toss 표준 대기화면·심사 정책 준수).
+ * 공식 SDK 의 renderIdlePage 를 쓴다 (Toss 표준 컴포넌트 = 심사 정책 준수).
  * 없으면 자체 대기화면으로 대체한다. 여기서 아무것도 안 하면 다시 검은 화면이 된다.
  *
- * ⚠️ 현재 단말기에서 보이는 "빨간 IP 주소만 있는 화면" 은 우리 화면이 아니라 Toss 의
- *    renderIdlePage 가 그린 화면이다. 즉 이 함수는 정상 동작 중이고, 우리 대기화면은
- *    애초에 그려질 기회를 얻지 못한다. 이걸 우리 디자인으로 바꾸려면 renderIdlePage 가
- *    옵션을 받아야 하는데 그 여부를 아직 모른다 — describeTemplateApi 로 확인한다.
+ * 왜 params 를 받게 바꿨나:
+ *   원장이 본 "빨간 IP 주소만 있는 화면" 은 type:"default" 대기화면이다. 우리가
+ *   renderIdlePage 를 인자 없이 불렀기 때문에 Toss 기본 화면이 그대로 나온 것이다.
+ *   (빨간 IP 줄 자체는 디버그 빌드에서만 붙는 것이라 운영 빌드에는 나오지 않는다.)
+ *   이제 문구와 버튼을 넘겨서 학원 이름이 뜨는 대기화면을 그린다.
+ *
+ * params 를 넣은 호출이 실패하면 인자 없는 호출로 한 번 더 시도한다. 펌웨어가 구형이라
+ * 인자를 모르더라도 최소한 Toss 기본 대기화면은 나와야 하기 때문이다. 그것마저
+ * 실패할 때만 자체 화면으로 내려간다.
  */
-export function renderIdle(sdk: TossFrontSdk | null, fallback: () => void) {
+export function renderIdle(
+  sdk: TossFrontSdk | null,
+  fallback: () => void,
+  params?: IdlePageParams
+) {
   if (sdk?.template && typeof sdk.template.renderIdlePage === "function") {
     if (!templateApiLogged) {
       templateApiLogged = true;
@@ -258,10 +295,16 @@ export function renderIdle(sdk: TossFrontSdk | null, fallback: () => void) {
       );
     }
     try {
-      sdk.template.renderIdlePage();
+      sdk.template.renderIdlePage(params);
       return;
     } catch (err) {
-      log.error("renderIdlePage 실패", err, "자체 대기화면으로 대체합니다.");
+      log.error("renderIdlePage 실패", err, "인자 없이 기본 대기화면으로 다시 시도합니다.");
+      try {
+        sdk.template.renderIdlePage();
+        return;
+      } catch (err2) {
+        log.error("renderIdlePage 기본 호출도 실패", err2, "자체 대기화면으로 대체합니다.");
+      }
     }
   } else {
     log.warn("renderIdlePage 없음", "SDK 유휴화면을 쓸 수 없어 자체 대기화면을 표시합니다.");

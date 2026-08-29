@@ -49,6 +49,7 @@ import {
   waitForSdk,
   renderIdle,
   storage,
+  type IdlePageParams,
   type PaymentResponseSuccess,
   type PaymentResult,
   type TossFrontSdk,
@@ -84,9 +85,61 @@ let inFlight = false;        // 이미 fetchPendingDispatch 가 답을 기다리
 let consecutivePollErrors = 0;
 const handledPaymentKeys = new Set<string>();
 
+/** 단말기에 등록된 상점명. 대기화면 제목에 쓴다. 못 읽으면 빈 문자열. */
+let merchantName = "";
+
+/**
+ * 대기화면에 뭘 띄울지.
+ *
+ * 원장 지적: 대기화면이 "빈 화면에 빨간 IP 주소"뿐이었다. 그건 renderIdlePage 를
+ * 인자 없이 불러서 나온 Toss 기본(default) 화면이다. 이제 문구를 넣어 그린다.
+ *
+ * 버튼을 "새로고침"으로 두지 않은 이유:
+ *   폴링이 이미 1초마다 돈다. 새로고침 버튼은 아무것도 앞당기지 못하면서 누르면
+ *   뭔가 될 것 같은 착각만 준다. 대신 단말기 앞에 선 사람이 실제로 궁금해하는 것
+ *   — "이게 서버랑 붙어 있긴 한가" — 에 답한다. 단말기에는 개발자도구가 없어서
+ *   이 정보를 볼 방법이 달리 없다.
+ */
+function idleParams(): IdlePageParams {
+  return {
+    type: "oneButton",
+    description: {
+      text: merchantName ? `${merchantName} 수강료 결제` : "수강료 결제",
+      subText: "태블릿에서 학생을 선택하면 이 화면에 결제 금액이 표시됩니다.",
+    },
+    button: {
+      text: "단말기 상태",
+      subText: "연결이 잘 되어 있는지 확인합니다",
+      onClick: () => showTerminalStatus(),
+    },
+  };
+}
+
+/** 대기화면 버튼을 눌렀을 때. 결제에는 일절 관여하지 않는 읽기 전용 동작이다. */
+function showTerminalStatus() {
+  const connected = consecutivePollErrors === 0;
+  const message = connected
+    ? `정상 연결됨 · v${PLUGIN_VERSION}`
+    : `서버 연결 끊김 (연속 실패 ${consecutivePollErrors}회) · v${PLUGIN_VERSION}`;
+
+  log.info("대기화면 상태 확인", message);
+
+  // openToast 가 없는 펌웨어면 자체 진단 줄로 대체한다. 버튼을 눌렀는데
+  // 아무 반응이 없는 것이 제일 나쁘다.
+  if (sdk?.template?.openToast) {
+    try {
+      sdk.template.openToast({ message });
+      return;
+    } catch (err) {
+      log.warn("openToast 실패", describeErr(err));
+    }
+  }
+  pushDiagLine(message);
+}
+
 /** SDK 유휴화면이 있으면 그걸 쓰고, 없으면 자체 대기화면을 그린다. */
 function goIdle() {
-  renderIdle(sdk, () => showIdle());
+  renderIdle(sdk, () => showIdle(), idleParams());
   if (sdk?.template?.renderIdlePage) clearOwnScreen();
 }
 
@@ -153,6 +206,18 @@ export async function bootstrap() {
     }
   } catch (err) {
     log.warn("getSerialNumber 실패", describeErr(err));
+  }
+
+  // 상점명은 대기화면 제목으로 쓴다. 실패해도 그냥 넘어간다 —
+  // 이름이 없으면 "수강료 결제" 로 떨어질 뿐, 결제와는 무관하다.
+  try {
+    if (sdk.app?.getMerchant) {
+      const merchant = await sdk.app.getMerchant();
+      merchantName = merchant?.name ?? "";
+      log.info("merchant name", merchantName || "(이름 없음)");
+    }
+  } catch (err) {
+    log.warn("getMerchant 실패", describeErr(err));
   }
 
   // 3) 서버 세션 발급 = 단말기 인증

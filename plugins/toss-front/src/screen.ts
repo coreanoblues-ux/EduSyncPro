@@ -15,18 +15,73 @@
 const ROOT_ID = "edusync-front-root";
 const MAX_DIAG_LINES = 6;
 
+/**
+ * 화면 하단 진단 줄의 최대 길이.
+ *
+ * ── 왜 160 에서 늘렸나 (2026-08-29, 원장 사진) ──
+ *   단말기 사진에 이 줄이 찍혀 있었다:
+ *     "renderIdlePage 실패 — 인자 없이 기본 대기화면으로 다시 시도합니다. :: Error: Minified R…"
+ *   여기서 잘렸다. 하필 잘린 자리 바로 뒤가 React 오류 "번호" 다. 그 번호 하나면
+ *   왜 Toss 템플릿이 이 펌웨어에서 터지는지 바로 알 수 있는데, 우리가 화면에서
+ *   그걸 지우고 있었다. 진단 줄의 존재 이유가 "단말기 앞에서 원인을 읽는 것"인데
+ *   정작 원인만 골라서 버린 셈이다.
+ *
+ *   단말기 화면은 세로로 길고 이 박스는 max-height:26vh + overflow:hidden 이라
+ *   길어져도 레이아웃이 깨지지 않는다. 길이를 늘리는 쪽의 위험이 훨씬 작다.
+ */
+const MAX_DIAG_LINE_CHARS = 400;
+
 let diagLines: string[] = [];
 let currentTitle = "EduSyncPro";
 let currentSubtitle = "";
 let currentTone: Tone = "idle";
+let currentActions: ScreenAction[] = [];
+let versionLabel = "";
+
+/**
+ * 다시 그리기 잠금.
+ *
+ * paint() 는 el.textContent = "" 로 화면을 통째로 비우고 다시 만든다. 그런데
+ * pushDiagLine 이 로그 한 줄마다 paint() 를 부른다. 그래서 paint() 이후에 DOM 을
+ * 직접 덧붙이는 화면(영수증 선택·페어링 폼)은 로그가 한 줄 들어오는 순간
+ * 버튼과 입력값이 통째로 사라진다. 폴링 오류는 1초마다 로그를 남기므로 실제로
+ * 일어난다 — 원장이 영수증 버튼을 누르려는 순간 버튼이 사라지는 식이다.
+ *
+ * 대기화면 버튼은 currentActions 로 paint() 안에서 다시 그려지므로 이 잠금이
+ * 필요 없지만, 덧붙이기 방식인 두 화면은 살아 있는 동안 잠가 둔다.
+ */
+let repaintLocked = false;
 
 type Tone = "idle" | "busy" | "error";
+
+/** 화면 하단 버튼 하나. paint() 가 매번 다시 그리므로 로그가 들어와도 사라지지 않는다. */
+export interface ScreenAction {
+  label: string;
+  onClick: () => void;
+  /** primary = 주황 강조, secondary = 어두운 테두리 버튼. */
+  kind?: "primary" | "secondary";
+}
 
 const TONE_COLORS: Record<Tone, { bg: string; accent: string }> = {
   idle: { bg: "#0f172a", accent: "#f97316" },
   busy: { bg: "#0f172a", accent: "#38bdf8" },
   error: { bg: "#1c1013", accent: "#f87171" },
 };
+
+/**
+ * 화면 첫 줄에 찍을 플러그인 버전을 알려 준다. bootstrap 맨 앞에서 한 번 부른다.
+ *
+ * ── 왜 필요한가 (2026-08-29) ──
+ *   index.html 의 부팅 문구에는 버전을 박아 뒀는데, 정작 이 파일이 그리는 화면에는
+ *   "PAGE ONE · EDUSYNCPRO" 만 있었다. 그런데 플러그인이 부팅되면 이 화면이
+ *   부팅 문구를 덮는다 — 즉 정상 동작할수록 버전이 안 보인다. 원장이 보낸 단말기
+ *   사진으로 "어느 ZIP 이 올라가 있는지" 를 판별할 수 없었던 이유가 이것이다.
+ *   0.3.5 부터 0.3.10 까지 버전만 올리며 며칠을 보낸 대가가 컸다.
+ */
+export function setScreenVersion(version: string) {
+  versionLabel = version;
+  if (typeof document !== "undefined" && document.getElementById(ROOT_ID)) paint();
+}
 
 function root(): HTMLElement | null {
   if (typeof document === "undefined") return null;
@@ -67,6 +122,41 @@ function mirrorToBootNode() {
   if (sub) sub.textContent = currentSubtitle || diagLines[diagLines.length - 1] || "";
 }
 
+/** 손가락으로 누를 수 있는 크기의 버튼. 단말기는 마우스가 아니라 터치다. */
+function makeButton(action: ScreenAction): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = action.label;
+  const base = [
+    "padding:16px 26px",
+    "font-size:17px",
+    "font-weight:700",
+    "border-radius:12px",
+    "cursor:pointer",
+    "min-width:140px",
+    // 단말기 웹뷰는 터치 후 300ms 지연·더블탭 확대가 기본이라 명시적으로 끈다.
+    "touch-action:manipulation",
+    "-webkit-tap-highlight-color:transparent",
+  ].join(";");
+  btn.setAttribute(
+    "style",
+    action.kind === "secondary"
+      ? `${base};background:#1f2937;color:#e5e7eb;border:1px solid rgba(255,255,255,0.16)`
+      : `${base};background:#f97316;color:#0f172a;border:none`
+  );
+  btn.addEventListener("click", () => {
+    try {
+      action.onClick();
+    } catch (err) {
+      // 콜백 예외가 화면을 죽이면 나가는 길이 또 막힌다. 삼키고 진단 줄로만 남긴다.
+      // eslint-disable-next-line no-console
+      console.error("[screen] 버튼 콜백 예외", err);
+      pushDiagLine(`버튼 동작 실패: ${String((err as any)?.message ?? err)}`);
+    }
+  });
+  return btn;
+}
+
 function paint() {
   const el = root();
   if (!el) return;
@@ -102,7 +192,9 @@ function paint() {
 
   const brand = document.createElement("div");
   brand.setAttribute("style", "font-size:15px;letter-spacing:2px;color:#64748b;font-weight:700");
-  brand.textContent = "PAGE ONE · EDUSYNCPRO";
+  brand.textContent = versionLabel
+    ? `PAGE ONE · EDUSYNCPRO · v${versionLabel}`
+    : "PAGE ONE · EDUSYNCPRO";
   el.appendChild(brand);
 
   const title = document.createElement("div");
@@ -115,6 +207,20 @@ function paint() {
     sub.setAttribute("style", "font-size:17px;color:#94a3b8;max-width:520px;line-height:1.5");
     sub.textContent = currentSubtitle;
     el.appendChild(sub);
+  }
+
+  // 버튼은 진단 박스보다 위에 둔다. 진단 박스는 길어질 수 있어서 아래에 두면
+  // 화면 밖으로 밀려 나가 누를 수 없게 된다 — 나가는 길이 로그에 가려지면 안 된다.
+  if (currentActions.length > 0) {
+    const row = document.createElement("div");
+    row.setAttribute(
+      "style",
+      ["display:flex", "gap:12px", "flex-wrap:wrap", "justify-content:center", "margin-top:8px"].join(";")
+    );
+    for (const action of currentActions) {
+      row.appendChild(makeButton(action));
+    }
+    el.appendChild(row);
   }
 
   if (diagLines.length > 0) {
@@ -143,11 +249,60 @@ function paint() {
   }
 }
 
-/** 대기 화면. 결제 요청이 올 때까지 보여 준다. */
-export function showIdle() {
+/**
+ * 대기 화면. 결제 요청이 올 때까지 보여 준다.
+ *
+ * ── onAdmin 이 왜 생겼나 (2026-08-29, 원장 지적) ──
+ *   원장의 말 그대로다: "단말기에서 환불을 갈려면 이 대기 화면을 나갈 수 있어야
+ *   하는데 방법이 없잖아."
+ *
+ *   0.3.10 에서 [관리자] → [첫화면으로] 를 넣긴 했다. 그런데 그걸 전부
+ *   sdk.template.renderIdlePage 의 버튼으로만 만들었다. 그리고 이 단말기의
+ *   펌웨어에서 renderIdlePage 는 React 오류를 던진다 (원장 사진의 로그로 확인).
+ *   그래서 실제로 화면에 뜬 것은 이 파일이 그리는 대체 화면이었고, 이 화면에는
+ *   버튼이 하나도 없었다. 나가는 길을 만들어 놓고 그 길을 못 쓰는 화면에만
+ *   안 만들어 둔 것이다.
+ *
+ *   같은 사진이 하나를 더 증명한다 — 이 자체 DOM 은 단말기에서 분명히 그려진다.
+ *   (Toss 문서의 "HTML/CSS 직접 작성 금지" 는 심사 정책이지 런타임 차단이 아니다.)
+ *   그러니 나가는 길은 이 화면에도 반드시 있어야 한다. 공식 템플릿이 되면 그쪽
+ *   버튼을 쓰고, 안 되면 이 버튼을 쓴다. 어느 쪽이든 길은 하나 이상 남는다.
+ */
+export function showIdle(opts?: { onAdmin?: () => void }) {
   currentTone = "idle";
   currentTitle = "결제 요청 대기 중";
   currentSubtitle = "학생 태블릿에서 결제할 항목을 선택하면 이 화면에 결제창이 열립니다.";
+  currentActions = opts?.onAdmin
+    ? [{ label: "관리자", kind: "secondary", onClick: opts.onAdmin }]
+    : [];
+  repaintLocked = false;
+  paint();
+}
+
+/**
+ * 자체 관리자 메뉴. 대기화면의 [관리자] 버튼에서만 들어온다.
+ *
+ * 학원 로비의 단말기는 학생도 만진다. 그래서 나가기를 대기화면에 바로 두지 않고
+ * 여기 한 단계 아래에 두었다 — 두 번 눌러야 하고, 그 사이에 경고 문구를 읽는다.
+ * [닫기] 를 크게 두는 이유도 같다. 잘못 들어왔을 때 되돌아가는 길이 가장 눈에
+ * 잘 띄어야 한다.
+ */
+export function showAdminMenu(opts: {
+  title: string;
+  onStatus: () => void;
+  onExit: () => void;
+  onClose: () => void;
+}) {
+  currentTone = "idle";
+  currentTitle = opts.title;
+  currentSubtitle =
+    "[첫화면으로]를 누르면 학생이 이 단말기로 결제할 수 없습니다.\n결제 취소·환불은 토스플레이스 판매자센터(PC)에서 하세요.";
+  currentActions = [
+    { label: "닫기", kind: "primary", onClick: opts.onClose },
+    { label: "단말기 상태", kind: "secondary", onClick: opts.onStatus },
+    { label: "첫화면으로", kind: "secondary", onClick: opts.onExit },
+  ];
+  repaintLocked = false;
   paint();
 }
 
@@ -156,22 +311,37 @@ export function showBusy(orderName: string, amount: number) {
   currentTone = "busy";
   currentTitle = `${amount.toLocaleString()}원`;
   currentSubtitle = `${orderName}\n카드를 넣거나 대주세요.`;
+  // 결제 중에는 버튼이 없어야 한다. 카드 승인 도중 [첫화면으로] 가 눌리면
+  // 승인은 났는데 화면만 나가 버리는 최악의 상태가 된다.
+  currentActions = [];
+  repaintLocked = false;
   paint();
 }
 
 /** 치명적 실패. 원장이 읽고 조치할 수 있는 문장으로 쓴다. */
-export function showFatal(title: string, detail: string) {
+export function showFatal(title: string, detail: string, opts?: { onAdmin?: () => void }) {
   currentTone = "error";
   currentTitle = title;
   currentSubtitle = detail;
+  // 실패 화면이야말로 나가는 길이 필요하다. 여기서 갇히면 단말기를 재부팅하는
+  // 것 말고 할 수 있는 게 없어진다.
+  currentActions = opts?.onAdmin
+    ? [{ label: "관리자", kind: "secondary", onClick: opts.onAdmin }]
+    : [];
+  repaintLocked = false;
   paint();
 }
 
 /** 로거가 호출한다. 최근 몇 줄만 화면 하단에 남긴다. */
 export function pushDiagLine(line: string) {
-  diagLines.push(line.length > 160 ? line.slice(0, 160) + "…" : line);
+  diagLines.push(
+    line.length > MAX_DIAG_LINE_CHARS ? line.slice(0, MAX_DIAG_LINE_CHARS) + "…" : line
+  );
   if (diagLines.length > MAX_DIAG_LINES) diagLines.splice(0, diagLines.length - MAX_DIAG_LINES);
   // 이미 화면이 그려져 있을 때만 다시 그린다.
+  // repaintLocked 인 동안은 건너뛴다 — 영수증 선택·페어링 입력이 살아 있는 중이라
+  // 여기서 다시 그리면 그 버튼과 입력값이 통째로 지워진다.
+  if (repaintLocked) return;
   if (typeof document !== "undefined" && document.getElementById(ROOT_ID)) paint();
 }
 
@@ -183,6 +353,8 @@ export function pushDiagLine(line: string) {
  */
 export function clearOwnScreen() {
   if (typeof document === "undefined") return;
+  repaintLocked = false;
+  currentActions = [];
   const el = document.getElementById(ROOT_ID);
   if (el) el.remove();
 }
@@ -202,6 +374,8 @@ export function clearOwnScreen() {
  */
 export function confirmTemplateRendered() {
   if (typeof document === "undefined") return;
+  repaintLocked = false;
+  currentActions = [];
   const el = document.getElementById(ROOT_ID);
   if (el) el.remove();
   document.getElementById("boot")?.remove();
@@ -276,10 +450,16 @@ export function showReceiptChoice(opts: ReceiptChoiceOptions): void {
   currentTone = "idle";
   currentTitle = "결제가 완료되었습니다";
   currentSubtitle = "영수증을 출력하시겠습니까?";
+  currentActions = [];
+  repaintLocked = false;
   paint();
 
   const el = root();
   if (!el) return;
+
+  // 아래 버튼들은 paint() 가 아니라 여기서 직접 덧붙인다. 그래서 이 화면이 사는
+  // 동안 다시 그리기를 잠근다 — 안 그러면 로그 한 줄에 버튼이 사라진다.
+  repaintLocked = true;
 
   // 내부 결정 guard. 세 진입점(출력/생략/타임아웃) 중 최초 하나만 실제 콜백을 호출한다.
   let decided = false;
@@ -297,6 +477,8 @@ export function showReceiptChoice(opts: ReceiptChoiceOptions): void {
     if (decided) return;
     decided = true;
     stopTimer();
+    // 결정이 끝났으니 화면을 다시 그려도 잃을 것이 없다. 잠금을 푼다.
+    repaintLocked = false;
     // 화면상 버튼도 즉시 잠가 double-click 을 차단
     printBtn.disabled = true;
     skipBtn.disabled = true;
@@ -387,6 +569,8 @@ export function showReceiptResult(kind: "ok" | "fail", message: string) {
   currentTone = kind === "ok" ? "idle" : "error";
   currentTitle = kind === "ok" ? "영수증 출력 완료" : "영수증 출력 실패";
   currentSubtitle = message;
+  currentActions = [];
+  repaintLocked = false;
   paint();
 }
 
@@ -395,10 +579,16 @@ export function showPairing(opts: PairingScreenOptions) {
   currentTone = "idle";
   currentTitle = opts.title;
   currentSubtitle = opts.subtitle;
+  currentActions = [];
+  repaintLocked = false;
   paint();
 
   const el = root();
   if (!el) return;
+
+  // 입력 중에 다시 그리면 원장이 치던 매장코드가 지워진다. 폴링 오류 로그가
+  // 1초마다 들어오는 상황에서는 아예 입력을 못 끝낸다. 이 화면이 사는 동안 잠근다.
+  repaintLocked = true;
 
   const form = document.createElement("form");
   form.setAttribute(

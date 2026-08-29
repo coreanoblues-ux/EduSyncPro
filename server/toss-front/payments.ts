@@ -150,7 +150,28 @@ router.post(
   async (req: Request, res: Response) => {
     const parsed = confirmBodySchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: parsed.error.issues[0]?.message });
+      // 어느 필드가 문제인지 반드시 함께 돌려준다.
+      //
+      // ── 왜 (2026-08-29, 단말기 로그) ──
+      //   단말기 화면에 이렇게 찍혔다:
+      //     ApiError: API /api/toss-front/payments/confirm 400: {"error":"Required"}
+      //   "Required" 는 zod 가 값이 undefined 일 때 쓰는 기본 문구다. 즉 어떤 필드가
+      //   빠졌다는 것까지는 알겠는데 그게 amount 인지 paymentMethod 인지 approvedTimestamp
+      //   인지는 알 수가 없다. 이 오류가 난 자리가 하필 "카드 승인은 났는데 서버 원장에
+      //   못 올린 결제를 복구하는" 경로라 그냥 넘길 수 없다 — 돈은 빠져나갔는데 장부에
+      //   없는 상태가 계속된다는 뜻이기 때문이다.
+      //
+      //   필드 이름은 우리 스키마의 키일 뿐 비밀이 아니다. 값은 절대 싣지 않는다.
+      const issue = parsed.error.issues[0];
+      const field = issue?.path?.join(".") || "(unknown)";
+      const detail = `${field}: ${issue?.message ?? "invalid"}`;
+      console.warn(
+        "⚠️ payment confirm 400:",
+        detail,
+        "· 받은 필드=",
+        Object.keys(req.body ?? {}).join(",")
+      );
+      return res.status(400).json({ error: detail, field });
     }
     const body = parsed.data;
     const tenantId = req.device!.tenantId;

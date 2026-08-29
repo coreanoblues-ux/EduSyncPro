@@ -56,11 +56,13 @@ import {
 } from "./sdk";
 import {
   showIdle,
+  showAdminMenu,
   showBusy,
   showFatal,
   pushDiagLine,
   clearOwnScreen,
   confirmTemplateRendered,
+  setScreenVersion,
   showPairing,
   showReceiptChoice,
   showReceiptResult,
@@ -140,8 +142,15 @@ function idleParams(): IdlePageParams {
  * 이 화면은 학원 로비에 서 있고 학생도 만질 수 있는데, 이제 나가기까지
  * 두 번을 눌러야 하고 그 사이에 경고 문구를 읽게 된다.
  *
- * 확인 화면을 못 그리면 아무 동작도 하지 않는다. 되묻지 못한 채로 나가 버리는
- * 것보다, 안 나가고 이유를 알려 주는 편이 낫다.
+ * ── 0.3.11 에서 바뀐 것 ──
+ *   0.3.10 은 이 메뉴를 공식 템플릿으로만 그렸고, 실패하면 토스트 한 줄을
+ *   띄우고 끝냈다. 그런데 이 단말기의 renderIdlePage 는 React 오류를 던진다.
+ *   즉 원장 앞의 실물 단말기에서는 관리자 메뉴가 아예 열리지 않았다.
+ *   "안 나가고 이유를 알려 주는 편이 낫다" 고 적어 뒀지만, 나갈 길이 하나도
+ *   없는 상태에서 그 말은 그냥 갇힌다는 뜻이다.
+ *
+ *   이제 템플릿이 실패하면 자체 DOM 메뉴를 그린다. 자체 DOM 이 단말기에서
+ *   렌더된다는 건 원장이 보낸 사진으로 확인됐다.
  */
 function openAdminMenu() {
   log.info("관리자 메뉴", "대기화면에서 관리자 버튼을 눌렀습니다.");
@@ -157,7 +166,18 @@ function openAdminMenu() {
     secondaryButton: { text: "첫화면으로", onClick: () => exitToTossHome() },
   };
 
-  renderIdle(sdk, () => notify("이 단말기에서는 관리자 메뉴를 표시할 수 없습니다."), params);
+  const rendered = renderIdle(
+    sdk,
+    () =>
+      showAdminMenu({
+        title: merchantName || "관리자",
+        onStatus: () => showTerminalStatus(),
+        onExit: () => exitToTossHome(),
+        onClose: () => goIdle(),
+      }),
+    params
+  );
+  if (rendered) confirmTemplateRendered();
 }
 
 /**
@@ -234,7 +254,7 @@ function showTerminalStatus() {
  * 부팅 문구가 둘 다 남는다. 보기 좋지는 않아도 단말기 앞에서 원인을 읽을 수 있다.
  */
 function goIdle() {
-  const rendered = renderIdle(sdk, () => showIdle(), idleParams());
+  const rendered = renderIdle(sdk, () => showIdle({ onAdmin: openAdminMenu }), idleParams());
   if (rendered) confirmTemplateRendered();
 }
 
@@ -243,12 +263,15 @@ function goIdle() {
 export async function bootstrap() {
   configureLogger({ serverUrl: SERVER_URL, onScreen: (line) => pushDiagLine(line) });
   installGlobalErrorHandlers();
+  // 화면이 처음 그려지기 전에 버전을 알려 준다. 이 값이 화면 첫 줄에 찍히므로,
+  // 원장이 보내는 단말기 사진 한 장으로 어느 ZIP 이 돌고 있는지 판별된다.
+  setScreenVersion(PLUGIN_VERSION);
 
   log.info("plugin entry started", `version=${PLUGIN_VERSION} server=${SERVER_URL}`);
 
   // 1) SDK 확보. 못 찾으면 결제는 불가능하지만, 화면과 로그는 계속 살려 둔다.
   //    (여기서 return 해 버리면 다시 "아무 단서 없는 화면"이 된다)
-  showIdle();
+  showIdle({ onAdmin: openAdminMenu });
   sdk = await waitForSdk(10_000);
   if (!sdk) {
     showFatal(
@@ -284,7 +307,7 @@ export async function bootstrap() {
       // 다시 받는 것이고, 다른 하나는 개발자센터 허용 도메인을 고치는 것이다. 실제로
       // 이 문장 때문에 원인을 찾는 데 하루가 걸렸다. 진단은 단말기 앞에 선 사람이
       // 읽을 수 있어야 한다.
-      showFatal("단말기 등록 실패", humanErr(err));
+      showFatal("단말기 등록 실패", humanErr(err), { onAdmin: openAdminMenu });
       await log.flushNow();
       return;
     }
@@ -325,7 +348,8 @@ export async function bootstrap() {
   } catch (err) {
     showFatal(
       "서버 연결 실패",
-      "EduSyncPro 서버에 연결하지 못했습니다. 단말기 인터넷 연결과 등록 코드를 확인해 주세요."
+      "EduSyncPro 서버에 연결하지 못했습니다. 단말기 인터넷 연결과 등록 코드를 확인해 주세요.",
+      { onAdmin: openAdminMenu }
     );
     log.error("backend connection 실패", err, "세션 발급 단계에서 중단되었습니다.");
     await log.flushNow();
@@ -428,7 +452,8 @@ async function pollOnce() {
     if (consecutivePollErrors === 5) {
       showFatal(
         "서버 연결 끊김",
-        "EduSyncPro 서버와 통신하지 못하고 있습니다. 인터넷 연결을 확인해 주세요. 연결되면 자동으로 복구됩니다."
+        "EduSyncPro 서버와 통신하지 못하고 있습니다. 인터넷 연결을 확인해 주세요. 연결되면 자동으로 복구됩니다.",
+        { onAdmin: openAdminMenu }
       );
     }
   } finally {
@@ -801,14 +826,65 @@ function humanErr(err: unknown): string {
   return describeErr(err);
 }
 
+/**
+ * SDK 승인 응답을 서버 원장 형식으로 옮긴다.
+ *
+ * ── 0.3.11 에서 손본 이유 (원장 단말기 로그) ──
+ *   단말기에 이 줄이 찍혀 있었다:
+ *     backup confirm 실패 … ApiError: API /api/toss-front/payments/confirm 400: {"error":"Required"}
+ *
+ *   "Required" 는 zod 가 값이 undefined 일 때 쓰는 기본 문구다. 그러니까 SDK 가
+ *   준 응답에 서버가 요구하는 필드 하나가 통째로 없었다는 뜻이다. 그런데 어느
+ *   필드인지는 응답에 안 담겨 있었다. 하필 이 실패가 난 자리는 backup 복구 경로 —
+ *   "카드 승인은 이미 났는데 서버 원장에 못 올린 결제" 를 되살리는 길이다.
+ *   여기서 막히면 돈은 빠져나갔는데 장부에는 없는 상태가 그대로 굳는다.
+ *
+ *   requestPayment 직후의 응답과 getPayment(backup) 로 다시 읽은 응답이 같은
+ *   모양이라는 보장은 어디에도 없다. 그래서 보내기 전에 무엇이 비어 있는지
+ *   먼저 로그로 남긴다. 서버도 이제 어느 필드인지 이름을 돌려준다.
+ *
+ * 원칙: amount 는 절대 추측하지 않는다.
+ *   나머지는 라벨이라 기본값을 채워도 장부의 숫자가 틀리지 않지만, 금액을
+ *   추측해서 채우면 틀린 금액이 원장에 박힌다. 없으면 올리지 않고 실패시킨다 —
+ *   backup 은 그대로 남으므로 다음 부팅에서 다시 시도할 수 있고, 그동안 우리는
+ *   "장부에 없다" 는 사실을 알고 있는 상태가 된다. 틀린 숫자가 조용히 들어가
+ *   맞는 것처럼 보이는 쪽이 훨씬 위험하다.
+ */
 async function confirmPaymentFromSdk(r: PaymentResponseSuccess) {
+  const missing: string[] = [];
+  if (typeof r.amount !== "number") missing.push("amount");
+  if (!r.paymentMethod) missing.push("paymentMethod");
+  if (!r.approvedAt) missing.push("approvedAt");
+  if (!r.orderId) missing.push("orderId");
+  if (!r.approvalNumber && !r.card?.approveNo) missing.push("approvalNumber");
+  if (missing.length > 0) {
+    // 값은 찍지 않는다 (카드번호가 섞일 수 있다). 어떤 키가 있었는지 이름만 남긴다.
+    log.warn(
+      "승인 응답에 빠진 필드",
+      `없음=[${missing.join(", ")}] · 응답 키=[${Object.keys(r ?? {}).join(",")}]`
+    );
+  }
+
+  if (typeof r.amount !== "number" || !Number.isFinite(r.amount)) {
+    throw new Error(
+      "승인 응답에 결제 금액(amount)이 없습니다. 금액을 추측해 원장에 기록하지 않습니다."
+    );
+  }
+
   await confirmPayment({
     paymentKey: r.paymentKey,
-    orderId: r.orderId ?? "",
+    // 서버는 min(1) 을 요구한다. 빈 문자열이면 "Required" 가 아니라 길이 오류가
+    // 나서 원인이 또 흐려지므로, 없을 때는 paymentKey 를 주문번호로 대신 쓴다.
+    // paymentKey 는 우리가 intent 를 만들 때 발급한 값이라 대사에 문제가 없다.
+    orderId: r.orderId || r.paymentKey,
     amount: r.amount,
-    paymentMethod: r.paymentMethod,
-    approvalNumber: r.approvalNumber ?? r.card?.approveNo ?? "",
-    approvedTimestamp: r.approvedAt,
+    // 이 단말기는 requestPayment 에서 CASH 를 제외하고 카드만 받는다.
+    paymentMethod: r.paymentMethod || "CARD",
+    approvalNumber: r.approvalNumber ?? r.card?.approveNo ?? "복구",
+    // 승인 시각을 모를 때 지금 시각을 쓴다. 복구 경로에서만 발생하며 몇 분
+    // 어긋날 수 있다. 그래도 원장에 아예 안 들어가는 것보다 낫고, 위 경고
+    // 로그가 "이 건은 시각이 추정치" 라는 사실을 남긴다.
+    approvedTimestamp: r.approvedAt || new Date().toISOString(),
     van: r.van ?? null,
     tid: r.tid ?? null,
     vanTransactionKey: r.vanTransactionKey ?? null,
@@ -833,7 +909,11 @@ if (typeof window !== "undefined") {
     bootstrap().catch((err) => {
       configureLogger({ serverUrl: SERVER_URL, onScreen: (line) => pushDiagLine(line) });
       log.error("bootstrap 실패", err, "플러그인을 시작하지 못했습니다.");
-      showFatal("플러그인 시작 실패", "관리자에게 문의해 주세요. 자세한 내용은 아래 로그를 확인하세요.");
+      showFatal(
+        "플러그인 시작 실패",
+        "관리자에게 문의해 주세요. 자세한 내용은 아래 로그를 확인하세요.",
+        { onAdmin: openAdminMenu }
+      );
       void log.flushNow();
     });
   };

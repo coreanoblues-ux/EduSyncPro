@@ -25,7 +25,18 @@ interface QueuedEntry {
   at: string;
 }
 
-const PLUGIN_VERSION = "0.3.2";
+/**
+ * 버전은 vite 가 package.json 에서 주입한다 (vite.config.ts 의 define).
+ *
+ * 0.3.10 까지 이 값은 문자열 "0.3.2" 로 박혀 있었다. 그 사이 여덟 번을 배포했으니
+ * 서버 로그의 pluginVersion 은 여덟 번 내내 거짓말을 하고 있었다. 원장 단말기에
+ * 어떤 ZIP 이 올라가 있는지 서버에서 확인할 수 있는 유일한 필드가 이것인데,
+ * 하필 그 필드가 손으로 복사된 값이었다. vite.config.ts 의 주석이 "버전은
+ * package.json 하나만 본다" 라고 적어 둔 그 원칙을 여기만 지키지 않았다.
+ */
+declare const __PLUGIN_VERSION__: string;
+const PLUGIN_VERSION =
+  typeof __PLUGIN_VERSION__ === "string" ? __PLUGIN_VERSION__ : "unknown";
 const FLUSH_INTERVAL_MS = 700;
 const MAX_QUEUE = 200;
 
@@ -110,8 +121,19 @@ export function describeError(err: unknown): string {
 export const log = {
   info: (event: string, message = "") => enqueue("info", event, message),
   warn: (event: string, message = "") => enqueue("warn", event, message),
+  /**
+   * 오류를 앞에, 안내 문구를 뒤에 놓는다.
+   *
+   * ── 왜 순서를 뒤집었나 (2026-08-29, 원장 사진) ──
+   *   0.3.10 까지는 `context :: describeError(err)` 였다. 그래서 단말기 화면에
+   *   이렇게 찍혔다:
+   *     "renderIdlePage 실패 — 인자 없이 기본 대기화면으로 다시 시도합니다. :: Error: Minified R…"
+   *   앞의 안내 문구는 우리가 이미 아는 내용이고, 정작 모르는 것은 뒤에 잘린
+   *   React 오류 번호였다. 길이 제한이 있는 곳(화면 400자·서버 1000자)에서
+   *   무엇이 먼저 잘릴지는 순서가 정한다. 모르는 것을 앞에 둔다.
+   */
   error: (event: string, err: unknown, context = "") =>
-    enqueue("error", event, `${context ? context + " :: " : ""}${describeError(err)}`),
+    enqueue("error", event, `${describeError(err)}${context ? " :: " + context : ""}`),
   /** 프로세스가 끝나기 전에 남은 로그를 밀어낸다. */
   flushNow: () => flush(),
 };

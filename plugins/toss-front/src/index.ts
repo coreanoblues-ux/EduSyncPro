@@ -527,9 +527,19 @@ async function runPairingFlow(): Promise<string> {
   };
 
   // 공식 SDK 의 renderOnboardingPage 가 있으면 그걸 쓰고, 없으면 자체 화면으로 폴백.
+  //
+  // ── 0.3.5 에서 바뀐 것 ──
+  //   0.3.4 까지는 renderOnboardingPage 가 "존재하지만 던지는" 경우를 폴백으로 치지
+  //   않고 그대로 실패시켰다. 실제로 React #299 로 이 함수가 터졌고, 그 순간 단말기는
+  //   등록할 방법이 아예 없는 상태가 됐다. SDK 화면이 안 되면 우리 화면으로라도
+  //   등록은 되어야 한다. 화면 하나 때문에 단말기를 못 쓰는 건 과한 대가다.
   const t = sdk?.template as any;
   if (t && typeof t.renderOnboardingPage === "function") {
-    return await new Promise<string>((resolve, reject) => {
+    try {
+      // 우리 대기화면은 position:fixed 전체화면이라 그대로 두면 SDK 화면을 덮는다.
+      // 넘겨주기 전에 먼저 치운다.
+      clearOwnScreen();
+      return await new Promise<string>((resolve, reject) => {
       try {
         t.renderOnboardingPage({
           title: "EduSyncPro 단말기 등록",
@@ -562,7 +572,16 @@ async function runPairingFlow(): Promise<string> {
       } catch (err) {
         reject(err);
       }
-    });
+      });
+    } catch (err) {
+      // 취소는 사용자의 의사이므로 폴백하지 않고 그대로 올린다.
+      if (err instanceof Error && /취소/.test(err.message)) throw err;
+      log.warn(
+        "SDK 온보딩 화면 실패 — 자체 화면으로 대체합니다",
+        describeErr(err)
+      );
+      clearOwnScreen();
+    }
   }
 
   // Fallback: 자체 온보딩 폼.

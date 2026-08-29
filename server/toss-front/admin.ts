@@ -26,11 +26,13 @@ import {
   enrollments,
   classes,
   payments,
+  tossPaymentTransactions,
   type PaymentDispatchStatus,
 } from "@shared/schema";
 import { authGuard, tenantGuard, roleGuard } from "../middleware/auth";
 import { publish } from "./dispatchBus";
 import { classifyRefund, refundableAmount } from "./refund";
+import { classifyReconcile } from "./reconcile";
 
 const router = Router();
 
@@ -136,6 +138,18 @@ router.get(
         cancelledAt: paymentIntents.cancelledAt,
         failureReason: paymentIntents.failureReason,
         createdAt: paymentIntents.createdAt,
+        // 이 건이 장부(payments)에 수입으로 잡혀 있는가.
+        //
+        // 상태만 봐서는 알 수 없다는 게 핵심이다. TIMEOUT 인데 실제로는 카드가
+        // 승인된 건이 존재하고(2026-08-29 현장), 그 건은 화면상 실패와 구분되지
+        // 않는다. 이 플래그가 있어야 원장이 "실패로 보이는데 장부에도 없네 →
+        // 판매자센터에서 승인내역 확인" 이라는 다음 행동으로 갈 수 있다.
+        ledgered: sql<boolean>`exists (
+          SELECT 1 FROM payments p
+          WHERE p.external_payment_key = ${paymentIntents.paymentKey}
+            AND p.tenant_id = ${tenantId}
+            AND p.amount > 0
+        )`,
       })
       .from(paymentIntents)
       .leftJoin(students, eq(students.id, paymentIntents.studentId))
@@ -360,6 +374,161 @@ router.post(
       }
       console.error("refund error:", err);
       return res.status(500).json({ error: "환불 처리 중 오류가 발생했습니다." });
+    }
+  }
+);
+
+// ─── 수기 대사 (원장 전용) ─────────────────────────────────────────────
+/**
+ * "카드는 승인됐는데 장부에 없는 건"을 되찾는다. 판정 근거는 reconcile.ts 참고.
+ *
+ * 금액을 사람이 정하지 못하게 하는 것이 이 API 의 핵심 안전장치다. 항상
+ * intent.amount 를 쓴다. 승인번호는 필수 — 판매자센터에서 실물을 보고 옮겨 적는
+ * 행위를 강제해서 "아마 됐겠지" 로 누르는 것을 막는다.
+ */
+const reconcileBodySchema = z.object({
+  paymentKey: z.string().min(1),
+  approvalNumber: z
+    .string()
+    .trim()
+    .min(1, "승인번호를 입력하세요. 토스 판매자센터에서 확인할 수 있습니다.")
+    .max(64),
+  /** 실제 승인 시각. 모르면 생략 가능하나, 넣으면 장부 날짜가 정확해진다. */
+  approvedAt: z.string().datetime().optional(),
+  note: z.string().trim().max(200).optional(),
+});
+
+/** 이 paymentKey 로 이미 수입(양수) 행이 장부에 있는가. */
+async function hasPositiveLedgerRow(tx: any, tenantId: string, paymentKey: string): Promise<boolean> {
+  const [row] = await tx
+    .select({ n: sql<number>`count(*)::int` })
+    .from(payments)
+    .where(
+      and(
+        eq(payments.tenantId, tenantId),
+        eq(payments.externalPaymentKey, paymentKey),
+        sql`${payments.amount} > 0`
+      )
+    );
+  return (row?.n ?? 0) > 0;
+}
+
+router.post(
+  "/admin/reconcile",
+  authGuard,
+  tenantGuard,
+  roleGuard("owner", "superadmin"),
+  async (req: Request, res: Response) => {
+    const parsed = reconcileBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message });
+    }
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.id;
+    if (!tenantId) return res.status(403).json({ error: "테넌트가 없는 계정입니다." });
+
+    const { paymentKey, approvalNumber, approvedAt, note } = parsed.data;
+
+    class ReconcileReject extends Error {
+      constructor(public httpStatus: number, message: string) {
+        super(message);
+      }
+    }
+
+    try {
+      const result = await db.transaction(async (tx) => {
+        // 환불과 같은 이유로 직렬화한다. 두 번 눌린 요청이 같은 "장부에 없음"을
+        // 읽고 둘 다 통과하면 수입이 두 번 잡힌다.
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${advisoryKey(paymentKey)}, 0)`);
+
+        const [intent] = await tx
+          .select({
+            id: paymentIntents.id,
+            status: paymentIntents.status,
+            amount: paymentIntents.amount,
+            enrollmentId: paymentIntents.enrollmentId,
+            paymentMonth: paymentIntents.paymentMonth,
+          })
+          .from(paymentIntents)
+          .where(
+            and(eq(paymentIntents.paymentKey, paymentKey), eq(paymentIntents.tenantId, tenantId))
+          );
+        if (!intent) throw new ReconcileReject(404, "결제 건을 찾을 수 없습니다.");
+
+        const alreadyLedgered = await hasPositiveLedgerRow(tx, tenantId, paymentKey);
+        const decision = classifyReconcile({ intentStatus: intent.status, alreadyLedgered });
+        if (decision.kind === "reject") throw new ReconcileReject(409, decision.reason);
+        if (decision.kind === "noop") {
+          return { inserted: false, amount: intent.amount, message: decision.reason };
+        }
+
+        const paidDate = approvedAt ? new Date(approvedAt) : new Date();
+
+        // 승인 원본 테이블에도 흔적을 남긴다. intentId 가 unique 라 여기서
+        // 이중 삽입이 한 번 더 걸러진다 (advisory lock 이 어떤 이유로 안 먹어도).
+        const [txRow] = await tx
+          .insert(tossPaymentTransactions)
+          .values({
+            tenantId,
+            paymentKey,
+            intentId: intent.id,
+            paymentMethod: "CARD",
+            approvalNumber,
+            approvedTimestamp: String(paidDate.getTime()),
+            rawResponseJson: JSON.stringify({
+              source: "manual-reconcile",
+              by: userId,
+              at: new Date().toISOString(),
+              note: note ?? null,
+            }),
+          })
+          .onConflictDoNothing({ target: tossPaymentTransactions.intentId })
+          .returning();
+
+        await tx.insert(payments).values({
+          tenantId,
+          enrollmentId: intent.enrollmentId,
+          // ⚠️ 금액은 언제나 intent.amount. 사람이 못 고친다.
+          amount: intent.amount,
+          type: "원비",
+          method: "카드",
+          paymentMonth: intent.paymentMonth,
+          paidDate,
+          createdBy: userId,
+          notes:
+            `Toss Front 수기 대사 · 승인번호 ${approvalNumber}` +
+            ` · 단말기 승인은 됐으나 서버 기록이 누락되어 원장이 확인 후 반영` +
+            (note ? ` · ${note}` : ""),
+          externalProvider: "TOSSPLACE",
+          externalPaymentKey: paymentKey,
+          externalTransactionId: txRow?.id ?? null,
+          paidVia: "TOSS_FRONT",
+        });
+
+        await tx
+          .update(paymentIntents)
+          .set({
+            status: "APPROVED",
+            approvedAt: paidDate,
+            failureReason: `manually reconciled by ${userId} (approval ${approvalNumber})`,
+          })
+          .where(eq(paymentIntents.id, intent.id));
+
+        return { inserted: true, amount: intent.amount, message: "장부에 반영했습니다." };
+      });
+
+      if (result.inserted) {
+        console.log(
+          `🧾 수기 대사: paymentKey=${paymentKey} ${result.amount.toLocaleString()}원을 장부에 반영 (by ${userId})`
+        );
+      }
+      return res.json({ ok: true, ...result });
+    } catch (err: any) {
+      if (err instanceof ReconcileReject) {
+        return res.status(err.httpStatus).json({ error: err.message });
+      }
+      console.error("reconcile error:", err);
+      return res.status(500).json({ error: "대사 처리 중 오류가 발생했습니다." });
     }
   }
 );

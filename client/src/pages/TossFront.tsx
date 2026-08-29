@@ -68,6 +68,11 @@ interface Intent {
   cancelledAt: string | null;
   failureReason: string | null;
   createdAt: string;
+  /**
+   * 장부(payments)에 수입으로 잡혀 있는가.
+   * 상태와 별개다 — TIMEOUT 인데 실제로는 카드가 승인된 건이 존재한다.
+   */
+  ledgered: boolean;
 }
 
 // 단말기 플러그인이 서버로 밀어 올린 라이프사이클 로그.
@@ -211,6 +216,42 @@ export default function TossFront() {
     setRefundTarget(r);
     setRefundAmount(String(r.refundable));
     setRefundReason("");
+  }
+
+  // ─── 수기 대사 ───────────────────────────────────────────────────────
+  const [reconcileTarget, setReconcileTarget] = useState<Intent | null>(null);
+  const [approvalNumber, setApprovalNumber] = useState("");
+  const [reconcileNote, setReconcileNote] = useState("");
+
+  const reconcileMutation = useMutation({
+    mutationFn: async (input: { paymentKey: string; approvalNumber: string; note: string }) =>
+      (await apiRequest("POST", "/api/toss-front/admin/reconcile", input)).json(),
+    onSuccess: (data: any) => {
+      setReconcileTarget(null);
+      setApprovalNumber("");
+      setReconcileNote("");
+      qc.invalidateQueries({ queryKey: ["/api/toss-front/admin/intents"] });
+      qc.invalidateQueries({ queryKey: ["/api/toss-front/admin/refundable"] });
+      qc.invalidateQueries({ queryKey: ["/api/toss-front/admin/summary"] });
+      qc.invalidateQueries({ queryKey: ["/api/payments"] });
+      toast({
+        title: data.inserted
+          ? `${Number(data.amount).toLocaleString()}원 장부 반영 완료`
+          : "이미 반영된 건입니다",
+        description: data.message,
+      });
+    },
+    onError: (e: Error) =>
+      toast({ title: "장부 반영 실패", description: e.message, variant: "destructive" }),
+  });
+
+  /**
+   * 이 건에 "장부 반영" 버튼을 보여야 하나.
+   * 진행 중(CREATED/PROCESSING)은 제외한다 — confirm 이 아직 올 수 있어서
+   * 사람이 먼저 넣으면 이중 입력이 된다. 서버도 같은 이유로 거절한다.
+   */
+  function needsReconcile(it: Intent) {
+    return !it.ledgered && it.status !== "CREATED" && it.status !== "PROCESSING";
   }
 
   const refundAmountNum = Number(refundAmount);
@@ -561,6 +602,7 @@ export default function TossFront() {
                     <th>월</th>
                     <th className="text-right">금액</th>
                     <th>상태</th>
+                    <th>장부</th>
                     <th>비고</th>
                   </tr>
                 </thead>
@@ -575,6 +617,33 @@ export default function TossFront() {
                       <td>{it.paymentMonth}</td>
                       <td className="text-right">{it.amount.toLocaleString()}</td>
                       <td>{statusBadge(it.status)}</td>
+                      {/*
+                        상태와 장부를 나란히 두는 것이 이 표의 핵심이다.
+                        TIMEOUT 인데 실제로는 카드가 승인된 건이 있고, 화면상
+                        진짜 실패와 구분되지 않는다. 두 칸을 같이 보여 주면
+                        "실패로 보이는데 장부에도 없네 → 판매자센터 확인" 이라는
+                        다음 행동이 원장에게 보인다.
+                      */}
+                      <td>
+                        {it.ledgered ? (
+                          <Badge className="bg-emerald-100 text-emerald-800">반영됨</Badge>
+                        ) : needsReconcile(it) ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setReconcileTarget(it);
+                              setApprovalNumber("");
+                              setReconcileNote("");
+                            }}
+                            data-testid={`reconcile-button-${it.id}`}
+                          >
+                            장부 반영
+                          </Button>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </td>
                       <td className="text-xs text-muted-foreground">
                         {it.failureReason ?? ""}
                       </td>
@@ -586,6 +655,93 @@ export default function TossFront() {
           )}
         </CardContent>
       </Card>
+
+      {/* 수기 대사 다이얼로그 */}
+      <Dialog open={!!reconcileTarget} onOpenChange={(o) => !o && setReconcileTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>장부에 반영 (수기 대사)</DialogTitle>
+          </DialogHeader>
+          {reconcileTarget && (
+            <div className="space-y-4">
+              <div className="rounded-md bg-slate-50 p-3 text-sm">
+                <div>
+                  <b>{reconcileTarget.studentName ?? "—"}</b> · {reconcileTarget.className ?? "—"} ·{" "}
+                  {reconcileTarget.paymentMonth}
+                </div>
+                <div className="mt-1 text-muted-foreground">
+                  {new Date(reconcileTarget.createdAt).toLocaleString("ko-KR")} · 상태{" "}
+                  {reconcileTarget.status}
+                </div>
+                <div className="mt-2 text-lg font-semibold">
+                  {reconcileTarget.amount.toLocaleString()}원
+                </div>
+              </div>
+
+              {/*
+                금액 입력칸이 없는 것은 실수가 아니라 설계다.
+                수기 대사는 "장부에 없는 수입을 사람이 만드는" 동작이라 숫자를
+                지어낼 수 있으면 안 된다. 항상 원래 결제요청 금액으로 들어간다.
+              */}
+              <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900">
+                <div className="font-semibold">
+                  토스 판매자센터에서 실제 승인내역을 먼저 확인하세요.
+                </div>
+                <div className="mt-1">
+                  이 건은 시스템에 <b>{reconcileTarget.status}</b> 로 남아 있습니다. 카드가 실제로
+                  승인된 것이 확인된 경우에만 반영하세요. 실패한 결제를 반영하면 학생이 내지 않은
+                  돈이 낸 것으로 기록됩니다.
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium">승인번호 (필수)</label>
+                <Input
+                  value={approvalNumber}
+                  onChange={(e) => setApprovalNumber(e.target.value)}
+                  placeholder="판매자센터의 승인번호를 그대로 입력"
+                  maxLength={64}
+                  data-testid="reconcile-approval-input"
+                />
+                <div className="mt-1 text-xs text-muted-foreground">
+                  실물 승인내역을 보고 옮겨 적도록 필수로 두었습니다. 확인 없이 누르는 것을
+                  막기 위한 장치입니다.
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium">메모 (선택)</label>
+                <Input
+                  value={reconcileNote}
+                  onChange={(e) => setReconcileNote(e.target.value)}
+                  placeholder="예: 단말기 재시작으로 confirm 누락"
+                  maxLength={200}
+                  data-testid="reconcile-note-input"
+                />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReconcileTarget(null)}>
+              닫기
+            </Button>
+            <Button
+              disabled={!approvalNumber.trim() || reconcileMutation.isPending}
+              onClick={() =>
+                reconcileTarget &&
+                reconcileMutation.mutate({
+                  paymentKey: reconcileTarget.paymentKey,
+                  approvalNumber: approvalNumber.trim(),
+                  note: reconcileNote.trim(),
+                })
+              }
+              data-testid="reconcile-submit"
+            >
+              {reconcileMutation.isPending ? "반영 중…" : "장부에 반영"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* 환불 */}
       <Card>

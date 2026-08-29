@@ -5,6 +5,7 @@ import express, { type Request, Response, NextFunction } from "express";
 // 이 import 는 그보다 위에 있어야 async 오류 보호가 적용된다. 아래 ./routes 와
 // 순서를 바꾸면 보호가 조용히 무력화되고, 라우트 하나의 예외가 서버 전체를 죽인다.
 import "./lib/asyncErrors";
+import { pluginCors } from "./lib/pluginCors";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { startGradePromotionScheduler } from "./lib/gradePromotion";
@@ -33,30 +34,13 @@ const app = express();
 app.set("trust proxy", 1);
 
 // ─── CORS for Toss Front plugin ────────────────────────────────────────────
-// Toss 공식 troubleshooting 문서에 따르면 front plugin 은 실행 시점에
-// https://<appName>.plugin.tossplace.com  (운영)
-// https://<appName>.plugin-dev.tossplace.com  (테스트)
-// origin 을 갖는다. 이 origin 에서 우리 Railway API 로 fetch 할 때 브라우저 CORS 가
-// 걸리므로 정확히 이 두 패턴만 허용한다. 태블릿 /student-kiosk 는 우리 도메인에서
-// 서빙되므로 same-origin 이라 CORS 미들웨어와 무관.
+// 단말기 경로(/api/toss-front/*, /admin 제외)는 origin 을 가리지 않고 허용하고,
+// 그 밖에는 https://<appName>.plugin(-dev).tossplace.com 만 허용한다.
+// 태블릿 /student-kiosk 는 우리 도메인에서 서빙되므로 same-origin 이라 무관.
 //
-// wildcard(*) 로 열지 않는 이유: 결제 승인 상관관계가 걸린 엔드포인트라 정확한 origin 만
-// 허용해 소셜엔지니어링·크로스사이트 오용 여지를 좁힌다.
-const TOSS_PLUGIN_ORIGIN = /^https:\/\/[a-z0-9-]+\.plugin(?:-dev)?\.tossplace\.com$/;
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (typeof origin === "string" && TOSS_PLUGIN_ORIGIN.test(origin)) {
-    res.header("Access-Control-Allow-Origin", origin);
-    res.header("Vary", "Origin");
-    res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-    res.header("Access-Control-Max-Age", "600");
-    if (req.method === "OPTIONS") {
-      return res.status(204).end();
-    }
-  }
-  next();
-});
+// 규칙과 "왜 * 가 여기서는 안전한가"는 lib/pluginCors.ts 에 적어 뒀다.
+// 테스트: npm run test:cors
+app.use(pluginCors);
 
 // Toss 웹훅은 HMAC 서명 검증을 위해 원문 body가 필요하다. JSON.stringify로 재직렬화하면
 // Toss가 만든 원문과 공백·키 순서가 달라져 서명이 안 맞는다. 그래서 verify 콜백에서

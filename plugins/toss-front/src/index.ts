@@ -64,6 +64,13 @@ import {
   showReceiptResult,
 } from "./screen";
 
+// ─── 버전 ──────────────────────────────────────────────────────────────
+// vite.config.ts 가 package.json 의 version 을 여기에 주입한다 (define).
+// 단말기 화면 첫 줄에 찍히므로, 새 ZIP 이 실제로 반영됐는지 이 값으로 확인한다.
+declare const __PLUGIN_VERSION__: string;
+const PLUGIN_VERSION =
+  typeof __PLUGIN_VERSION__ === "string" ? __PLUGIN_VERSION__ : "unknown";
+
 // ─── 상태 ──────────────────────────────────────────────────────────────
 
 const POLL_INTERVAL_MS = 1000;
@@ -89,7 +96,7 @@ export async function bootstrap() {
   configureLogger({ serverUrl: SERVER_URL, onScreen: (line) => pushDiagLine(line) });
   installGlobalErrorHandlers();
 
-  log.info("plugin entry started", `version=0.3.3 server=${SERVER_URL}`);
+  log.info("plugin entry started", `version=${PLUGIN_VERSION} server=${SERVER_URL}`);
 
   // 1) SDK 확보. 못 찾으면 결제는 불가능하지만, 화면과 로그는 계속 살려 둔다.
   //    (여기서 return 해 버리면 다시 "아무 단서 없는 화면"이 된다)
@@ -122,10 +129,14 @@ export async function bootstrap() {
       key = await runPairingFlow();
     } catch (err) {
       log.error("페어링 실패", err, "onboarding 을 완료하지 못했습니다.");
-      showFatal(
-        "단말기 등록 실패",
-        "등록 코드가 잘못됐거나 서버에 연결하지 못했습니다. 원장 화면에서 코드를 다시 확인해 주세요."
-      );
+      // 원인을 그대로 화면에 띄운다.
+      //
+      // 0.3.3 은 여기서 "코드가 잘못됐거나 서버에 연결하지 못했습니다" 라는 한 문장만
+      // 보여 줬다. 그런데 그 둘은 현장에서 해야 할 일이 완전히 다르다 — 하나는 코드를
+      // 다시 받는 것이고, 다른 하나는 개발자센터 허용 도메인을 고치는 것이다. 실제로
+      // 이 문장 때문에 원인을 찾는 데 하루가 걸렸다. 진단은 단말기 앞에 선 사람이
+      // 읽을 수 있어야 한다.
+      showFatal("단말기 등록 실패", humanErr(err));
       await log.flushNow();
       return;
     }
@@ -600,6 +611,15 @@ async function runPairingFlow(): Promise<string> {
 function describeErr(err: unknown): string {
   if (err instanceof Error) return `${err.name}: ${err.message}`;
   try { return String(err); } catch { return "알 수 없는 오류"; }
+}
+
+/**
+ * 단말기 화면에 띄울 문장. describeErr 과 달리 "ApiError:" 같은 클래스 이름을 뗀다.
+ * 화면 앞에 선 사람은 원장이나 강사지 개발자가 아니다. 진단 문자열은 로그가 맡는다.
+ */
+function humanErr(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message;
+  return describeErr(err);
 }
 
 async function confirmPaymentFromSdk(r: PaymentResponseSuccess) {

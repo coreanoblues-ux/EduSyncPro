@@ -1,5 +1,19 @@
 import { defineConfig } from "vite";
 import { fileURLToPath, URL } from "node:url";
+import { readFileSync } from "node:fs";
+
+/**
+ * 버전은 package.json 하나만 본다.
+ *
+ * 0.3.3 까지는 버전 문자열이 package.json · manifest.json · src/index.ts 세 곳에
+ * 손으로 복사돼 있었다. 단말기 화면에 찍히는 "version=..." 은 지금 어떤 ZIP 이 돌고
+ * 있는지 확인하는 유일한 수단인데, 그게 나머지 둘과 어긋나면 배포를 확인할 방법이
+ * 사라진다. 실제로 0.2.0 검은 화면 때 옛 ZIP 을 올린 걸 아무도 몰랐던 이유가 이거였다.
+ * manifest.json 과의 일치는 scripts/pack-toss-plugin.mjs 가 따로 막는다.
+ */
+const pkgVersion = JSON.parse(
+  readFileSync(fileURLToPath(new URL("./package.json", import.meta.url)), "utf8")
+).version as string;
 
 /**
  * Toss Front 2 플러그인 번들 설정.
@@ -17,6 +31,9 @@ import { fileURLToPath, URL } from "node:url";
 export default defineConfig({
   base: "./",
   root: fileURLToPath(new URL(".", import.meta.url)),
+  define: {
+    __PLUGIN_VERSION__: JSON.stringify(pkgVersion),
+  },
   build: {
     outDir: "dist",
     assetsDir: "assets",

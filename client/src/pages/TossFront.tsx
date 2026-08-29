@@ -6,9 +6,17 @@
  *   - 오늘 결제 요약 · 최근 결제 intent 목록 (실패·타임아웃 확인용)
  *   - 최근 웹훅 이벤트 (서명 실패는 여기서 알아챈다)
  *
+ *   - 환불 기록 (승인된 결제의 전액·부분 환불을 장부에 반영)
+ *
  * 원장이 여기서 할 수 없는 일:
- *   - 결제 승인·취소를 사람이 손으로 바꾸기. 이건 SDK 응답과 웹훅만이 정답이라
- *     사람이 끼면 대사가 어긋난다. 잘못된 건이 있으면 학원비 화면에서 수기 조정한다.
+ *   - 결제 "승인"을 사람이 손으로 만들기. 승인은 SDK 응답과 웹훅만이 정답이라
+ *     사람이 끼면 대사가 어긋난다.
+ *   - 실제 카드 취소. 그건 토스 판매자센터·단말기에서 해야 한다. 이 화면의 환불은
+ *     그 사실을 우리 장부에 적는 것뿐이며, 화면에도 그렇게 써 두었다.
+ *
+ * 환불이 태블릿이 아니라 여기 있는 이유:
+ *   태블릿 인증은 전화번호 뒤 4자리다. 본인 확인용으로는 되지만 돈을 되돌릴 권한의
+ *   근거로는 못 쓴다. 태블릿은 현관에 있고 누구나 만진다.
  */
 
 import { useState } from "react";
@@ -80,6 +88,24 @@ interface TestCandidate {
   className: string | null;
 }
 
+/**
+ * 환불 대상 결제 한 건.
+ *
+ * refundable 은 서버가 "승인액 - 이미 환불된 누적액"으로 계산해 내려준다.
+ * 화면에서 다시 빼서 쓰지 않는다 — 두 곳에서 각자 계산하면 반드시 어긋난다.
+ */
+interface Refundable {
+  paymentKey: string;
+  studentName: string | null;
+  className: string | null;
+  paymentMonth: string;
+  amount: number;
+  status: string;
+  approvedAt: string | null;
+  refunded: number;
+  refundable: number;
+}
+
 interface WebhookEvent {
   webhookId: string;
   eventType: string | null;
@@ -148,6 +174,51 @@ export default function TossFront() {
     queryKey: ["/api/toss-front/admin/webhooks"],
     refetchInterval: 30_000,
   });
+
+  // ─── 환불 ────────────────────────────────────────────────────────────
+  const { data: refundables = [] } = useQuery<Refundable[]>({
+    queryKey: ["/api/toss-front/admin/refundable"],
+    refetchInterval: 30_000,
+  });
+  const [refundTarget, setRefundTarget] = useState<Refundable | null>(null);
+  const [refundAmount, setRefundAmount] = useState("");
+  const [refundReason, setRefundReason] = useState("");
+
+  const refundMutation = useMutation({
+    mutationFn: async (input: { paymentKey: string; amount: number; reason: string }) =>
+      (await apiRequest("POST", "/api/toss-front/admin/refunds", input)).json(),
+    onSuccess: (data: any) => {
+      setRefundTarget(null);
+      setRefundAmount("");
+      setRefundReason("");
+      // 환불은 장부·잔액·태블릿 화면을 동시에 움직인다. 관련 캐시를 전부 무효화하지
+      // 않으면 원장이 "환불했는데 그대로네"를 보고 한 번 더 누른다.
+      qc.invalidateQueries({ queryKey: ["/api/toss-front/admin/refundable"] });
+      qc.invalidateQueries({ queryKey: ["/api/toss-front/admin/intents"] });
+      qc.invalidateQueries({ queryKey: ["/api/toss-front/admin/summary"] });
+      qc.invalidateQueries({ queryKey: ["/api/payments"] });
+      toast({
+        title: `환불 ${Number(data.refundedNow).toLocaleString()}원 기록됨`,
+        description: data.notice,
+      });
+    },
+    onError: (e: Error) =>
+      toast({ title: "환불 실패", description: e.message, variant: "destructive" }),
+  });
+
+  /** 환불 다이얼로그를 연다. 금액은 남은 전액을 기본값으로 채운다 (가장 흔한 경우). */
+  function openRefund(r: Refundable) {
+    setRefundTarget(r);
+    setRefundAmount(String(r.refundable));
+    setRefundReason("");
+  }
+
+  const refundAmountNum = Number(refundAmount);
+  const refundAmountValid =
+    Number.isInteger(refundAmountNum) &&
+    refundAmountNum > 0 &&
+    !!refundTarget &&
+    refundAmountNum <= refundTarget.refundable;
 
   const enrollMutation = useMutation({
     mutationFn: async (name: string) =>
@@ -515,6 +586,163 @@ export default function TossFront() {
           )}
         </CardContent>
       </Card>
+
+      {/* 환불 */}
+      <Card>
+        <CardHeader>
+          <CardTitle>환불 · 결제 취소</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {/*
+            이 경고를 지우지 말 것.
+            현재 서버에는 토스 Open API 시크릿 키가 없어서 카드사에 취소를 걸 수 없다.
+            원장이 "눌렀으니 돈이 돌아갔겠지"라고 오해하는 것이 이 화면에서 가장 큰 사고다.
+          */}
+          <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+            <div className="font-semibold">먼저 실제 카드 취소를 진행하세요.</div>
+            <div className="mt-1">
+              이 버튼은 <b>학원 장부에만</b> 환불을 기록합니다. 카드사 취소는 단말기 또는
+              토스 판매자센터에서 별도로 해야 실제로 돈이 돌아갑니다. 순서는{" "}
+              <b>① 토스에서 취소 → ② 여기서 기록</b> 입니다.
+            </div>
+          </div>
+
+          {refundables.length === 0 ? (
+            <div className="text-sm text-muted-foreground">승인된 결제가 아직 없습니다.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-left text-muted-foreground">
+                  <tr>
+                    <th className="py-2">승인시각</th>
+                    <th>학생</th>
+                    <th>반</th>
+                    <th>월</th>
+                    <th className="text-right">승인액</th>
+                    <th className="text-right">환불됨</th>
+                    <th className="text-right">환불가능</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {refundables.map((r) => (
+                    <tr key={r.paymentKey} className="border-t" data-testid={`refundable-${r.paymentKey}`}>
+                      <td className="py-2 whitespace-nowrap">
+                        {r.approvedAt ? new Date(r.approvedAt).toLocaleString("ko-KR") : "—"}
+                      </td>
+                      <td>{r.studentName ?? "—"}</td>
+                      <td>{r.className ?? "—"}</td>
+                      <td>{r.paymentMonth}</td>
+                      <td className="text-right">{r.amount.toLocaleString()}</td>
+                      <td className="text-right text-amber-700">
+                        {r.refunded > 0 ? r.refunded.toLocaleString() : "—"}
+                      </td>
+                      <td className="text-right font-medium">
+                        {r.refundable > 0 ? r.refundable.toLocaleString() : "—"}
+                      </td>
+                      <td className="text-right">
+                        {r.refundable > 0 ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openRefund(r)}
+                            data-testid={`refund-button-${r.paymentKey}`}
+                          >
+                            환불
+                          </Button>
+                        ) : (
+                          <Badge className="bg-slate-100 text-slate-800">전액 환불됨</Badge>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* 환불 다이얼로그 */}
+      <Dialog open={!!refundTarget} onOpenChange={(o) => !o && setRefundTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>환불 기록</DialogTitle>
+          </DialogHeader>
+          {refundTarget && (
+            <div className="space-y-4">
+              <div className="rounded-md bg-slate-50 p-3 text-sm">
+                <div>
+                  <b>{refundTarget.studentName ?? "—"}</b> · {refundTarget.className ?? "—"} ·{" "}
+                  {refundTarget.paymentMonth}
+                </div>
+                <div className="mt-1 text-muted-foreground">
+                  승인 {refundTarget.amount.toLocaleString()}원
+                  {refundTarget.refunded > 0 && <> · 이미 환불 {refundTarget.refunded.toLocaleString()}원</>}
+                  {" · "}
+                  <span className="font-medium text-slate-900">
+                    환불 가능 {refundTarget.refundable.toLocaleString()}원
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium">환불 금액 (원)</label>
+                <Input
+                  type="number"
+                  value={refundAmount}
+                  onChange={(e) => setRefundAmount(e.target.value)}
+                  max={refundTarget.refundable}
+                  min={1}
+                  data-testid="refund-amount-input"
+                />
+                {/* 부분 환불(중도 퇴원 정산)이 실제로 있으므로 금액을 고정하지 않는다.
+                    대신 한도를 넘기면 서버에 보내기 전에 화면에서 먼저 잡아 준다. */}
+                {!refundAmountValid && refundAmount !== "" && (
+                  <div className="mt-1 text-xs text-red-600">
+                    1원 이상 {refundTarget.refundable.toLocaleString()}원 이하의 정수여야 합니다.
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="text-sm font-medium">사유 (선택)</label>
+                <Input
+                  value={refundReason}
+                  onChange={(e) => setRefundReason(e.target.value)}
+                  placeholder="예: 중도 퇴원 정산, 이중 결제"
+                  maxLength={200}
+                  data-testid="refund-reason-input"
+                />
+              </div>
+
+              <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+                토스에서 실제 카드 취소를 이미 완료했는지 확인하세요. 이 기록만으로는 돈이
+                돌아가지 않습니다.
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRefundTarget(null)}>
+              닫기
+            </Button>
+            <Button
+              disabled={!refundAmountValid || refundMutation.isPending}
+              onClick={() =>
+                refundTarget &&
+                refundMutation.mutate({
+                  paymentKey: refundTarget.paymentKey,
+                  amount: refundAmountNum,
+                  reason: refundReason.trim(),
+                })
+              }
+              data-testid="refund-submit"
+            >
+              {refundMutation.isPending ? "기록 중…" : "환불 기록"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* 웹훅 */}
       <Card>

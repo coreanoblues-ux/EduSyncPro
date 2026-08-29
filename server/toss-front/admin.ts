@@ -1,11 +1,15 @@
 /**
  * 원장이 웹 화면에서 Toss Front 연동 상태를 감시하는 API.
  *
- * 여기서 반환하는 데이터는 순수 조회 전용이다. 승인·취소 같은 상태 변경은
- * 사람이 관리자 화면에서 클릭하는 흐름을 원장에게 열어 두지 않는다. 이유:
- *   결제 승인은 SDK 응답과 웹훅으로만 확정돼야 데이터가 한 갈래로 흐르고,
- *   중간에 사람이 손대는 경로가 열리면 대사가 어긋난다. 관리자 화면은 오직
- *   "지금 어디에 어긋난 게 있나"를 원장이 알아채는 창구다.
+ * 대부분은 순수 조회 전용이다. 결제 "승인"만큼은 사람이 관리자 화면에서 만들 수
+ * 없게 막아 둔다. 승인은 SDK 응답과 웹훅으로만 확정돼야 데이터가 한 갈래로 흐르고,
+ * 중간에 사람이 손대는 경로가 열리면 대사가 어긋나기 때문이다.
+ *
+ * 예외는 두 가지이며 둘 다 의도적이다:
+ *   - 소액 테스트 결제 (연동 점검용, 환경변수로 잠가 둔다)
+ *   - 환불 기록 (/admin/refunds) — 아래 해당 절의 주석 참고.
+ *     환불은 본질적으로 사람의 결정이라 자동화할 수 없다. 대신 금액을 상태 플래그가
+ *     아니라 payments 장부에서 매번 다시 세는 방식으로 이중 계상을 막는다.
  */
 
 import { Router, Request, Response } from "express";
@@ -21,10 +25,12 @@ import {
   students,
   enrollments,
   classes,
+  payments,
   type PaymentDispatchStatus,
 } from "@shared/schema";
 import { authGuard, tenantGuard, roleGuard } from "../middleware/auth";
 import { publish } from "./dispatchBus";
+import { classifyRefund, refundableAmount } from "./refund";
 
 const router = Router();
 
@@ -140,6 +146,221 @@ router.get(
       .limit(limit);
 
     return res.json(rows);
+  }
+);
+
+// ─── 환불 (원장 전용) ──────────────────────────────────────────────────
+/**
+ * 왜 환불이 원장 화면에만 있고 학생 태블릿에는 없나:
+ *   태블릿 인증은 "전화번호 뒤 4자리"다. 그건 학부모 본인 확인용이지 돈을 되돌릴
+ *   권한의 근거가 못 된다. 뒤 4자리는 같은 학원 안에서도 충분히 겹치고, 태블릿은
+ *   현관에 놓여 누구나 만진다. 환불은 authGuard + roleGuard(owner) 뒤에 둔다.
+ *
+ * ⚠️ 이 API 가 하는 일과 하지 않는 일을 분명히 해 둔다:
+ *      하는 일    — 우리 장부(payments)에 환불 행을 남기고 잔액을 되돌린다.
+ *      하지 않는 일 — 카드사에 취소를 걸지 않는다.
+ *
+ *   실제 카드 취소는 Toss Open API 서버-대-서버 호출이 필요한데, 이 서버에는
+ *   그 시크릿 키가 없다 (TOSS_MERCHANT_ID·웹훅 시크릿·단말기 시크릿뿐).
+ *   toss_payment_transactions 에 tid·vanTransactionKey 를 이미 저장해 두었으므로
+ *   키만 확보되면 이 지점에 호출을 붙이면 된다. 그때까지 실제 취소는 단말기나
+ *   토스 판매자센터에서 원장이 수행하고, 이 화면은 그 사실을 장부에 반영한다.
+ *   화면에도 같은 문장을 띄운다 — 원장이 "눌렀으니 돈이 돌아갔겠지"라고
+ *   오해하면 그게 가장 큰 사고다.
+ */
+
+/** pg_advisory_xact_lock(int, int) 키. dispatch.ts 와 같은 방식. */
+function advisoryKey(input: string): number {
+  return crypto.createHash("sha256").update(input).digest().readInt32BE(0);
+}
+
+/**
+ * 이 paymentKey 로 이미 환불된 누적액(양수).
+ *
+ * 상태 플래그가 아니라 payments 행을 매번 다시 센다. 원장의 수기 환불과 토스
+ * 취소 웹훅이 서로 다른 순서로 도착하기 때문에, "환불했음" 이라는 플래그 하나로는
+ * 이중 계상을 막을 수 없다. 실제로 적힌 돈만이 사실이다.
+ */
+async function sumRefunded(tx: any, tenantId: string, paymentKey: string): Promise<number> {
+  const [row] = await tx
+    .select({ sum: sql<number>`coalesce(sum(${payments.amount}), 0)::int` })
+    .from(payments)
+    .where(
+      and(
+        eq(payments.tenantId, tenantId),
+        eq(payments.externalPaymentKey, paymentKey),
+        sql`${payments.amount} < 0`
+      )
+    );
+  return Math.abs(row?.sum ?? 0);
+}
+
+/** 환불 가능한 결제 목록 — 승인된 건과 그 중 이미 환불된 금액. */
+router.get(
+  "/admin/refundable",
+  authGuard,
+  tenantGuard,
+  roleGuard("owner", "superadmin"),
+  async (req: Request, res: Response) => {
+    const tenantId = req.user!.tenantId;
+    if (!tenantId) return res.json([]);
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+
+    // 승인된 적 있는 건만. CANCELED 도 포함하는 이유는 "이미 전액 환불됨"을
+    // 화면에서 보여 주기 위함이다. 목록에서 사라지면 원장은 환불이 반영된 건지
+    // 자기가 잘못 본 건지 확인할 방법이 없다 (태블릿 완납 표시와 같은 이유).
+    const rows = await db
+      .select({
+        paymentKey: paymentIntents.paymentKey,
+        studentName: students.name,
+        className: classes.name,
+        paymentMonth: paymentIntents.paymentMonth,
+        amount: paymentIntents.amount,
+        status: paymentIntents.status,
+        approvedAt: paymentIntents.approvedAt,
+        // 이 건에 딸린 환불 누적액. 상관 서브쿼리로 한 번에 가져온다.
+        refunded: sql<number>`coalesce((
+          SELECT -sum(p.amount)::int FROM payments p
+          WHERE p.external_payment_key = ${paymentIntents.paymentKey}
+            AND p.tenant_id = ${tenantId}
+            AND p.amount < 0
+        ), 0)`,
+      })
+      .from(paymentIntents)
+      .leftJoin(students, eq(students.id, paymentIntents.studentId))
+      .leftJoin(enrollments, eq(enrollments.id, paymentIntents.enrollmentId))
+      .leftJoin(classes, eq(classes.id, enrollments.classId))
+      .where(
+        and(
+          eq(paymentIntents.tenantId, tenantId),
+          inArray(paymentIntents.status, ["APPROVED", "CANCELED"])
+        )
+      )
+      .orderBy(desc(paymentIntents.approvedAt))
+      .limit(limit);
+
+    return res.json(
+      rows.map((r) => ({
+        ...r,
+        refundable: r.status === "APPROVED" ? refundableAmount(r.amount, r.refunded) : 0,
+      }))
+    );
+  }
+);
+
+const refundBodySchema = z.object({
+  paymentKey: z.string().min(1),
+  // 부분 환불을 허용한다. 27만원 중 7만원만 돌려주는 상황(중도 퇴원 정산)이 실제로 있다.
+  amount: z.number().int().positive("환불 금액은 1원 이상이어야 합니다."),
+  reason: z.string().trim().max(200).optional(),
+});
+
+router.post(
+  "/admin/refunds",
+  authGuard,
+  tenantGuard,
+  roleGuard("owner", "superadmin"),
+  async (req: Request, res: Response) => {
+    const parsed = refundBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message });
+    }
+    const tenantId = req.user!.tenantId;
+    const userId = req.user!.id;
+    if (!tenantId) return res.status(403).json({ error: "테넌트가 없는 계정입니다." });
+
+    const { paymentKey, amount, reason } = parsed.data;
+
+    class RefundReject extends Error {
+      constructor(public httpStatus: number, message: string) {
+        super(message);
+      }
+    }
+
+    try {
+      const result = await db.transaction(async (tx) => {
+        // 같은 결제에 대한 동시 환불 요청을 직렬화한다. 환불 버튼은 네트워크가
+        // 느리면 반드시 두 번 눌린다 — 잠그지 않으면 두 요청이 같은 "이미 환불된
+        // 누적액"을 읽고 둘 다 통과시킨다.
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${advisoryKey(paymentKey)}, 0)`);
+
+        const [intent] = await tx
+          .select({
+            id: paymentIntents.id,
+            status: paymentIntents.status,
+            amount: paymentIntents.amount,
+            enrollmentId: paymentIntents.enrollmentId,
+            paymentMonth: paymentIntents.paymentMonth,
+          })
+          .from(paymentIntents)
+          .where(
+            and(eq(paymentIntents.paymentKey, paymentKey), eq(paymentIntents.tenantId, tenantId))
+          );
+        if (!intent) throw new RefundReject(404, "결제 건을 찾을 수 없습니다.");
+
+        const alreadyRefunded = await sumRefunded(tx, tenantId, paymentKey);
+        const decision = classifyRefund({
+          intentStatus: intent.status,
+          approvedAmount: intent.amount,
+          alreadyRefunded,
+          requested: amount,
+        });
+        if (decision.kind === "reject") throw new RefundReject(409, decision.reason);
+
+        // 장부 반영. 부호 규칙에 따라 음수로 넣는다 (Payments 화면이 단순 SUM 한다).
+        // createdBy 는 시스템 사용자가 아니라 실제로 누른 원장이다 — 환불은 사람의
+        // 결정이므로 누가 했는지가 감사 기록에 남아야 한다.
+        await tx.insert(payments).values({
+          tenantId,
+          enrollmentId: intent.enrollmentId,
+          amount: -decision.amount,
+          type: "환불",
+          method: "카드",
+          paymentMonth: intent.paymentMonth,
+          paidDate: new Date(),
+          createdBy: userId,
+          notes:
+            `Toss Front 환불 (원장 기록) · ${paymentKey}` +
+            (reason ? ` · 사유: ${reason}` : "") +
+            (decision.fullyRefunded ? " · 전액" : ` · 부분(${decision.remainingAfter.toLocaleString()}원 남음)`),
+          externalProvider: "TOSSPLACE",
+          externalPaymentKey: paymentKey,
+          paidVia: "TOSS_FRONT",
+        });
+
+        // 전액 환불이면 intent 를 CANCELED 로 마감한다. 부분 환불이면 APPROVED 로
+        // 남겨 둔다 — 아직 환불할 잔액이 있다는 뜻이고, 목록에서도 계속 보여야 한다.
+        if (decision.fullyRefunded) {
+          await tx
+            .update(paymentIntents)
+            .set({ status: "CANCELED", cancelledAt: new Date() })
+            .where(eq(paymentIntents.id, intent.id));
+        }
+
+        return {
+          refundedNow: decision.amount,
+          totalRefunded: alreadyRefunded + decision.amount,
+          remaining: decision.remainingAfter,
+          fullyRefunded: decision.fullyRefunded,
+        };
+      });
+
+      console.log(
+        `💸 환불 기록: paymentKey=${paymentKey} ${result.refundedNow.toLocaleString()}원 (누적 ${result.totalRefunded.toLocaleString()}원, 잔여 ${result.remaining.toLocaleString()}원)`
+      );
+      return res.json({
+        ok: true,
+        ...result,
+        notice:
+          "장부에 환불이 기록되었습니다. 실제 카드 취소는 단말기 또는 토스 판매자센터에서 별도로 진행해야 합니다.",
+      });
+    } catch (err: any) {
+      if (err instanceof RefundReject) {
+        return res.status(err.httpStatus).json({ error: err.message });
+      }
+      console.error("refund error:", err);
+      return res.status(500).json({ error: "환불 처리 중 오류가 발생했습니다." });
+    }
   }
 );
 

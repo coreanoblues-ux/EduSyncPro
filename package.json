@@ -14,6 +14,7 @@
     "test:timetable": "tsx scripts/test-timetable.ts",
     "test:toss-front": "tsx scripts/test-toss-front.ts",
     "test:payment-lifecycle": "tsx scripts/test-payment-lifecycle.ts",
+    "test:refund": "tsx scripts/test-refund.ts",
     "test:resilience": "tsx scripts/test-server-resilience.ts",
     "test:cors": "tsx scripts/test-cors.ts",
     "plugin:build": "npm --prefix plugins/toss-front install --no-audit --no-fund && npm --prefix plugins/toss-front run build",

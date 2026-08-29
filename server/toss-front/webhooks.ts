@@ -45,6 +45,7 @@ import {
   tossPaymentTransactions,
   payments,
 } from "@shared/schema";
+import { webhookCancelAmount } from "./refund";
 
 const router = Router();
 
@@ -281,18 +282,36 @@ async function reconcile(eventType: string, body: any) {
     }
 
     if (isCanceled) {
-      // v1 전액 취소만 처리. 금액은 intent.amount 를 신뢰한다 (v1 페이로드에 금액이 없거나
-      // 카드 원단위와 우리 원장 단위가 어긋날 위험을 없애기 위해).
-      // 이미 CANCELED 로 마감된 intent 는 중복 반영 방지를 위해 스킵.
-      if (intent.status === "CANCELED") return;
-
-      const cancelAmount: number = intent.amount;
+      // v1 전액 취소만 처리.
+      //
+      // ⚠️ 예전에는 여기서 intent.amount 를 통째로 음수로 꽂았다. 그러면 원장이
+      //    관리자 화면(/admin/refunds)에서 이미 환불을 기록한 뒤 취소 웹훅이 오는 순간
+      //    같은 돈이 두 번 빠진다 — 27만원 결제가 -54만원이 된다. 사람과 웹훅은 서로
+      //    다른 순서로 도착하므로 상태 플래그 하나로는 막을 수 없다.
+      //
+      //    그래서 금액을 intent 가 아니라 "실제 장부에 적힌 돈"에서 계산한다:
+      //      실입금(양수 합) - 이미 환불(음수 합) = 아직 되돌릴 수 있는 금액
+      //    이 값이 0 이하면 적을 게 없으므로 payments 삽입을 건너뛰고 상태만 마감한다.
+      //    승인된 적 없는 건(실입금 0)도 자연히 0 이 되어 유령 환불이 생기지 않는다.
+      const [ledger] = await tx
+        .select({
+          paidIn: sql<number>`coalesce(sum(${payments.amount}) FILTER (WHERE ${payments.amount} > 0), 0)::int`,
+          refunded: sql<number>`coalesce(-sum(${payments.amount}) FILTER (WHERE ${payments.amount} < 0), 0)::int`,
+        })
+        .from(payments)
+        .where(
+          and(
+            eq(payments.tenantId, intent.tenant_id),
+            eq(payments.externalPaymentKey, paymentKey)
+          )
+        );
+      const cancelAmount = webhookCancelAmount(ledger?.paidIn ?? 0, ledger?.refunded ?? 0);
       const cancelledAtIso = payment?.cancelledAt ?? new Date().toISOString();
 
       const email = `system+toss-front@${intent.tenant_id}.local`;
       const userRows = await tx.execute(sql`SELECT id FROM users WHERE email = ${email} LIMIT 1`);
       const systemUserId = (userRows.rows as any[])[0]?.id;
-      if (systemUserId) {
+      if (systemUserId && cancelAmount > 0) {
         await tx.insert(payments).values({
           tenantId: intent.tenant_id,
           enrollmentId: intent.enrollment_id,
@@ -307,6 +326,10 @@ async function reconcile(eventType: string, body: any) {
           externalPaymentKey: paymentKey,
           paidVia: "TOSS_FRONT",
         });
+      } else if (cancelAmount <= 0) {
+        console.log(
+          `ℹ️ 취소 웹훅 ${paymentKey}: 이미 환불이 기록되어 있어 장부에 추가로 적지 않습니다 (실입금 ${ledger?.paidIn ?? 0}원 · 환불 ${ledger?.refunded ?? 0}원).`
+        );
       }
 
       await tx

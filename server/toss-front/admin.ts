@@ -189,6 +189,30 @@ function advisoryKey(input: string): number {
 }
 
 /**
+ * DB 오류를 원장이 읽고 그대로 옮겨 적을 수 있는 한 줄로 만든다.
+ *
+ * 왜 필요한가 (2026-08-29):
+ *   장부 반영이 "500: 대사 처리 중 오류가 발생했습니다" 만 띄우고 죽었다. 그 문장에는
+ *   원인이 한 글자도 없다. 원장은 Railway 로그를 볼 수 없고, 나는 화면만 보고 원인을
+ *   추측하게 된다. 페어링 실패 때 "코드가 잘못됐거나 서버에 연결하지 못했습니다" 한 줄
+ *   때문에 원인 찾는 데 하루가 걸렸던 것과 똑같은 실수를 내가 또 했다.
+ *
+ *   이 경로는 owner/superadmin 전용이라 내부 오류를 노출해도 외부로 새지 않는다.
+ *   Postgres 오류는 code(23505 등)·constraint·column 을 들고 오는데, 그 셋이면
+ *   대부분 원인이 한 번에 정해진다.
+ */
+function describeDbError(err: any): string {
+  const bits: string[] = [];
+  if (err?.code) bits.push(`code=${err.code}`);
+  if (err?.constraint) bits.push(`constraint=${err.constraint}`);
+  if (err?.column) bits.push(`column=${err.column}`);
+  if (err?.table) bits.push(`table=${err.table}`);
+  if (err?.detail) bits.push(`detail=${err.detail}`);
+  const msg = err?.message ?? String(err);
+  return bits.length > 0 ? `${msg} (${bits.join(" · ")})` : msg;
+}
+
+/**
  * 이 paymentKey 로 이미 환불된 누적액(양수).
  *
  * 상태 플래그가 아니라 payments 행을 매번 다시 센다. 원장의 수기 환불과 토스
@@ -373,7 +397,9 @@ router.post(
         return res.status(err.httpStatus).json({ error: err.message });
       }
       console.error("refund error:", err);
-      return res.status(500).json({ error: "환불 처리 중 오류가 발생했습니다." });
+      return res.status(500).json({
+        error: `환불 처리 중 오류가 발생했습니다: ${describeDbError(err)}`,
+      });
     }
   }
 );
@@ -464,8 +490,17 @@ router.post(
 
         const paidDate = approvedAt ? new Date(approvedAt) : new Date();
 
-        // 승인 원본 테이블에도 흔적을 남긴다. intentId 가 unique 라 여기서
-        // 이중 삽입이 한 번 더 걸러진다 (advisory lock 이 어떤 이유로 안 먹어도).
+        // 승인 원본 테이블에도 흔적을 남긴다. 여기서 이중 삽입이 한 번 더 걸러진다
+        // (advisory lock 이 어떤 이유로 안 먹어도).
+        //
+        // ⚠️ target 을 intentId 로 좁게 지정하면 안 된다. 이 테이블은 payment_key 에도
+        //    unique 가 걸려 있어서, 그쪽에서 충돌하면 onConflictDoNothing 이 잡아 주지
+        //    못하고 그대로 예외가 된다. 우리가 막으려는 건 "중복 삽입" 자체이므로
+        //    어떤 unique 든 충돌하면 조용히 건너뛰는 게 맞다.
+        //
+        //    건너뛰더라도 payments 삽입은 계속 진행한다. 여기 오기 전에
+        //    alreadyLedgered 로 "장부에 수입 행이 없다"를 이미 확인했기 때문이다.
+        //    승인 원본만 남고 장부가 비어 있는 상태야말로 이 기능이 고치려는 대상이다.
         const [txRow] = await tx
           .insert(tossPaymentTransactions)
           .values({
@@ -482,7 +517,7 @@ router.post(
               note: note ?? null,
             }),
           })
-          .onConflictDoNothing({ target: tossPaymentTransactions.intentId })
+          .onConflictDoNothing()
           .returning();
 
         await tx.insert(payments).values({
@@ -528,7 +563,9 @@ router.post(
         return res.status(err.httpStatus).json({ error: err.message });
       }
       console.error("reconcile error:", err);
-      return res.status(500).json({ error: "대사 처리 중 오류가 발생했습니다." });
+      return res.status(500).json({
+        error: `대사 처리 중 오류가 발생했습니다: ${describeDbError(err)}`,
+      });
     }
   }
 );

@@ -757,9 +757,31 @@ export default function TossFront() {
           <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
             <div className="font-semibold">먼저 실제 카드 취소를 진행하세요.</div>
             <div className="mt-1">
-              이 버튼은 <b>학원 장부에만</b> 환불을 기록합니다. 카드사 취소는 단말기 또는
-              토스 판매자센터에서 별도로 해야 실제로 돈이 돌아갑니다. 순서는{" "}
-              <b>① 토스에서 취소 → ② 여기서 기록</b> 입니다.
+              이 버튼은 <b>학원 장부에만</b> 환불을 기록합니다. 이것만으로는 카드값이
+              돌아가지 않습니다. 순서는 <b>① 토스에서 취소 → ② 여기서 기록</b> 입니다.
+            </div>
+            {/*
+              "토스에서 취소" 가 어디인지 원장이 물었다 (2026-08-29):
+              "학생 태블릿에서야 아니면 토스플레이스 단말기에서야?"
+              모호한 안내는 안 쓴 것과 같다. 두 경로를 이름으로 적고,
+              태블릿이 아니라는 것도 명시한다.
+            */}
+            <div className="mt-2 rounded border border-amber-200 bg-white/60 p-2">
+              <div className="font-semibold">① 취소는 이 둘 중 한 곳에서 합니다</div>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                <li>
+                  <b>토스 판매자센터</b> (PC 웹) — 결제내역에서 해당 건을 찾아 취소.
+                  원장님 컴퓨터에서 되므로 이쪽이 편합니다.
+                </li>
+                <li>
+                  <b>토스플레이스 카드 단말기</b> — 우리 결제 화면에서 나가 단말기 홈의
+                  토스플레이스 기본 결제앱으로 들어가서, 거래내역에서 취소합니다.
+                </li>
+              </ul>
+              <div className="mt-1.5">
+                <b>학생용 태블릿에서는 취소할 수 없습니다.</b> 태블릿은 학생이 결제를
+                시작하는 용도뿐이라 취소 기능이 없습니다.
+              </div>
             </div>
           </div>
 

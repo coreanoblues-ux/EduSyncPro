@@ -193,7 +193,11 @@ router.get("/students/:id/invoices", kioskGuard, async (req: Request, res: Respo
   }
 
   // 태블릿에는 학생 이름을 그대로 노출한다 (본인이 이미 선택한 학생이므로).
-  const invoices = await computeStudentInvoices(tenantId, student.id, student.name);
+  //
+  // includeSettled=true — 완납된 달도 함께 내려준다. 예전엔 완납이면 목록에서 아예
+  // 사라졌다. 학부모 입장에서는 "낸 게 반영된 것"과 "시스템이 아직 모르는 것"이
+  // 똑같이 빈 화면으로 보여서 확인할 방법이 없었다. 낸 달은 "완납" 으로 보여 준다.
+  const invoices = await computeStudentInvoices(tenantId, student.id, student.name, 6, true);
   return res.json({ studentId: student.id, studentName: student.name, invoices });
 });
 

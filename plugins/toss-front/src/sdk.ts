@@ -209,13 +209,54 @@ function describeGlobals(): string {
 }
 
 /**
+ * sdk.template 이 실제로 무엇을 제공하는지 한 줄로 적는다.
+ *
+ * 왜 필요한가:
+ *   대기화면을 우리 로고·문구로 꾸미려면 renderIdlePage 가 인자를 받는지 알아야 하는데,
+ *   타입 선언에는 `renderIdlePage?(): void` 로만 적혀 있고 공개 문서를 확인할 수 없었다.
+ *   추측으로 인자를 넣어 보는 대신, 실단말기가 스스로 답하게 한다.
+ *   함수의 `length` 는 "선언된 인자 개수"다. 0 이면 커스터마이즈 여지가 없다는 뜻이고,
+ *   1 이상이면 옵션을 받는다는 뜻이므로 그때 정확한 형태를 맞춰 넣으면 된다.
+ *
+ * 결과는 로그로 서버에 올라가고 대기화면 진단 줄에도 찍히므로, 단말기 앞에서
+ * 바로 읽을 수 있다.
+ */
+function describeTemplateApi(template: NonNullable<TossFrontSdk["template"]>): string {
+  try {
+    const parts: string[] = [];
+    for (const key of Object.keys(template)) {
+      const value = (template as Record<string, unknown>)[key];
+      parts.push(typeof value === "function" ? `${key}(${(value as Function).length})` : key);
+    }
+    return parts.length > 0 ? parts.join(", ") : "(빈 객체)";
+  } catch {
+    return "(열거 실패)";
+  }
+}
+
+/** template API 모양은 부팅당 한 번만 남긴다. 대기화면은 자주 다시 그려지므로 로그가 밀린다. */
+let templateApiLogged = false;
+
+/**
  * 유휴 화면을 그린다.
  *
  * 공식 SDK 의 renderIdlePage 가 있으면 그것을 쓴다 (Toss 표준 대기화면·심사 정책 준수).
  * 없으면 자체 대기화면으로 대체한다. 여기서 아무것도 안 하면 다시 검은 화면이 된다.
+ *
+ * ⚠️ 현재 단말기에서 보이는 "빨간 IP 주소만 있는 화면" 은 우리 화면이 아니라 Toss 의
+ *    renderIdlePage 가 그린 화면이다. 즉 이 함수는 정상 동작 중이고, 우리 대기화면은
+ *    애초에 그려질 기회를 얻지 못한다. 이걸 우리 디자인으로 바꾸려면 renderIdlePage 가
+ *    옵션을 받아야 하는데 그 여부를 아직 모른다 — describeTemplateApi 로 확인한다.
  */
 export function renderIdle(sdk: TossFrontSdk | null, fallback: () => void) {
   if (sdk?.template && typeof sdk.template.renderIdlePage === "function") {
+    if (!templateApiLogged) {
+      templateApiLogged = true;
+      log.info(
+        "template API 확인",
+        `renderIdlePage 선언 인자수=${sdk.template.renderIdlePage.length} · template=${describeTemplateApi(sdk.template)}`
+      );
+    }
     try {
       sdk.template.renderIdlePage();
       return;

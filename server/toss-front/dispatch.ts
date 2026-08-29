@@ -28,11 +28,15 @@ import {
   payments,
   enrollments,
   classes,
-  type PaymentDispatchStatus,
-  type PaymentIntentStatus,
 } from "@shared/schema";
 import { kioskGuard } from "./kioskAuth";
 import { deviceGuard } from "./deviceAuth";
+import {
+  OPEN_DISPATCH_STATES,
+  OPEN_INTENT_STATES,
+  isBlocking,
+  secondsUntilFree,
+} from "./lifecycle";
 import { verifyVirtualInvoice } from "./virtualInvoice";
 import { publish, subscribe } from "./dispatchBus";
 
@@ -143,20 +147,38 @@ kioskDispatchRouter.post("/dispatch", kioskGuard, async (req: Request, res: Resp
     tossDeviceId = any.id;
   }
 
-  // 동시 결제 잠금: 이 프론트에 아직 마감되지 않은 dispatch가 있으면 409
-  const openDispatchStates: PaymentDispatchStatus[] = ["PENDING", "DELIVERED"];
-  const [busy] = await db
-    .select({ id: paymentDispatches.id })
+  // 동시 결제 잠금: 이 프론트에 "아직 살아 있는" dispatch가 있으면 409.
+  //
+  // ── expiresAt > now 조건이 반드시 있어야 하는 이유 (2026-08-29 현장 사고) ──
+  //   예전엔 status 만 봤다. 그런데 status 를 마감으로 바꾸는 주체는 단말기(result)와
+  //   30초 배치(sweeper) 둘뿐이다. 단말기가 응답 없이 꺼지고 배치가 한 번이라도 실패하면
+  //   PENDING 행이 영원히 남아 그 단말기의 모든 결제를 막는다. 실제로 어제 실패한 시도가
+  //   오늘 온 학생의 결제를 막아 "진행중인 결제가 있습니다" 만 반복해서 떴다.
+  //
+  //   시간을 조건에 넣으면 정리 배치가 죽어 있어도 TTL(3분)이 지나는 순간 스스로 풀린다.
+  //   status 정리는 기록을 위한 것이고, 차단 여부는 시간이 판단한다. 이 둘을 분리한다.
+  //   차단 여부의 최종 판단은 SQL 이 아니라 isBlocking() 이 한다. 가장 늦게 만료되는
+  //   행 하나만 가져오면 충분하다 — 그것도 살아 있지 않다면 나머지는 볼 것도 없다.
+  //   (판단을 순수 함수로 옮겨야 테스트가 가능하다. lifecycle.ts 참고)
+  const [newestOpen] = await db
+    .select({ id: paymentDispatches.id, status: paymentDispatches.status, expiresAt: paymentDispatches.expiresAt })
     .from(paymentDispatches)
     .where(
       and(
         eq(paymentDispatches.tossDeviceId, tossDeviceId),
-        inArray(paymentDispatches.status, openDispatchStates)
+        inArray(paymentDispatches.status, OPEN_DISPATCH_STATES)
       )
     )
+    .orderBy(desc(paymentDispatches.expiresAt))
     .limit(1);
-  if (busy) {
-    return res.status(409).json({ error: "이 결제 단말기가 다른 결제를 처리 중입니다." });
+  if (newestOpen && isBlocking(newestOpen.status, newestOpen.expiresAt)) {
+    // 몇 초 뒤에 다시 시도하면 되는지까지 알려 준다. "처리 중입니다" 만 보면
+    // 학부모는 영원히 막힌 건지 잠깐 기다리면 되는 건지 알 수 없다.
+    const waitSec = secondsUntilFree(newestOpen.expiresAt);
+    return res.status(409).json({
+      error: `이 결제 단말기가 다른 결제를 처리 중입니다. ${waitSec}초 후 다시 시도해 주세요.`,
+      retryAfterSeconds: waitSec,
+    });
   }
 
   const paymentKey = generatePaymentKey();
@@ -200,22 +222,42 @@ kioskDispatchRouter.post("/dispatch", kioskGuard, async (req: Request, res: Resp
         throw new DispatchReject(409, "이 반의 수강료가 설정돼 있지 않습니다.");
       }
 
-      // (B) 같은 (enrollment, month) 에 미마감 intent 존재 시 거절 (동시 결제 방지)
-      const openIntentStates: PaymentIntentStatus[] = ["CREATED", "PROCESSING"];
-      const [openIntent] = await tx
-        .select({ id: paymentIntents.id })
+      // (B) 같은 (enrollment, month) 에 "아직 살아 있는" intent 존재 시 거절 (동시 결제 방지)
+      //
+      //   위 dispatch 검사와 같은 이유로 expiresAt > now 를 함께 본다. 실패로 끝난 시도는
+      //   기록으로만 남고 다음 결제를 방해하면 안 된다. 만료된 CREATED/PROCESSING 은
+      //   "처리 중"이 아니라 "버려진 시도"다.
+      //
+      //   덤으로 여기서 만료된 것들을 TIMEOUT 으로 정리까지 하고 지나간다(lazy expiry).
+      //   배치를 기다리지 않고 그 자리에서 장부를 맞춰 두면, 관리자 화면의 상태 목록이
+      //   실제와 어긋나 있는 시간이 짧아진다.
+      const sameMonth = and(
+        eq(paymentIntents.enrollmentId, invoice.enrollmentId),
+        eq(paymentIntents.paymentMonth, invoice.paymentMonth),
+        eq(paymentIntents.tenantId, invoice.tenantId),
+        inArray(paymentIntents.status, OPEN_INTENT_STATES)
+      );
+
+      await tx
+        .update(paymentIntents)
+        .set({ status: "TIMEOUT", failureReason: "expired (lazy sweep at dispatch)" })
+        .where(and(sameMonth, lt(paymentIntents.expiresAt, new Date())));
+
+      const [newestIntent] = await tx
+        .select({
+          id: paymentIntents.id,
+          status: paymentIntents.status,
+          expiresAt: paymentIntents.expiresAt,
+        })
         .from(paymentIntents)
-        .where(
-          and(
-            eq(paymentIntents.enrollmentId, invoice.enrollmentId),
-            eq(paymentIntents.paymentMonth, invoice.paymentMonth),
-            eq(paymentIntents.tenantId, invoice.tenantId),
-            inArray(paymentIntents.status, openIntentStates)
-          )
-        )
+        .where(sameMonth)
+        .orderBy(desc(paymentIntents.expiresAt))
         .limit(1);
-      if (openIntent) {
-        throw new DispatchReject(409, "이 수강월에 대해 처리 중인 결제가 있습니다. 완료 후 다시 시도하세요.");
+      if (newestIntent && isBlocking(newestIntent.status, newestIntent.expiresAt)) {
+        throw new DispatchReject(
+          409,
+          `이 수강월은 지금 결제가 진행 중입니다. ${secondsUntilFree(newestIntent.expiresAt)}초 후 다시 시도해 주세요.`
+        );
       }
 
       // (C) DB 잔액 재계산 (payments 부호 규칙: 원비 양수, 환불 음수)
@@ -343,7 +385,6 @@ kioskDispatchRouter.get("/dispatch/:id", kioskGuard, async (req: Request, res: R
 /** POST /api/toss-kiosk/dispatch/:id/cancel — 태블릿에서 사용자가 취소를 눌렀을 때 */
 kioskDispatchRouter.post("/dispatch/:id/cancel", kioskGuard, async (req: Request, res: Response) => {
   const kiosk = req.kiosk!;
-  const openStates: PaymentDispatchStatus[] = ["PENDING", "DELIVERED"];
   const result = await db
     .update(paymentDispatches)
     .set({ status: "CANCELED", respondedAt: new Date(), failureReason: "kiosk cancelled" })
@@ -351,7 +392,7 @@ kioskDispatchRouter.post("/dispatch/:id/cancel", kioskGuard, async (req: Request
       and(
         eq(paymentDispatches.id, req.params.id),
         eq(paymentDispatches.kioskDeviceId, kiosk.id),
-        inArray(paymentDispatches.status, openStates)
+        inArray(paymentDispatches.status, OPEN_DISPATCH_STATES)
       )
     )
     .returning({ id: paymentDispatches.id, tossDeviceId: paymentDispatches.tossDeviceId });
@@ -534,7 +575,6 @@ frontDispatchRouter.post("/dispatch/:id/result", deviceGuard, async (req: Reques
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message });
   const device = req.device!;
 
-  const openStates: PaymentDispatchStatus[] = ["PENDING", "DELIVERED"];
   const reason = parsed.data.failureReason ?? parsed.data.reason ?? null;
   const result = await db
     .update(paymentDispatches)
@@ -547,7 +587,7 @@ frontDispatchRouter.post("/dispatch/:id/result", deviceGuard, async (req: Reques
       and(
         eq(paymentDispatches.id, req.params.id),
         eq(paymentDispatches.tossDeviceId, device.id),
-        inArray(paymentDispatches.status, openStates)
+        inArray(paymentDispatches.status, OPEN_DISPATCH_STATES)
       )
     )
     .returning({ id: paymentDispatches.id, paymentKey: paymentDispatches.paymentKey });
@@ -574,38 +614,73 @@ frontDispatchRouter.post("/dispatch/:id/result", deviceGuard, async (req: Reques
 // ─────────────────────────────────────────────────────────────────────────
 // 만료 정리 배치 (프로세스 부팅 시 시작)
 // ─────────────────────────────────────────────────────────────────────────
+/**
+ * 만료된 dispatch·intent 를 TIMEOUT 으로 정리한다.
+ *
+ * ── 왜 intent 를 dispatch 와 "따로" 쓸어야 하는가 (2026-08-29 사고) ──
+ *   예전 배치는 dispatch 를 먼저 만료시키고, 거기서 나온 paymentKey 로만 intent 를
+ *   따라 정리했다. 그래서 dispatch 가 아예 없는 intent 는 영원히 CREATED 로 남았다.
+ *   그런 intent 는 두 경로로 생긴다:
+ *     1) /payments/intents (단말기가 직접 만드는 구 흐름) — dispatch 를 만들지 않는다
+ *     2) dispatch INSERT 직전에 트랜잭션이 깨진 경우
+ *   그리고 dispatch 만료는 성공했는데 뒤이은 intent UPDATE 가 실패해도 같은 결과가 된다
+ *   (두 UPDATE 가 한 트랜잭션이 아니었다).
+ *
+ *   실제로 8월 청구서에 CREATED intent 가 하루 넘게 남아 학생의 재결제를 막았다.
+ *   그래서 이제 intent 를 **자기 자신의 expiresAt 기준으로** 독립적으로 쓴다.
+ *   어떤 경로로 고아가 되었든 상관없이 잡힌다.
+ *
+ * 순서: intent 를 먼저 쓸고 dispatch 를 쓴다. 반대로 하면 dispatch 정리 후 intent
+ * 정리 전에 프로세스가 죽었을 때 다시 고아가 생긴다. intent 가 결제를 막는 쪽이므로
+ * 그쪽을 먼저 푼다.
+ */
 export function startDispatchExpirySweeper(intervalMs = 30_000) {
-  const openStates: PaymentDispatchStatus[] = ["PENDING", "DELIVERED"];
   const tick = async () => {
+    const now = new Date();
+
+    // (1) intent — 자기 expiresAt 기준. dispatch 와 무관하게 정리된다.
     try {
-      const expired = await db
-        .update(paymentDispatches)
-        .set({ status: "TIMEOUT", respondedAt: new Date(), failureReason: "expired" })
+      const staleIntents = await db
+        .update(paymentIntents)
+        .set({ status: "TIMEOUT", failureReason: "expired", updatedAt: now })
         .where(
           and(
-            inArray(paymentDispatches.status, openStates),
-            lt(paymentDispatches.expiresAt, new Date())
+            inArray(paymentIntents.status, OPEN_INTENT_STATES),
+            lt(paymentIntents.expiresAt, now)
           )
         )
-        .returning({ id: paymentDispatches.id, paymentKey: paymentDispatches.paymentKey });
+        .returning({ id: paymentIntents.id });
+      if (staleIntents.length > 0) {
+        console.log(`🧹 만료된 결제 intent ${staleIntents.length}건을 TIMEOUT 으로 정리했습니다.`);
+      }
+    } catch (err) {
+      console.error("intent expiry sweeper error:", err);
+    }
 
-      if (expired.length > 0) {
-        // 대응 intent도 TIMEOUT으로. paymentKey 리스트를 조건절에.
-        await db.execute(sql`
-          UPDATE payment_intents
-             SET status = 'TIMEOUT', failure_reason = 'dispatch expired', updated_at = CURRENT_TIMESTAMP
-           WHERE payment_key = ANY(${expired.map((r) => r.paymentKey)}::text[])
-             AND status IN ('CREATED', 'PROCESSING')
-        `);
+    // (2) dispatch — 위가 실패해도 이건 돌아야 하므로 try 를 나눈다.
+    try {
+      const staleDispatches = await db
+        .update(paymentDispatches)
+        .set({ status: "TIMEOUT", respondedAt: now, failureReason: "expired", updatedAt: now })
+        .where(
+          and(
+            inArray(paymentDispatches.status, OPEN_DISPATCH_STATES),
+            lt(paymentDispatches.expiresAt, now)
+          )
+        )
+        .returning({ id: paymentDispatches.id });
+      if (staleDispatches.length > 0) {
+        console.log(`🧹 만료된 dispatch ${staleDispatches.length}건을 TIMEOUT 으로 정리했습니다.`);
       }
     } catch (err) {
       console.error("dispatch expiry sweeper error:", err);
     }
   };
+
   const timer = setInterval(tick, intervalMs);
   // 프로세스 종료 시 정리
   process.once("SIGTERM", () => clearInterval(timer));
   process.once("SIGINT", () => clearInterval(timer));
-  // 첫 tick은 즉시
+  // 첫 tick은 즉시 — 재시작 직후 남아 있던 유령을 곧바로 걷어낸다.
   tick();
 }

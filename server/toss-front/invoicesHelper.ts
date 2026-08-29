@@ -24,14 +24,29 @@ import { payments } from "@shared/schema";
 import { signVirtualInvoice } from "./virtualInvoice";
 import { todayKst } from "@shared/day";
 
+/**
+ * 한 달치 납부 상태.
+ *   미납  — 아직 한 푼도 안 냈다
+ *   부분납 — 일부만 냈고 잔액이 남았다
+ *   완납  — 다 냈다 (잔액 0 이하)
+ */
+export type InvoiceStatus = "미납" | "부분납" | "완납";
+
 export interface ComputedInvoice {
-  token: string;
+  /**
+   * 결제용 서명 토큰. 완납 건은 결제할 게 없으므로 null 이다.
+   * null 인 청구서에 결제를 걸 수 없다는 것이 화면·서버 양쪽의 계약이다.
+   */
+  token: string | null;
   paymentMonth: string;
   enrollmentId: string;
   className: string;
   subject: string;
   amountDue: number;      // 지금 남은 실제 잔액 (선납 대상이면 tuition 전액)
-  amountPaid: number;
+  amountPaid: number;     // 이 달에 이미 낸 금액 (환불은 음수로 상계된 순액)
+  /** 이 달의 총 청구액. 화면에서 "27만원 중 1천원 냄"을 그리려면 분모가 필요하다. */
+  tuition: number;
+  status: InvoiceStatus;
 }
 
 /**
@@ -46,7 +61,17 @@ export async function computeStudentInvoices(
   tenantId: string,
   studentId: string,
   studentName: string,
-  monthsForward = 6
+  monthsForward = 6,
+  /**
+   * 완납된 달도 목록에 포함할지.
+   *
+   *   false (기본) — 결제할 것만 준다. 단말기 플러그인처럼 "지금 결제할 대상"만
+   *                  필요한 쪽의 동작을 바꾸지 않기 위해 기본값을 유지한다.
+   *   true         — 태블릿용. 원장 요청: "그 달의 미납·부분납·완납 상태가 보였으면".
+   *                  완납이라 목록에서 사라지면 학부모는 낸 건지 시스템이 모르는 건지
+   *                  구분할 수 없다. 낸 것도 "완납"으로 보여 줘야 안심한다.
+   */
+  includeSettled = false
 ): Promise<ComputedInvoice[]> {
   const enrollmentsRows = await storage.getActiveEnrollmentsWithClass(tenantId, studentId);
 
@@ -89,27 +114,43 @@ export async function computeStudentInvoices(
         );
       const amountPaid = rows.reduce((s, r) => s + r.amount, 0);
       const remaining = tuition - amountPaid;
-      if (remaining <= 0) continue;
+
+      const status: InvoiceStatus =
+        remaining <= 0 ? "완납" : amountPaid > 0 ? "부분납" : "미납";
+
+      if (remaining <= 0 && !includeSettled) continue;
 
       // 서명된 청구서 토큰. `amount` 는 지금 시점의 잔액 상한이며 dispatch 단계에서
       // 다시 DB 로 실제 잔액을 계산해 확인한다 (요청 금액은 min(signedAmount, dbRemaining) 이하).
-      const token = signVirtualInvoice({
-        tenantId,
-        studentId,
-        studentName,
-        enrollmentId: e.id,
-        paymentMonth: month,
-        amount: remaining,
-        className: e.className,
-      });
+      //
+      // 완납 건에는 토큰을 발급하지 않는다. 서명이 없으면 dispatch 를 만들 수 없으므로,
+      // "완납인데 실수로 또 결제" 가 화면 버그로도 일어날 수 없다. 금액이 0 이하인
+      // 토큰은 어차피 dispatch 에서 거절되지만, 아예 발급하지 않는 편이 더 확실하다.
+      const token =
+        remaining > 0
+          ? signVirtualInvoice({
+              tenantId,
+              studentId,
+              studentName,
+              enrollmentId: e.id,
+              paymentMonth: month,
+              amount: remaining,
+              className: e.className,
+            })
+          : null;
+
       invoices.push({
         token,
         paymentMonth: month,
         enrollmentId: e.id,
         className: e.className,
         subject: e.classSubject,
-        amountDue: remaining,
+        // 완납이면 잔액을 0 으로 정규화한다. 초과 납부(환불 예정)를 음수로 흘려보내면
+        // 화면에 "-3,000원" 같은 값이 그대로 찍힌다.
+        amountDue: Math.max(0, remaining),
         amountPaid,
+        tuition,
+        status,
       });
     }
   }

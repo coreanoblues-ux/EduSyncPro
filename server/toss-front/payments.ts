@@ -33,6 +33,7 @@ import {
 } from "@shared/schema";
 import { deviceGuard } from "./deviceAuth";
 import { verifyVirtualInvoice } from "./virtualInvoice";
+import { classifyConfirm } from "./lifecycle";
 
 const router = Router();
 
@@ -186,23 +187,29 @@ router.post(
           };
         }
 
-        // 3) 확정 가능한 상태인가
-        if (intent.status !== "CREATED" && intent.status !== "PROCESSING") {
-          return {
-            status: 409,
-            body: {
-              error: `현재 상태에서는 승인할 수 없습니다: ${intent.status}`,
-            },
-          };
+        // 3~4) 이 승인을 받아 줄지 판단. 규칙과 그 근거는 lifecycle.ts 에 있다.
+        //   요지: 이 핸들러에 도착했다는 건 카드가 **이미 긁혔다**는 뜻이다. 만료나
+        //   TIMEOUT 을 이유로 거절하면 돈은 나갔는데 장부에는 안 남는다. 그래서
+        //   늦게 온 승인도 받아 주되 "지각 승인"이라는 흔적을 반드시 남긴다.
+        const decision = classifyConfirm({
+          intentStatus: intent.status,
+          expiresAt: intent.expires_at,
+        });
+        if (decision.kind === "reject") {
+          return { status: 409, body: { error: decision.reason } };
+        }
+        // kind === "idempotent" 는 위 2) 에서 이미 처리했다. 방어적으로 한 번 더.
+        if (decision.kind === "idempotent") {
+          return { status: 409, body: { error: "이미 승인된 결제입니다." } };
         }
 
-        // 4) 만료 확인
-        if (new Date(intent.expires_at) < new Date()) {
-          await tx
-            .update(paymentIntents)
-            .set({ status: "TIMEOUT", failureReason: "expired at confirm" })
-            .where(eq(paymentIntents.id, intent.id));
-          return { status: 409, body: { error: "결제 요청이 만료되었습니다." } };
+        const lateRecovery = decision.lateRecovery;
+        const lateWhy = decision.lateRecovery ? decision.why : null;
+        if (decision.lateRecovery) {
+          console.warn(
+            `⚠️ 지각 승인 복구: paymentKey=${body.paymentKey} (${decision.why}) — ` +
+              `카드가 이미 승인된 건이므로 거절하지 않고 기록합니다.`
+          );
         }
 
         // 5) 금액 위조 확인 — 프론트가 보낸 amount가 intent에 저장된 값과 다르면 거절
@@ -257,17 +264,26 @@ router.post(
           paymentMonth: intent.payment_month,
           paidDate: new Date(),
           createdBy: systemUserId,
-          notes: `Toss Front · ${body.approvalNumber}`,
+          // 지각 승인이면 비고에 남긴다. 회계 화면에서 원장이 "이 건은 왜 늦게 들어왔지"를
+          // 되짚을 수 있는 유일한 단서다.
+          notes:
+            `Toss Front · ${body.approvalNumber}` +
+            (lateWhy ? ` · 지각 승인 복구(${lateWhy})` : ""),
           externalProvider: "TOSSPLACE",
           externalPaymentKey: body.paymentKey,
           externalTransactionId: txRow.id,
           paidVia: "TOSS_FRONT",
         });
 
-        // 8) intent 상태를 APPROVED로 확정
+        // 8) intent 상태를 APPROVED로 확정.
+        //    지각 승인이면 failureReason 에 경위를 남긴다 (실패가 아니라 "왜 늦었나"의 기록).
         await tx
           .update(paymentIntents)
-          .set({ status: "APPROVED", approvedAt: new Date() })
+          .set({
+            status: "APPROVED",
+            approvedAt: new Date(),
+            failureReason: lateWhy ? `late confirm recovered (${lateWhy})` : null,
+          })
           .where(eq(paymentIntents.id, intent.id));
 
         // 9) 결제 단말기 모드로 만들어진 결제였다면 dispatch도 함께 APPROVED로 마감.

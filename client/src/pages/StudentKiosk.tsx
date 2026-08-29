@@ -31,14 +31,24 @@ interface StudentHit {
 }
 
 interface Invoice {
-  token: string;
+  /** 완납 건은 결제할 게 없어 서버가 토큰을 발급하지 않는다 (null). */
+  token: string | null;
   paymentMonth: string;
   enrollmentId: string;
   className: string;
   subject: string;
   amountDue: number;
   amountPaid: number;
+  tuition: number;
+  status: "미납" | "부분납" | "완납";
 }
+
+/** 목록·상세에서 같은 색을 쓰기 위해 한 곳에 모아 둔다. */
+const STATUS_STYLE: Record<Invoice["status"], { badge: string; amount: string }> = {
+  미납: { badge: "bg-red-500/15 text-red-300 border-red-500/30", amount: "text-orange-400" },
+  부분납: { badge: "bg-amber-500/15 text-amber-300 border-amber-500/30", amount: "text-amber-300" },
+  완납: { badge: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30", amount: "text-slate-500" },
+};
 
 // ─── 인증 유틸 ───────────────────────────────────────────────────────────
 let accessToken: string | null = null;
@@ -167,6 +177,12 @@ export default function StudentKiosk() {
 
   const startPayment = async (inv: Invoice, requestedAmount: number) => {
     setError(null);
+    // 완납 건은 서버가 토큰을 발급하지 않는다. 토큰 없이 요청하면 서버가 400 을
+    // 돌려주지만, 그 전에 여기서 막아 사용자에게 정확한 말을 해 준다.
+    if (!inv.token) {
+      setError("이미 완납된 달입니다. 결제할 금액이 없습니다.");
+      return;
+    }
     // 클라이언트 상한 확인 (서버가 다시 검증하지만 왕복 절약)
     if (!Number.isInteger(requestedAmount) || requestedAmount <= 0 || requestedAmount > inv.amountDue) {
       setError(`결제 금액은 1원 이상, ${inv.amountDue.toLocaleString()}원 이하여야 합니다.`);
@@ -401,33 +417,76 @@ function InvoicePickStage(props: {
   onPick: (i: Invoice) => void;
   error: string | null;
 }) {
+  const unpaidTotal = props.invoices
+    .filter((i) => i.status !== "완납")
+    .reduce((s, i) => s + i.amountDue, 0);
+
   return (
     <div className="space-y-6" data-testid="stage-invoices">
       <div className="text-center">
-        <h1 className="text-2xl font-bold">{props.studentName}님 미납 수강료</h1>
-        <p className="text-slate-400 mt-2">결제할 항목을 선택하세요.</p>
+        <h1 className="text-2xl font-bold">{props.studentName}님 수강료</h1>
+        {unpaidTotal > 0 ? (
+          <p className="text-slate-400 mt-2">
+            남은 금액 <span className="text-orange-400 font-bold">{unpaidTotal.toLocaleString()}원</span>
+            {" · "}결제할 항목을 선택하세요.
+          </p>
+        ) : (
+          <p className="text-emerald-400 mt-2">미납 없이 모두 납부되었습니다.</p>
+        )}
       </div>
       {props.error && <div className="text-red-400 text-center">{props.error}</div>}
       <div className="grid gap-3 max-w-xl mx-auto">
-        {props.invoices.map((inv) => (
-          <button
-            key={inv.token}
-            onClick={() => props.onPick(inv)}
-            className="p-6 rounded-lg bg-slate-800 hover:bg-slate-700 text-left flex items-center justify-between"
-            data-testid={`invoice-${inv.enrollmentId}-${inv.paymentMonth}`}
-          >
-            <div>
-              <div className="text-lg font-semibold">
-                {inv.className}
-                <span className="ml-2 text-sm text-slate-400">{inv.paymentMonth}</span>
+        {props.invoices.map((inv) => {
+          // 완납 건은 보여 주되 누를 수 없다. 목록에서 아예 숨기면 학부모가
+          // "낸 게 반영된 건지" 확인할 방법이 없어서 보여 주기로 했지만,
+          // 누를 수 있게 두면 완납한 달을 또 결제하는 사고가 난다.
+          const settled = inv.status === "완납" || !inv.token;
+          const style = STATUS_STYLE[inv.status];
+          return (
+            <button
+              key={`${inv.enrollmentId}-${inv.paymentMonth}`}
+              onClick={() => !settled && props.onPick(inv)}
+              disabled={settled}
+              className={`p-6 rounded-lg text-left flex items-center justify-between ${
+                settled ? "bg-slate-900 border border-slate-800 cursor-default" : "bg-slate-800 hover:bg-slate-700"
+              }`}
+              data-testid={`invoice-${inv.enrollmentId}-${inv.paymentMonth}`}
+            >
+              <div>
+                <div className="text-lg font-semibold flex items-center gap-2">
+                  <span className={settled ? "text-slate-400" : ""}>{inv.className}</span>
+                  <span className="text-sm text-slate-400">{inv.paymentMonth}</span>
+                  <span
+                    className={`text-xs px-2 py-0.5 rounded-full border ${style.badge}`}
+                    data-testid={`invoice-status-${inv.enrollmentId}-${inv.paymentMonth}`}
+                  >
+                    {inv.status}
+                  </span>
+                </div>
+                <div className="text-sm text-slate-500 mt-1">{inv.subject}</div>
+                {/*
+                  부분납이면 "27만원 중 1천원 냄, 26만 9천원 남음" 을 눈으로 확인할 수 있어야 한다.
+                  잔액 숫자만 보면 학부모는 자기가 낸 1천원이 반영됐는지 알 수 없다.
+                */}
+                {inv.amountPaid > 0 && (
+                  <div className="text-sm text-slate-400 mt-2">
+                    {inv.tuition.toLocaleString()}원 중{" "}
+                    <span className="text-emerald-400">{inv.amountPaid.toLocaleString()}원</span> 납부
+                    {inv.amountDue > 0 && (
+                      <>
+                        {" · "}
+                        <span className="text-amber-300">{inv.amountDue.toLocaleString()}원</span> 남음
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
-              <div className="text-sm text-slate-500 mt-1">{inv.subject}</div>
-            </div>
-            <div className="text-2xl font-bold text-orange-400">
-              {inv.amountDue.toLocaleString()}원
-            </div>
-          </button>
-        ))}
+              <div className={`text-2xl font-bold ${style.amount}`}>
+                {settled ? "완납" : `${inv.amountDue.toLocaleString()}원`}
+              </div>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -474,6 +533,16 @@ function AmountPickStage(props: {
             {props.invoice.amountDue.toLocaleString()}원
           </span>
         </p>
+        {/*
+          이미 일부를 낸 달이면 그 사실을 여기서도 다시 보여 준다. 앞 화면에서 봤더라도
+          금액을 확정하는 이 순간에 "얼마 냈고 얼마 남았다"가 눈앞에 있어야 오입력이 준다.
+        */}
+        {props.invoice.amountPaid > 0 && (
+          <p className="text-slate-500 text-sm mt-1">
+            {props.invoice.tuition.toLocaleString()}원 중{" "}
+            <span className="text-emerald-400">{props.invoice.amountPaid.toLocaleString()}원</span> 납부 완료
+          </p>
+        )}
       </div>
 
       <div className="grid gap-3 max-w-xl mx-auto">
@@ -486,7 +555,10 @@ function AmountPickStage(props: {
           }`}
           data-testid="amount-mode-full"
         >
-          <div className="text-lg font-semibold">전액 결제</div>
+          {/* 부분납 상태면 "전액"은 청구액이 아니라 남은 금액 전부라는 뜻이다. 말을 구분한다. */}
+          <div className="text-lg font-semibold">
+            {props.invoice.amountPaid > 0 ? "남은 금액 전부 결제" : "전액 결제"}
+          </div>
           <div className="text-2xl font-bold text-orange-400 mt-1">
             {props.invoice.amountDue.toLocaleString()}원
           </div>

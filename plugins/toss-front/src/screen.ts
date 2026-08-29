@@ -39,6 +39,29 @@ let currentActions: ScreenAction[] = [];
 let versionLabel = "";
 
 /**
+ * 진단 로그 박스를 이 화면에 보여 줄 것인가.
+ *
+ * ── 왜 화면마다 다르게 됐나 (2026-08-29, 원장 요청) ──
+ *   "대기화면에서 이건 안 보여도 될 것 같아. 어차피 컴퓨터로 172.30.1.91:9900
+ *    으로 들어가서 보면 되잖아."
+ *
+ *   맞는 말이다. 대기화면은 학원 로비에서 학생과 학부모가 보는 화면인데 거기에
+ *   영어 스택트레이스가 여섯 줄 깔려 있는 건 그냥 흉하다. 그리고 테스트 단말기는
+ *   빨간 배지의 로그 뷰어로 훨씬 자세히 볼 수 있다.
+ *
+ *   다만 통째로 없애지는 않는다. 그 로그 뷰어는 테스트 단말기(디버그 빌드)에만
+ *   있다. 라이브 배포로 넘어가면 빨간 배지도 뷰어도 사라진다. 그때 화면에도
+ *   로그가 없으면 0.2.x 의 "검은 화면, 단서 없음" 으로 정확히 되돌아간다.
+ *   그 상태로 며칠을 보낸 적이 있다.
+ *
+ *   그래서 이렇게 나눈다:
+ *     대기화면 · 관리자 메뉴 · 결제중 · 영수증 → 안 보인다 (손님이 보는 화면)
+ *     실패 화면 · [단말기 상태] 화면          → 보인다 (원장이 원인을 찾는 화면)
+ *   로그는 계속 쌓이고 서버로도 올라간다. 화면에 그리는 것만 나눈 것이다.
+ */
+let showDiag = false;
+
+/**
  * 다시 그리기 잠금.
  *
  * paint() 는 el.textContent = "" 로 화면을 통째로 비우고 다시 만든다. 그런데
@@ -223,7 +246,7 @@ function paint() {
     el.appendChild(row);
   }
 
-  if (diagLines.length > 0) {
+  if (showDiag && diagLines.length > 0) {
     const diag = document.createElement("pre");
     diag.setAttribute(
       "style",
@@ -275,6 +298,8 @@ export function showIdle(opts?: { onAdmin?: () => void }) {
   currentActions = opts?.onAdmin
     ? [{ label: "관리자", kind: "secondary", onClick: opts.onAdmin }]
     : [];
+  // 로비에서 학생·학부모가 보는 화면이다. 로그는 걷어낸다.
+  showDiag = false;
   repaintLocked = false;
   paint();
 }
@@ -302,6 +327,29 @@ export function showAdminMenu(opts: {
     { label: "단말기 상태", kind: "secondary", onClick: opts.onStatus },
     { label: "첫화면으로", kind: "secondary", onClick: opts.onExit },
   ];
+  // 로그는 [단말기 상태] 안에서 본다. 메뉴 화면까지 스택트레이스로 채우지 않는다.
+  showDiag = false;
+  repaintLocked = false;
+  paint();
+}
+
+/**
+ * 상태·진단 화면. 관리자 메뉴의 [단말기 상태] 와 나가기 실패 안내가 여기로 온다.
+ *
+ * 로그가 화면에 보이는 곳은 이제 여기와 실패 화면 둘뿐이다. 원장이 원인을 찾을
+ * 때만 열리고, 학생이 보는 화면에는 안 나온다.
+ */
+export function showStatus(opts: {
+  title: string;
+  detail: string;
+  actions: ScreenAction[];
+  tone?: "idle" | "error";
+}) {
+  currentTone = opts.tone === "error" ? "error" : "idle";
+  currentTitle = opts.title;
+  currentSubtitle = opts.detail;
+  currentActions = opts.actions;
+  showDiag = true;
   repaintLocked = false;
   paint();
 }
@@ -314,6 +362,8 @@ export function showBusy(orderName: string, amount: number) {
   // 결제 중에는 버튼이 없어야 한다. 카드 승인 도중 [첫화면으로] 가 눌리면
   // 승인은 났는데 화면만 나가 버리는 최악의 상태가 된다.
   currentActions = [];
+  // 카드를 대는 순간 학생이 보는 화면이다.
+  showDiag = false;
   repaintLocked = false;
   paint();
 }
@@ -328,6 +378,9 @@ export function showFatal(title: string, detail: string, opts?: { onAdmin?: () =
   currentActions = opts?.onAdmin
     ? [{ label: "관리자", kind: "secondary", onClick: opts.onAdmin }]
     : [];
+  // 실패 화면에서는 로그를 보여 준다. 여기가 원장이 원인을 읽어야 하는 자리다.
+  // 라이브 배포에는 단말기 로그 뷰어가 없으므로 이 화면이 유일한 단서가 된다.
+  showDiag = true;
   repaintLocked = false;
   paint();
 }
@@ -451,6 +504,7 @@ export function showReceiptChoice(opts: ReceiptChoiceOptions): void {
   currentTitle = "결제가 완료되었습니다";
   currentSubtitle = "영수증을 출력하시겠습니까?";
   currentActions = [];
+  showDiag = false;
   repaintLocked = false;
   paint();
 
@@ -570,6 +624,7 @@ export function showReceiptResult(kind: "ok" | "fail", message: string) {
   currentTitle = kind === "ok" ? "영수증 출력 완료" : "영수증 출력 실패";
   currentSubtitle = message;
   currentActions = [];
+  showDiag = false;
   repaintLocked = false;
   paint();
 }
@@ -580,6 +635,11 @@ export function showPairing(opts: PairingScreenOptions) {
   currentTitle = opts.title;
   currentSubtitle = opts.subtitle;
   currentActions = [];
+  // 여기는 로그를 켠 채로 둔다. 학생이 보는 화면이 아니라 원장이 매장코드를
+  // 치는 온보딩 화면이고, 페어링이 실패하는 이유(네트워크·코드 오타·서버 거절)는
+  // 이 로그에만 남는다. showDiag 를 명시하지 않으면 직전 화면 값이 그대로
+  // 따라와서, 어떤 경로로 들어왔느냐에 따라 보였다 안 보였다 한다.
+  showDiag = true;
   repaintLocked = false;
   paint();
 

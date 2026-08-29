@@ -59,6 +59,7 @@ import {
   showAdminMenu,
   showBusy,
   showFatal,
+  showStatus,
   pushDiagLine,
   clearOwnScreen,
   confirmTemplateRendered,
@@ -66,6 +67,7 @@ import {
   showPairing,
   showReceiptChoice,
   showReceiptResult,
+  type ScreenAction,
 } from "./screen";
 
 // ─── 버전 ──────────────────────────────────────────────────────────────
@@ -92,6 +94,24 @@ const handledPaymentKeys = new Set<string>();
 let merchantName = "";
 
 /**
+ * 원장이 [첫화면으로] 로 나가는 데 성공했는가.
+ *
+ * ── 이 플래그가 없으면 나가기는 여전히 안 된 것과 같다 ──
+ *   폴링 루프는 우리 화면을 스스로 다시 그리는 자리가 두 곳 있다:
+ *     · 연결이 끊겼다 복구되면  goIdle()
+ *     · 연속 실패 5회가 되면     showFatal()
+ *   둘 다 position:fixed·inset:0·z-index 2147483000 짜리 판을 다시 깐다.
+ *   즉 원장이 토스 첫화면으로 잘 나갔더라도, 몇 초 뒤 와이파이가 한 번
+ *   출렁이면 우리 화면이 그 위를 덮으며 도로 끌고 들어온다. 원장이 신고한
+ *   "나갈 방법이 없다" 와 결과가 똑같다.
+ *
+ *   그래서 나간 뒤에는 폴링이 화면을 건드리지 못하게 막는다. 예외는 하나,
+ *   실제 결제요청이 도착했을 때다. 그건 학생이 카드를 대려고 태블릿에서
+ *   금액을 띄운 상황이라 단말기가 화면을 되찾는 것이 맞다.
+ */
+let exitedToHome = false;
+
+/**
  * 대기화면에 뭘 띄울지.
  *
  * ── 왜 oneButton 인가 (2026-08-29, 문서 확인 후 twoButton 에서 변경) ──
@@ -112,8 +132,18 @@ let merchantName = "";
  *   일은 아래 관리자 메뉴로 한 단계 내렸다.
  *
  *   배경 그림 자체는 플러그인이 못 바꾼다. renderIdlePage 에는 이미지·색상·테마
- *   파라미터가 아예 없다. 배경은 단말기에서 원장이 직접 고른다:
- *   화면 우측 상단 5회 터치 → 7055 → 배경화면 변경.
+ *   파라미터가 아예 없다. 배경은 단말기 설정에서 원장이 직접 고른다.
+ *
+ *   ⚠️ 설정 진입 동작은 여기 적지 않는다 (0.3.12 정정).
+ *      0.3.11 까지 이 자리에 "우측 상단 5회 터치 → 7055" 라고 적혀 있었다.
+ *      7055(관리자 PIN)는 맞다 — docs.tossplace.com 의 트러블슈팅 문서가
+ *      "설정 → 7055 → 하단 '토스 프론트 재시작'" 이라고 명시한다.
+ *      틀린 것은 그 앞의 터치 동작이다. "우측 상단 5회 터치"는 옛 FAQ 방식이고,
+ *      Toss 개발자 문서는 설정 진입 동작을 아예 문서화하지 않는다. 즉 이 값은
+ *      펌웨어에 따라 바뀌며 코드 주석이 보증할 수 있는 종류가 아니다.
+ *      단말기에서 실제로 통하는 동작을 확인한 뒤 태블릿 안내 화면
+ *      (client/src/pages/TossFront.tsx) 한 곳에만 적는다. 두 곳에 적으면
+ *      한쪽이 반드시 낡는다.
  *
  * 버튼을 "새로고침"으로 두지 않은 이유:
  *   폴링이 이미 1초마다 돈다. 새로고침 버튼은 아무것도 앞당기지 못하면서 누르면
@@ -198,47 +228,174 @@ function openAdminMenu() {
  *   실제로 어디로 가는지는 단말기에서 눌러 봐야만 안다. 그래서 문구를
  *   "토스 홈으로"가 아니라 "첫화면으로" 로 바꾸고, 거래내역 이야기는 뺐다.
  *   결제 취소의 확실한 경로는 판매자센터(PC 웹)뿐이다.
+ *
+ * ── 0.3.12 에서 고친 것 (원장 신고: "눌러도 화면이 바뀌질 않아") ──
+ *   원인은 setIdle 이 아니라 우리 쪽이었다. 자체 화면(#edusync-front-root)과
+ *   부팅 문구(#boot)는 둘 다 position:fixed·inset:0 이고, 자체 화면은
+ *   z-index 가 2147483000 이다. 즉 setIdle 이 성공해서 토스가 첫화면을
+ *   #root 에 그리더라도 그 위를 우리 판이 통째로 덮는다. 원장 눈에는
+ *   "아무 일도 안 일어나고 로그만 한 줄 늘어나는" 화면이 된다.
+ *   그래서 이제 부르기 전에 우리 화면을 먼저 걷어낸다.
+ *
+ *   덮개를 걷으면 새 위험이 생긴다 — setIdle 이 조용히 실패하면 화면에
+ *   아무것도 안 남는다. 그래서 세 가지를 같이 넣었다:
+ *     1) reject 를 잡아 실패 화면으로 되돌린다.
+ *     2) 3초 워치독. resolve 도 reject 도 안 오는 경우를 잡는다.
+ *        (이 펌웨어의 renderIdlePage 는 그냥 던졌다. 조용히 죽는 API 를
+ *         이미 한 번 봤으니 응답 자체를 안 믿는다.)
+ *     3) resolve 를 받아도 그것만으로는 성공으로 치지 않는다. 0.6초 뒤
+ *        #root 에 자식 노드가 생겼는지 본다. 그게 "토스가 실제로 그렸다"는
+ *        유일한 양성 증거다. 없으면 실패로 처리한다.
+ *   어느 쪽으로 실패하든 [토스 설정 열기](openSetting) 와 [대기화면으로] 를
+ *   가진 화면을 그린다. openSetting 은 문서에 있는데 여태 한 번도 안 써 본
+ *   나가는 길이다 — 설정 화면까지만 가도 원장이 단말기를 다룰 수 있다.
  */
+const EXIT_WATCHDOG_MS = 3000;
+const EXIT_VERIFY_MS = 600;
+
 function exitToTossHome() {
   if (!sdk?.app?.setIdle) {
     log.warn("setIdle 없음", "이 펌웨어는 첫화면 이동을 지원하지 않습니다.");
-    notify("이 단말기는 첫화면 이동을 지원하지 않습니다. 결제 취소는 판매자센터(PC)에서 하세요.");
-    goIdle();
+    reportExitFailed("이 단말기 펌웨어에는 sdk.app.setIdle 이 없습니다.");
     return;
   }
+
   log.info("첫화면으로 이동", "원장 요청으로 sdk.app.setIdle() 을 호출합니다.");
-  void sdk.app.setIdle().catch((err) => {
-    log.error("setIdle 실패", err, "대기화면으로 되돌립니다.");
-    notify("첫화면으로 나가지 못했습니다.");
-    goIdle();
+
+  // 덮개를 먼저 걷는다. 이게 0.3.12 수정의 핵심이다.
+  clearOwnScreen();
+  removeBootNode();
+
+  let settled = false;
+  const watchdog = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    reportExitFailed("setIdle() 이 3초 안에 응답하지 않았습니다.");
+  }, EXIT_WATCHDOG_MS);
+
+  void sdk.app
+    .setIdle()
+    .then(() => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      log.info("setIdle 응답", "성공. 토스가 실제로 그렸는지 확인합니다.");
+      setTimeout(() => {
+        const drawn = (document.getElementById("root")?.childElementCount ?? 0) > 0;
+        if (drawn) {
+          // 여기서만 true 가 된다. "나갔다고 믿는" 것이 아니라 "나간 것을 봤다".
+          exitedToHome = true;
+          log.info("첫화면 이동 확인", "#root 에 토스 화면이 그려졌습니다. 폴링 화면 갱신을 멈춥니다.");
+          return;
+        }
+        reportExitFailed("setIdle() 은 성공했지만 토스 첫화면이 그려지지 않았습니다.");
+      }, EXIT_VERIFY_MS);
+    })
+    .catch((err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      reportExitFailed(describeErr(err));
+    });
+}
+
+/**
+ * 부팅 문구를 지운다.
+ *
+ * confirmTemplateRendered 와 달리 "토스가 그렸다"는 증거 없이도 지운다.
+ * 나가기는 화면을 통째로 넘겨주는 동작이라 덮개를 남길 수 없기 때문이다.
+ * 실패하면 곧바로 reportExitFailed 가 자체 화면을 다시 그려서 메운다.
+ */
+function removeBootNode() {
+  if (typeof document === "undefined") return;
+  document.getElementById("boot")?.remove();
+}
+
+/** 나가기가 안 됐을 때. 빈 화면에 원장을 버려 두지 않는 것이 이 함수의 전부다. */
+function reportExitFailed(reason: string) {
+  // 나가지 못했으니 화면은 다시 우리 것이다. 폴링 갱신도 다시 허용한다.
+  exitedToHome = false;
+  log.error("첫화면 이동 실패", reason, "대안 경로를 화면에 띄웁니다.");
+
+  const actions: ScreenAction[] = [];
+  if (sdk?.app?.openSetting) {
+    actions.push({ label: "토스 설정 열기", kind: "primary", onClick: () => openTossSetting() });
+  }
+  actions.push({ label: "대기화면으로", kind: "secondary", onClick: () => goIdle() });
+
+  showStatus({
+    tone: "error",
+    title: "첫화면으로 나가지 못했습니다",
+    detail:
+      "이 단말기 펌웨어가 플러그인 밖으로 나가는 것을 허용하지 않습니다. " +
+      "결제 취소는 토스플레이스 판매자센터(PC 웹)에서 하세요. " +
+      "단말기 자체를 다루셔야 하면 아래 [토스 설정 열기]를 눌러 보세요.",
+    actions,
   });
 }
 
-/** 짧은 안내. openToast 가 없으면 자체 진단 줄로 대체한다. */
-function notify(message: string) {
-  if (sdk?.template?.openToast) {
-    try {
-      sdk.template.openToast({ message });
-      return;
-    } catch (err) {
-      log.warn("openToast 실패", describeErr(err));
-    }
-  }
-  pushDiagLine(message);
+/** 문서에 있는데 여태 안 써 본 두 번째 탈출구. */
+function openTossSetting() {
+  if (!sdk?.app?.openSetting) return;
+  log.info("토스 설정 열기", "sdk.app.openSetting() 을 호출합니다.");
+  clearOwnScreen();
+  removeBootNode();
+  // 설정 화면도 남에게 넘긴 화면이다. 폴링이 그 위를 덮지 않게 막는다.
+  // 실패하면 아래 catch 에서 reportExitFailed 와 같은 이유로 도로 푼다.
+  exitedToHome = true;
+  void sdk.app.openSetting().catch((err) => {
+    exitedToHome = false;
+    log.error("openSetting 실패", err, "대기화면으로 되돌립니다.");
+    showStatus({
+      tone: "error",
+      title: "설정 화면도 열지 못했습니다",
+      detail:
+        "단말기에서 직접 설정으로 들어가셔야 합니다. 진입 방법은 아래 로그가 아니라 " +
+        "태블릿 화면(단말기 모드 안내)에 적어 두었습니다.",
+      actions: [{ label: "대기화면으로", kind: "secondary", onClick: () => goIdle() }],
+    });
+  });
 }
 
-/** 대기화면 버튼을 눌렀을 때. 결제에는 일절 관여하지 않는 읽기 전용 동작이다. */
+// notify() 는 0.3.12 에서 지웠다.
+//   openToast 로 한 줄 띄우는 함수였는데, 이 펌웨어에서는 template.* 이 통째로
+//   실패해서 사실상 아무것도 안 보여 주는 함수였다. 남겨 두면 다음에 또
+//   "알렸다고 착각하는" 코드를 쓰게 된다. 알릴 일이 있으면 showStatus 로
+//   화면을 그린다 — 그린 것은 원장 사진으로 확인이 되지만, 안 뜬 토스트는
+//   확인할 방법이 없다.
+
+/**
+ * 관리자 메뉴의 [단말기 상태]. 결제에는 일절 관여하지 않는 읽기 전용 동작이다.
+ *
+ * ── 0.3.12 에서 바뀐 것 ──
+ *   0.3.11 은 notify() → openToast 로 한 줄 띄우고 곧바로 goIdle() 했다.
+ *   그런데 이 펌웨어에서는 template.* 이 통째로 실패한다. openToast 도 예외가
+ *   아니어서, 원장이 [단말기 상태]를 눌러도 아무것도 안 뜨고 대기화면으로
+ *   되돌아갈 뿐이었다. [첫화면으로] 와 똑같은 증상이고 원인도 같다.
+ *
+ *   이제 자체 화면(showStatus)으로 그린다. 이 화면은 로그를 함께 보여 준다.
+ *   학생이 보는 대기화면에서 로그를 뺀 대신, 원장이 원인을 찾을 때 여는 곳은
+ *   여기다 — 원장이 PC 로 172.30.1.91:9900 을 열 수 없는 상황도 있다.
+ */
 function showTerminalStatus() {
   const connected = consecutivePollErrors === 0;
-  const message = connected
-    ? `정상 연결됨 · v${PLUGIN_VERSION}`
-    : `서버 연결 끊김 (연속 실패 ${consecutivePollErrors}회) · v${PLUGIN_VERSION}`;
+  const line = connected
+    ? "서버 연결: 정상"
+    : `서버 연결: 끊김 (연속 실패 ${consecutivePollErrors}회)`;
 
-  log.info("대기화면 상태 확인", message);
-  notify(message);
-  // 토스트를 띄운 뒤 관리자 메뉴에 머무르면 학생이 그 화면을 보게 된다.
-  // 상태만 알려 주고 곧바로 대기화면으로 돌려보낸다.
-  goIdle();
+  log.info("단말기 상태 확인", `${line} · v${PLUGIN_VERSION}`);
+
+  showStatus({
+    tone: connected ? "idle" : "error",
+    title: connected ? "단말기 정상" : "서버와 연결이 끊겼습니다",
+    detail: [
+      line,
+      `플러그인 버전: v${PLUGIN_VERSION}`,
+      `상점: ${merchantName || "(확인 안 됨)"}`,
+      busy ? "지금 결제 진행 중입니다." : "결제 대기 중입니다.",
+    ].join(" · "),
+    actions: [{ label: "대기화면으로", kind: "primary", onClick: () => goIdle() }],
+  });
 }
 
 /**
@@ -254,6 +411,8 @@ function showTerminalStatus() {
  * 부팅 문구가 둘 다 남는다. 보기 좋지는 않아도 단말기 앞에서 원인을 읽을 수 있다.
  */
 function goIdle() {
+  // 원장이 눌러서 돌아오는 길이다. 나간 상태를 여기서 푼다.
+  exitedToHome = false;
   const rendered = renderIdle(sdk, () => showIdle({ onAdmin: openAdminMenu }), idleParams());
   if (rendered) confirmTemplateRendered();
 }
@@ -425,12 +584,17 @@ async function pollOnce() {
     if (consecutivePollErrors > 0) {
       log.info("backend connection 복구", `연속 실패 ${consecutivePollErrors}회 뒤 정상화되었습니다.`);
       consecutivePollErrors = 0;
-      goIdle();
+      // 원장이 첫화면으로 나가 있으면 화면을 도로 뺏지 않는다. 복구 사실은
+      // 로그로만 남긴다. 결제요청이 오면 아래에서 어차피 화면을 되찾는다.
+      if (!exitedToHome) goIdle();
     }
 
     if (pending && !handledPaymentKeys.has(pending.paymentKey)) {
       handledPaymentKeys.add(pending.paymentKey);
       busy = true;
+      // 결제요청은 화면을 되찾을 유일한 정당한 사유다. 학생이 카드를 대려고
+      // 태블릿에서 금액을 띄운 상황이므로 단말기가 앞으로 나와야 한다.
+      exitedToHome = false;
       log.info(
         "payment intent 수신",
         `dispatch=${pending.dispatchId} 금액=${pending.amount}원 주문=${pending.orderName}`
@@ -449,7 +613,9 @@ async function pollOnce() {
     if (consecutivePollErrors <= 3 || consecutivePollErrors % 30 === 0) {
       log.error("폴링 오류", err, `연속 실패 ${consecutivePollErrors}회`);
     }
-    if (consecutivePollErrors === 5) {
+    // 나가 있는 동안에는 이 경고 화면도 띄우지 않는다. 원장이 결제 취소를
+    // 하러 나간 판을 "서버 연결 끊김" 이 덮어 버리면 나가기가 무효가 된다.
+    if (consecutivePollErrors === 5 && !exitedToHome) {
       showFatal(
         "서버 연결 끊김",
         "EduSyncPro 서버와 통신하지 못하고 있습니다. 인터넷 연결을 확인해 주세요. 연결되면 자동으로 복구됩니다.",

@@ -13,6 +13,7 @@
     "test:class": "tsx scripts/test-class-label.ts",
     "test:timetable": "tsx scripts/test-timetable.ts",
     "test:toss-front": "tsx scripts/test-toss-front.ts",
+    "test:resilience": "tsx scripts/test-server-resilience.ts",
     "plugin:build": "npm --prefix plugins/toss-front install --no-audit --no-fund && npm --prefix plugins/toss-front run build",
     "plugin:pack": "npm run plugin:build && node scripts/pack-toss-plugin.mjs",
     "db:push": "drizzle-kit push",

@@ -1,8 +1,28 @@
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
+
+// ⚠️ 순서 주의: 라우트 모듈들은 import 되는 순간 router.post(...) 를 실행한다.
+// 이 import 는 그보다 위에 있어야 async 오류 보호가 적용된다. 아래 ./routes 와
+// 순서를 바꾸면 보호가 조용히 무력화되고, 라우트 하나의 예외가 서버 전체를 죽인다.
+import "./lib/asyncErrors";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { startGradePromotionScheduler } from "./lib/gradePromotion";
+
+// ─── 최후의 방어선 ─────────────────────────────────────────────────────────
+// lib/asyncErrors 가 라우트 핸들러를 감싸지만, 전역 미들웨어·타이머·백그라운드
+// 작업에서 난 예외까지 잡지는 못한다. 그런 것 하나 때문에 학원 전체가 멈추면 안 된다.
+//
+// 판단: 이 서버는 학원 한 곳이 수업 중에 쓰는 업무 프로그램이다. "상태가 이상해졌을
+// 수 있으니 안전하게 종료한다"는 교과서적 처리는 여기서는 오히려 손해다. 결제·출결·
+// 조회가 통째로 멈추는 비용이, 요청 하나가 이상하게 끝날 위험보다 훨씬 크다.
+// 그래서 크게 로그를 남기고 살아남는 쪽을 택한다. 로그는 Railway 에서 확인한다.
+process.on("unhandledRejection", (reason: any) => {
+  console.error("❌ 처리되지 않은 Promise 거부 (프로세스는 계속 실행됩니다):", reason);
+});
+process.on("uncaughtException", (err: any) => {
+  console.error("❌ 잡히지 않은 예외 (프로세스는 계속 실행됩니다):", err);
+});
 
 const app = express();
 

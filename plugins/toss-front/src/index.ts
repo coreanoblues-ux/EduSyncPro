@@ -102,17 +102,92 @@ let merchantName = "";
  */
 function idleParams(): IdlePageParams {
   return {
-    type: "oneButton",
-    description: {
-      text: merchantName ? `${merchantName} 수강료 결제` : "수강료 결제",
-      subText: "태블릿에서 학생을 선택하면 이 화면에 결제 금액이 표시됩니다.",
+    type: "twoButton",
+    title: {
+      text1: merchantName || "수강료 결제",
+      text2: "결제를 기다리고 있습니다",
     },
-    button: {
+    description: {
+      text: "태블릿에서 학생을 선택하면 이 화면에 결제 금액이 표시됩니다.",
+      subText: "단말기를 직접 누르실 필요는 없습니다.",
+    },
+    primaryButton: {
       text: "단말기 상태",
-      subText: "연결이 잘 되어 있는지 확인합니다",
       onClick: () => showTerminalStatus(),
     },
+    secondaryButton: {
+      text: "토스 홈으로",
+      onClick: () => askExitToTossHome(),
+    },
   };
+}
+
+/**
+ * 토스 첫화면으로 나갈지 되묻는다.
+ *
+ * 왜 이 기능이 생겼나 (2026-08-29 원장 지적):
+ *   "우리 플러그인 화면에서 나갈 수는 있게 설계가 된 거야? 난 못 찾겠어.
+ *    단말기를 켜면 바로 플러그인 화면으로 들어가니깐."
+ *
+ *   맞는 지적이었다. 나가는 길을 아예 만들지 않았다. sdk.app.setIdle() 은 타입
+ *   선언에만 있고 어디서도 호출하지 않았다. 그래서 단말기는 켜는 순간부터 우리
+ *   화면에 갇혔고, 카드 취소를 하려면 토스 기본 결제앱으로 가야 하는데 갈 방법이
+ *   없었다. 환불 안내에 "단말기에서 취소하세요" 라고 적어 놓고 정작 거기까지
+ *   가는 길은 막아 둔 셈이다.
+ *
+ * 왜 한 번 되묻나:
+ *   이 대기화면은 학원 로비에 서 있고 학생도 만질 수 있다. 한 번 눌러서 바로
+ *   나가지면 학생이 지나가다 눌러 결제를 못 받는 상태가 된다. 그렇다고 숨기면
+ *   원장이 또 못 찾는다. 그래서 "두 번 누르고, 나가면 어떻게 되는지 읽게" 한다.
+ */
+function askExitToTossHome() {
+  log.info("토스 홈 나가기 확인", "원장이 대기화면에서 나가기를 눌렀습니다.");
+
+  const params: IdlePageParams = {
+    type: "twoButton",
+    title: { text1: "토스 홈으로", text2: "나가시겠어요?" },
+    description: {
+      text: "나가면 학생이 이 단말기로 결제할 수 없습니다.",
+      subText:
+        "카드 취소는 토스 홈 → 결제앱 → 거래내역에서 합니다. " +
+        "돌아오려면 토스 홈에서 이 플러그인을 다시 실행하세요.",
+    },
+    primaryButton: { text: "나가기", onClick: () => exitToTossHome() },
+    secondaryButton: { text: "취소", onClick: () => goIdle() },
+  };
+
+  // 확인 화면을 못 그리면 나가는 동작 자체를 하지 않는다. 되묻지 못한 채로
+  // 나가 버리는 것보다, 안 나가고 이유를 알려 주는 편이 낫다.
+  renderIdle(sdk, () => notify("이 단말기에서는 나가기 화면을 표시할 수 없습니다."), params);
+}
+
+/** 실제로 토스 첫화면으로 나간다. */
+function exitToTossHome() {
+  if (!sdk?.app?.setIdle) {
+    log.warn("setIdle 없음", "이 펌웨어는 첫화면 이동을 지원하지 않습니다.");
+    notify("이 단말기에서는 나가기를 지원하지 않습니다. 토스 판매자센터(PC)에서 취소하세요.");
+    goIdle();
+    return;
+  }
+  log.info("토스 홈으로 이동", "원장 요청으로 플러그인 대기화면을 벗어납니다.");
+  void sdk.app.setIdle().catch((err) => {
+    log.error("setIdle 실패", err, "대기화면으로 되돌립니다.");
+    notify("첫화면으로 나가지 못했습니다.");
+    goIdle();
+  });
+}
+
+/** 짧은 안내. openToast 가 없으면 자체 진단 줄로 대체한다. */
+function notify(message: string) {
+  if (sdk?.template?.openToast) {
+    try {
+      sdk.template.openToast({ message });
+      return;
+    } catch (err) {
+      log.warn("openToast 실패", describeErr(err));
+    }
+  }
+  pushDiagLine(message);
 }
 
 /** 대기화면 버튼을 눌렀을 때. 결제에는 일절 관여하지 않는 읽기 전용 동작이다. */
@@ -123,18 +198,7 @@ function showTerminalStatus() {
     : `서버 연결 끊김 (연속 실패 ${consecutivePollErrors}회) · v${PLUGIN_VERSION}`;
 
   log.info("대기화면 상태 확인", message);
-
-  // openToast 가 없는 펌웨어면 자체 진단 줄로 대체한다. 버튼을 눌렀는데
-  // 아무 반응이 없는 것이 제일 나쁘다.
-  if (sdk?.template?.openToast) {
-    try {
-      sdk.template.openToast({ message });
-      return;
-    } catch (err) {
-      log.warn("openToast 실패", describeErr(err));
-    }
-  }
-  pushDiagLine(message);
+  notify(message);
 }
 
 /** SDK 유휴화면이 있으면 그걸 쓰고, 없으면 자체 대기화면을 그린다. */

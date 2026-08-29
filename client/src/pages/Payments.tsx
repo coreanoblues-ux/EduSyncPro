@@ -10,6 +10,12 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Payment, Enrollment, Student, Class, Teacher } from "@shared/schema";
+import {
+  computeMonthStatus,
+  isOutstanding,
+  totalOutstanding as sumOutstanding,
+  type MonthPayment,
+} from "@shared/paymentStatus";
 
 interface PaymentsProps {
   userRole: 'owner' | 'teacher' | 'superadmin';
@@ -25,6 +31,14 @@ interface StudentWithPaymentStatus {
   tuition: number;
   unpaidMonths: string[];
   paidMonths: string[];
+  /**
+   * 재원 기간의 모든 달 (미납·부분납·완납 전부). 화면은 이걸로 그린다.
+   * unpaidMonths/paidMonths 는 여기서 파생된 값이고, "부분납"은 둘 중
+   * 어디에도 정직하게 담기지 않기 때문에 원본을 따로 들고 다닌다.
+   */
+  months: MonthPayment[];
+  /** 이 학생에게 아직 받아야 할 총액. 개월수×수강료가 아니라 실제 잔액의 합. */
+  outstanding: number;
 }
 
 interface ClassWithStudents {
@@ -161,24 +175,32 @@ export default function Payments({ userRole }: PaymentsProps) {
 
           const enrollmentPayments = payments.filter(p => p.enrollmentId === enrollment.id);
 
-          // 환불(음수)이 들어오면서 "기록이 있으면 납부 완료"라는 기존 판정은 더 이상 안전하지 않다.
-          // 같은 달에 350,000 수납 + 350,000 환불이 있으면 순액은 0원이므로 미납으로 봐야 한다.
-          // 따라서 달마다 금액을 합산해 순액이 0보다 클 때만 납부 완료로 처리한다.
+          // 달마다 순액을 낸다. 환불(음수)이 그대로 상계되므로
+          // "350,000 수납 + 350,000 환불 = 0원"은 자연히 미납으로 돌아온다.
           const netByMonth = new Map<string, number>();
           for (const p of enrollmentPayments) {
             if (!p.paymentMonth) continue;
             netByMonth.set(p.paymentMonth, (netByMonth.get(p.paymentMonth) || 0) + (p.amount || 0));
           }
-          const paidMonthSet = new Set(
-            Array.from(netByMonth.entries())
-              .filter(([, net]) => net > 0)
-              .map(([month]) => month)
+
+          // 판정은 shared/paymentStatus.ts 한 곳에서만 한다.
+          //
+          // 예전에는 여기서 "순액 > 0 이면 납부완료"로 잘랐다. 그래서 27만원짜리
+          // 달에 269,000원만 들어와도 초록색 완납으로 떴고, 남은 1,000원은 화면에서
+          // 사라졌다 (2026-08-29 원장 지적). 이제 분모(수강료)까지 넘겨서
+          // 미납/부분납/완납 세 갈래로 판정한다.
+          const months = allMonths.map(m =>
+            computeMonthStatus(m, tuition, netByMonth.get(m) || 0)
           );
 
-          const paidMonths = allMonths.filter(m => paidMonthSet.has(m));
-          const unpaidMonths = allMonths.filter(m => !paidMonthSet.has(m));
+          const paidMonths = months.filter(m => m.status === "완납").map(m => m.month);
+          // 부분납은 아직 받을 돈이 남은 달이므로 미납 쪽에 선다.
+          // 그래야 "납부하기" 버튼이 붙고 총액에도 잡힌다.
+          const unpaidMonths = months.filter(isOutstanding).map(m => m.month);
 
-          const currentMonthPaid = paidMonthSet.has(currentMonthStr);
+          const currentMonthPaid = months.some(
+            m => m.month === currentMonthStr && m.status === "완납"
+          );
           // 표시용 영수증 정보는 실제 수납 기록(양수)을 우선한다.
           const latestPayment =
             enrollmentPayments.find(p => p.paymentMonth === currentMonthStr && (p.amount || 0) > 0) ??
@@ -194,6 +216,8 @@ export default function Payments({ userRole }: PaymentsProps) {
             tuition,
             unpaidMonths,
             paidMonths,
+            months,
+            outstanding: sumOutstanding(months),
           };
         }).filter(s => s.id);
         
@@ -254,8 +278,18 @@ export default function Payments({ userRole }: PaymentsProps) {
     setExpandedOnLeave(newExpanded);
   };
 
-  const handlePaymentClick = (student: StudentWithPaymentStatus, month: string) => {
-    setPaymentAmount(student.tuition.toString());
+  /**
+   * @param remaining 그 달에 아직 받아야 할 금액. 부분납인 달은 수강료 전액이 아니라
+   *   잔액이 기본값으로 떠야 한다. 27만원짜리 달에 269,000원이 이미 들어왔는데
+   *   입력칸에 270,000이 떠 있으면 원장이 그대로 눌러 54만원을 받은 걸로 적게 된다.
+   */
+  const handlePaymentClick = (
+    student: StudentWithPaymentStatus,
+    month: string,
+    remaining?: number,
+  ) => {
+    const preset = remaining && remaining > 0 ? remaining : student.tuition;
+    setPaymentAmount(preset.toString());
     setPaymentDate(new Date().toISOString().slice(0, 10));
     setPaymentDialog({
       isOpen: true,
@@ -303,10 +337,12 @@ export default function Payments({ userRole }: PaymentsProps) {
       .filter(p => p.paymentMonth === currentMonthString)
       .reduce((sum, p) => sum + (p.amount || 0), 0);
     
+    // 미납 개월수 × 수강료로 세지 않는다. 부분납이 있으면 이미 받은 269,000원까지
+    // 미납으로 세어 총액이 두 배로 부풀기 때문이다. 달마다 실제 잔액을 더한다.
     const totalOutstanding = teacherData.reduce((total, teacher) => {
       return total + teacher.classes.reduce((classTotal, classItem) => {
         return classTotal + classItem.students.reduce((studentTotal, student) => {
-          return studentTotal + (student.unpaidMonths.length * student.tuition);
+          return studentTotal + student.outstanding;
         }, 0);
       }, 0);
     }, 0);
@@ -449,7 +485,7 @@ export default function Payments({ userRole }: PaymentsProps) {
                                   <div className="flex items-center justify-between">
                                     <div className="flex items-center gap-3">
                                       <div className="flex items-center gap-2">
-                                        {student.unpaidMonths.length === 0 ? (
+                                        {student.outstanding === 0 ? (
                                           <CheckCircle className="h-5 w-5 text-green-600" />
                                         ) : (
                                           <XCircle className="h-5 w-5 text-red-600" />
@@ -466,16 +502,18 @@ export default function Payments({ userRole }: PaymentsProps) {
                                     <div className="flex items-center gap-3">
                                       <div className="text-right">
                                         <div className="font-medium">{formatAmount(student.tuition)}/월</div>
-                                        {student.unpaidMonths.length > 0 ? (
+                                        {student.outstanding > 0 ? (
                                           <div className="flex items-center gap-1 text-xs text-red-600">
                                             <AlertTriangle className="h-3 w-3" />
-                                            {student.unpaidMonths.length}개월 미납
+                                            {/* 개월수만 쓰면 "1,000원 남은 달"과 "한 푼도 안 낸 달"이
+                                                똑같이 1개월로 보인다. 받을 금액을 같이 적는다. */}
+                                            {student.unpaidMonths.length}개월 · {formatAmount(student.outstanding)} 미수
                                           </div>
                                         ) : (
                                           <div className="text-xs text-green-600">전월 납부완료</div>
                                         )}
                                       </div>
-                                      {student.unpaidMonths.length === 0 && (
+                                      {student.outstanding === 0 && (
                                         <Badge variant="default" className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
                                           납부완료
                                         </Badge>
@@ -483,36 +521,59 @@ export default function Payments({ userRole }: PaymentsProps) {
                                     </div>
                                   </div>
 
-                                  {student.unpaidMonths.length > 0 && (
+                                  {student.outstanding > 0 && (
                                     <div className="mt-3 flex flex-wrap gap-2">
-                                      {student.unpaidMonths.map((month) => {
+                                      {student.months.filter(isOutstanding).map((m) => {
                                         const now = new Date();
                                         const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-                                        const isCurrentMonth = month === currentMonthStr;
+                                        const isCurrentMonth = m.month === currentMonthStr;
                                         const canPay = userRole === 'owner' || userRole === 'teacher';
+                                        const isPartial = m.status === "부분납";
 
                                         return (
                                           <div
-                                            key={month}
+                                            key={m.month}
                                             className="flex items-center gap-2 border rounded-md px-3 py-1.5 bg-muted/30"
+                                            data-testid={`month-chip-${student.id}-${m.month}`}
                                           >
                                             <span className={`text-sm font-medium ${isCurrentMonth ? 'text-foreground' : 'text-red-600 dark:text-red-400'}`}>
-                                              {formatMonthLabel(month)}
+                                              {formatMonthLabel(m.month)}
                                             </span>
-                                            {!isCurrentMonth && (
-                                              <Badge variant="destructive" className="text-xs px-1.5 py-0">
-                                                미납
-                                              </Badge>
+
+                                            {/* 부분납은 "얼마 냈고 얼마 남았는지"를 다 보여 준다.
+                                                금액이 없으면 원장이 남은 돈을 못 받는다. */}
+                                            {isPartial ? (
+                                              <>
+                                                <Badge
+                                                  variant="outline"
+                                                  className="text-xs px-1.5 py-0 border-amber-500 text-amber-700 dark:text-amber-400"
+                                                >
+                                                  부분납
+                                                </Badge>
+                                                <span className="text-xs text-muted-foreground">
+                                                  {formatAmount(m.paid)} 납부 ·{" "}
+                                                  <span className="font-medium text-red-600 dark:text-red-400">
+                                                    {formatAmount(m.remaining)} 남음
+                                                  </span>
+                                                </span>
+                                              </>
+                                            ) : (
+                                              !isCurrentMonth && (
+                                                <Badge variant="destructive" className="text-xs px-1.5 py-0">
+                                                  미납
+                                                </Badge>
+                                              )
                                             )}
+
                                             {canPay && (
                                               <Button
                                                 size="sm"
-                                                variant={isCurrentMonth ? "default" : "destructive"}
-                                                onClick={() => handlePaymentClick(student, month)}
-                                                data-testid={`payment-button-${student.id}-${month}`}
+                                                variant={isCurrentMonth && !isPartial ? "default" : "destructive"}
+                                                onClick={() => handlePaymentClick(student, m.month, m.remaining)}
+                                                data-testid={`payment-button-${student.id}-${m.month}`}
                                               >
                                                 <CreditCard className="h-3.5 w-3.5 mr-1" />
-                                                납부하기
+                                                {isPartial ? "잔액 납부" : "납부하기"}
                                               </Button>
                                             )}
                                           </div>

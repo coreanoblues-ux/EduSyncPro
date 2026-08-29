@@ -16,6 +16,7 @@
     "test:payment-lifecycle": "tsx scripts/test-payment-lifecycle.ts",
     "test:refund": "tsx scripts/test-refund.ts",
     "test:reconcile": "tsx scripts/test-reconcile.ts",
+    "test:payment-status": "tsx scripts/test-payment-status.ts",
     "test:resilience": "tsx scripts/test-server-resilience.ts",
     "test:cors": "tsx scripts/test-cors.ts",
     "plugin:build": "npm --prefix plugins/toss-front install --no-audit --no-fund && npm --prefix plugins/toss-front run build",

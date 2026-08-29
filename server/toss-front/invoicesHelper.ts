@@ -23,14 +23,18 @@ import { storage } from "../storage";
 import { payments } from "@shared/schema";
 import { signVirtualInvoice } from "./virtualInvoice";
 import { todayKst } from "@shared/day";
+import { computeMonthStatus, type MonthPaymentStatus } from "@shared/paymentStatus";
 
 /**
  * 한 달치 납부 상태.
  *   미납  — 아직 한 푼도 안 냈다
  *   부분납 — 일부만 냈고 잔액이 남았다
  *   완납  — 다 냈다 (잔액 0 이하)
+ *
+ * 값 자체는 shared/paymentStatus.ts 의 것을 그대로 쓴다. 여기서 따로 선언해 두면
+ * 한쪽에 상태를 추가했을 때 컴파일러가 아무 말도 안 해 준다.
  */
-export type InvoiceStatus = "미납" | "부분납" | "완납";
+export type InvoiceStatus = MonthPaymentStatus;
 
 export interface ComputedInvoice {
   /**
@@ -113,10 +117,10 @@ export async function computeStudentInvoices(
           )
         );
       const amountPaid = rows.reduce((s, r) => s + r.amount, 0);
-      const remaining = tuition - amountPaid;
 
-      const status: InvoiceStatus =
-        remaining <= 0 ? "완납" : amountPaid > 0 ? "부분납" : "미납";
+      // 판정은 shared/paymentStatus.ts 한 벌만 쓴다. 예전에는 여기와 원장 화면이
+      // 각자 계산했고, 그래서 태블릿과 원장 화면이 서로 다른 말을 할 수 있었다.
+      const { remaining, status } = computeMonthStatus(month, tuition, amountPaid);
 
       if (remaining <= 0 && !includeSettled) continue;
 

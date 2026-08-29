@@ -16,6 +16,7 @@
 import assert from "node:assert/strict";
 import {
   computeMonthStatus,
+  PARTIAL_PAYMENT_SINCE,
   isOutstanding,
   totalOutstanding,
 } from "../shared/paymentStatus";
@@ -155,6 +156,81 @@ test("전부 미납이면 예전 방식과 같은 값이 나온다 (부분납이
     computeMonthStatus("2026-08", 270000, 0),
   ];
   assert.equal(totalOutstanding(months), 540000);
+});
+
+console.log("\n─── 경계(PARTIAL_PAYMENT_SINCE): 과거를 현재 가격으로 심판하지 않는다 ───");
+
+// 2026-08-29 사고. 부분납 판정을 넣자마자 결제 시도조차 없던 학생들의 과거가
+// 전부 부분납으로 뒤집혔다. 김예진 학생은 등록상 300,000원인데 실제로는 매달
+// 280,000원을 낸다(인상 전 가격 또는 할인). 그 달의 진짜 청구액은 어디에도
+// 저장돼 있지 않으므로, 경계 이전은 판정하지 않고 예전 규칙을 쓴다.
+
+test("★ 김예진 2025-09 — 300,000 등록 / 280,000 납부, 경계 이전이므로 완납", () => {
+  const m = computeMonthStatus("2025-09", 300000, 280000, PARTIAL_PAYMENT_SINCE);
+  assert.equal(m.status, "완납");
+  assert.equal(m.remaining, 0, "경계 이전 달에 '20,000원 남음'이 뜨면 안 된다");
+});
+
+test("★ 김예진 6개월치 미수금 합계는 0원이다 (사고 전에는 120,000원이 떴다)", () => {
+  const months = ["2025-09", "2025-10", "2025-11", "2025-12", "2026-01", "2026-02"].map(
+    m => computeMonthStatus(m, 300000, 280000, PARTIAL_PAYMENT_SINCE)
+  );
+  assert.equal(totalOutstanding(months), 0);
+  assert.equal(months.filter(m => m.status === "부분납").length, 0);
+});
+
+test("★ 경계 이전이라도 한 푼도 안 낸 달은 여전히 미납이다 (체납이 숨으면 안 된다)", () => {
+  const m = computeMonthStatus("2025-09", 300000, 0, PARTIAL_PAYMENT_SINCE);
+  assert.equal(m.status, "미납");
+  assert.equal(m.remaining, 300000, "경계 이전 미납액은 그대로 청구돼야 한다");
+});
+
+test("★ 경계 이전 환불로 순액이 음수인 달도 미납으로 남는다", () => {
+  const m = computeMonthStatus("2025-09", 300000, -50000, PARTIAL_PAYMENT_SINCE);
+  assert.equal(m.status, "미납");
+  assert.equal(m.remaining, 300000);
+});
+
+test("★ 경계 당월(2026-08)은 부분납이 살아 있다 — 고건 1,000원이 사라지면 안 된다", () => {
+  const m = computeMonthStatus("2026-08", 270000, 269000, PARTIAL_PAYMENT_SINCE);
+  assert.equal(m.status, "부분납");
+  assert.equal(m.remaining, 1000);
+});
+
+test("★ 경계 이후(2026-09)도 부분납 유지 — 고건 269,000원", () => {
+  const m = computeMonthStatus("2026-09", 270000, 1000, PARTIAL_PAYMENT_SINCE);
+  assert.equal(m.status, "부분납");
+  assert.equal(m.remaining, 269000);
+});
+
+test("★ 고건 두 달 합계는 경계를 넣어도 270,000원 그대로", () => {
+  const months = [
+    computeMonthStatus("2026-08", 270000, 269000, PARTIAL_PAYMENT_SINCE),
+    computeMonthStatus("2026-09", 270000, 1000, PARTIAL_PAYMENT_SINCE),
+  ];
+  assert.equal(totalOutstanding(months), 270000);
+});
+
+test("경계를 안 넘기면(서버 invoicesHelper) 예전처럼 모든 달에 부분납을 적용한다", () => {
+  const m = computeMonthStatus("2025-09", 300000, 280000);
+  assert.equal(m.status, "부분납");
+  assert.equal(m.remaining, 20000);
+});
+
+test("경계는 고정 날짜다 — 달이 바뀌어도 움직이지 않는다", () => {
+  assert.equal(PARTIAL_PAYMENT_SINCE, "2026-08");
+});
+
+test("YYYY-MM 문자열 비교가 연도를 넘어서도 순서를 지킨다", () => {
+  // 2025-12 < 2026-08 이어야 한다. zero-pad 라 사전순 = 시간순.
+  assert.equal(computeMonthStatus("2025-12", 300000, 1, PARTIAL_PAYMENT_SINCE).status, "완납");
+  assert.equal(computeMonthStatus("2026-08", 300000, 1, PARTIAL_PAYMENT_SINCE).status, "부분납");
+});
+
+test("경계 이전 초과 납부도 남은 금액 0", () => {
+  const m = computeMonthStatus("2025-09", 300000, 350000, PARTIAL_PAYMENT_SINCE);
+  assert.equal(m.status, "완납");
+  assert.equal(m.remaining, 0);
 });
 
 console.log(`\n${failed === 0 ? "✅" : "❌"} 통과 ${passed} · 실패 ${failed}`);

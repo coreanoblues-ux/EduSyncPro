@@ -12,6 +12,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Payment, Enrollment, Student, Class, Teacher } from "@shared/schema";
 import {
   computeMonthStatus,
+  PARTIAL_PAYMENT_SINCE,
   isOutstanding,
   totalOutstanding as sumOutstanding,
   type MonthPayment,
@@ -114,8 +115,22 @@ export default function Payments({ userRole }: PaymentsProps) {
     queryKey: ['/api/enrollments'],
   });
 
+  // 이 화면만 주기적으로 다시 읽는다.
+  //
+  // 왜: 앱 전역 기본값이 staleTime Infinity + refetchInterval false 라서, 한 번
+  // 띄운 수납 화면은 새로고침 전까지 절대 갱신되지 않는다. 그런데 Toss Front
+  // 단말기 결제는 서버가 같은 payments 테이블에 직접 INSERT 한다
+  // (server/toss-front/payments.ts 의 confirm, webhooks.ts). 즉 DB 에는 즉시
+  // 반영되는데 원장이 보고 있는 화면만 옛날 숫자로 멈춰 있었다. 학생이 단말기로
+  // 결제를 끝냈는데 수납 화면은 계속 미납이라고 말하는 상태다.
+  //
+  // 결제 건은 다른 목록보다 훨씬 빨리 변하고, 틀리면 돈 문제로 이어지므로
+  // 여기만 20초 폴링 + 창 포커스 시 갱신을 켠다. 다른 쿼리는 그대로 둔다.
   const { data: payments = [], isLoading: paymentsLoading } = useQuery<Payment[]>({
     queryKey: ['/api/payments'],
+    refetchInterval: 20000,
+    refetchOnWindowFocus: true,
+    staleTime: 0,
   });
 
   const addPaymentMutation = useMutation({
@@ -189,8 +204,14 @@ export default function Payments({ userRole }: PaymentsProps) {
           // 달에 269,000원만 들어와도 초록색 완납으로 떴고, 남은 1,000원은 화면에서
           // 사라졌다 (2026-08-29 원장 지적). 이제 분모(수강료)까지 넘겨서
           // 미납/부분납/완납 세 갈래로 판정한다.
+          //
+          // PARTIAL_PAYMENT_SINCE 를 넘기는 이유: 이 화면은 등록일부터 지금까지
+          // 전체 이력을 그린다. 과거 달의 실제 청구액이 어디에도 저장돼 있지 않아
+          // 현재 수강료로 심판하면 원비를 올렸거나 할인 중인 학생의 과거가 전부
+          // 부분납으로 뒤집힌다 (2026-08-29 김예진 학생 사고). 경계 이전은
+          // 예전 규칙 그대로 둔다. 자세한 이유는 shared/paymentStatus.ts 주석.
           const months = allMonths.map(m =>
-            computeMonthStatus(m, tuition, netByMonth.get(m) || 0)
+            computeMonthStatus(m, tuition, netByMonth.get(m) || 0, PARTIAL_PAYMENT_SINCE)
           );
 
           const paidMonths = months.filter(m => m.status === "완납").map(m => m.month);

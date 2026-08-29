@@ -35,12 +35,44 @@ export interface MonthPayment {
 }
 
 /**
+ * 부분납 판정을 적용하기 시작하는 달 (YYYY-MM, 이 달 포함).
+ *
+ * 왜 경계가 필요한가 (2026-08-29, 김예진 학생 사고):
+ *   부분납 판정을 넣자마자 결제 시도조차 없던 학생들의 과거 기록이 전부
+ *   부분납으로 뒤집혔다. 김예진 학생은 2025-09 ~ 2026-02 모든 달이
+ *   "부분납 · 280,000 납부 · 20,000 남음"으로 떴다.
+ *
+ *   원인은 판정식이 아니라 데이터다. enrollments.tuition 은 "지금 가격" 한 개만
+ *   저장한다. 그 달에 실제로 얼마를 청구했는지는 어디에도 남아 있지 않다.
+ *   김예진 학생은 등록상 300,000원인데 실제로는 매달 280,000원을 낸다
+ *   (인상 전 가격이거나 할인). 과거를 현재 가격으로 심판하면 원비를 올린 학생,
+ *   할인을 주는 학생이 전부 한꺼번에 체납자가 된다.
+ *
+ *   과거 달의 실제 청구액을 복원할 방법이 없으므로 추측하지 않는다. 대신
+ *   경계 이전 달은 예전 규칙(순액이 양수면 완납)을 그대로 쓴다. 경계 이후로는
+ *   결제 시점부터 청구액과 납부액이 함께 기록되므로 부분납을 신뢰할 수 있다.
+ *
+ * 고정 날짜인 이유: "이번 달 기준"으로 하면 달이 바뀔 때 고건 학생의 1,000원
+ * 미수금이 소리 없이 사라진다. 경계는 움직이면 안 된다.
+ */
+export const PARTIAL_PAYMENT_SINCE = "2026-08";
+
+/**
  * 한 달치 상태를 만든다.
  *
  * tuition 이 0 이하인 경우(수강료 미설정 등)는 청구할 게 없으므로 완납으로 본다.
  * 그렇게 하지 않으면 수강료를 안 적어 둔 반이 전부 미납으로 뜬다.
+ *
+ * @param partialSince 이 달(YYYY-MM) 이전은 부분납으로 보지 않고, 조금이라도
+ *   냈으면 완납으로 처리한다. 생략하면 경계 없이 모든 달에 부분납을 적용한다
+ *   (서버 invoicesHelper 처럼 최근 달만 보는 곳은 경계가 필요 없다).
  */
-export function computeMonthStatus(month: string, tuition: number, paid: number): MonthPayment {
+export function computeMonthStatus(
+  month: string,
+  tuition: number,
+  paid: number,
+  partialSince?: string,
+): MonthPayment {
   // paid 를 0 에서 한 번 자르고 뺀다. 그래서 남은 금액이 그 달 수강료를 절대 넘지 않는다.
   //
   // 왜 자르나: 환불이 원비보다 큰 달이 생길 수 있다. 8월에 낸 돈을 9월에 환불하면
@@ -48,6 +80,15 @@ export function computeMonthStatus(month: string, tuition: number, paid: number)
   // 27만원짜리 달에 "32만원 남음"이 뜬다. 원장이 화면을 못 믿게 되는 종류의 숫자다.
   // 넘친 환불액은 그 달에 매달지 않고 결제 내역 원본에 남겨 둔다.
   const effectivePaid = Math.max(0, paid);
+
+  // 경계 이전 달: 그 달의 진짜 청구액을 모르므로 모자란 금액을 계산하지 않는다.
+  // 조금이라도 들어왔으면 완납으로 두고 남은 금액은 0 으로 못 박는다.
+  // (YYYY-MM 은 zero-padded 라 문자열 비교로 시간 순서가 그대로 나온다.)
+  const grandfathered = partialSince !== undefined && month < partialSince;
+  if (grandfathered && effectivePaid > 0) {
+    return { month, tuition, paid, remaining: 0, status: "완납" };
+  }
+
   const remaining = Math.max(0, tuition - effectivePaid);
 
   let status: MonthPaymentStatus;

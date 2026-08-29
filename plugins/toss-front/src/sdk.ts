@@ -280,12 +280,20 @@ let templateApiLogged = false;
  * params 를 넣은 호출이 실패하면 인자 없는 호출로 한 번 더 시도한다. 펌웨어가 구형이라
  * 인자를 모르더라도 최소한 Toss 기본 대기화면은 나와야 하기 때문이다. 그것마저
  * 실패할 때만 자체 화면으로 내려간다.
+ *
+ * @returns 공식 Template API 로 실제 렌더가 성공했으면 true, 자체 화면으로
+ *   대체했으면 false.
+ *
+ *   호출부는 이 값으로만 부팅 문구를 지워야 한다. "renderIdlePage 라는 함수가
+ *   존재한다"와 "그것이 그려졌다"는 서로 다른 사실인데, 0.3.8 까지 그 둘을 같은
+ *   것으로 취급했다 (`if (sdk?.template?.renderIdlePage) clearOwnScreen()`).
+ *   그래서 함수만 있고 렌더가 안 되면 화면에서 모든 것이 사라졌다.
  */
 export function renderIdle(
   sdk: TossFrontSdk | null,
   fallback: () => void,
   params?: IdlePageParams
-) {
+): boolean {
   if (sdk?.template && typeof sdk.template.renderIdlePage === "function") {
     if (!templateApiLogged) {
       templateApiLogged = true;
@@ -296,12 +304,14 @@ export function renderIdle(
     }
     try {
       sdk.template.renderIdlePage(params);
-      return;
+      log.info("renderIdlePage 호출 성공", `type=${params?.type ?? "(인자 없음)"}`);
+      return true;
     } catch (err) {
       log.error("renderIdlePage 실패", err, "인자 없이 기본 대기화면으로 다시 시도합니다.");
       try {
         sdk.template.renderIdlePage();
-        return;
+        log.info("renderIdlePage 기본 호출 성공", "인자 없는 기본 대기화면으로 그렸습니다.");
+        return true;
       } catch (err2) {
         log.error("renderIdlePage 기본 호출도 실패", err2, "자체 대기화면으로 대체합니다.");
       }
@@ -310,6 +320,7 @@ export function renderIdle(
     log.warn("renderIdlePage 없음", "SDK 유휴화면을 쓸 수 없어 자체 대기화면을 표시합니다.");
   }
   fallback();
+  return false;
 }
 
 /**

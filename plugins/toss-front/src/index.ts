@@ -60,6 +60,7 @@ import {
   showFatal,
   pushDiagLine,
   clearOwnScreen,
+  confirmTemplateRendered,
   showPairing,
   showReceiptChoice,
   showReceiptResult,
@@ -201,10 +202,21 @@ function showTerminalStatus() {
   notify(message);
 }
 
-/** SDK 유휴화면이 있으면 그걸 쓰고, 없으면 자체 대기화면을 그린다. */
+/**
+ * SDK 유휴화면이 있으면 그걸 쓰고, 없으면 자체 대기화면을 그린다.
+ *
+ * 0.3.8 까지는 `if (sdk?.template?.renderIdlePage) clearOwnScreen()` 이었다.
+ * 함수의 "존재"만 확인하고 화면을 치운 것이다. Toss 문서는 플러그인 화면을
+ * 반드시 Template API 로만 구성하라고 못 박고 있어서, 자체 DOM 은 단말기에서
+ * 그려지지 않을 수 있다 — 그런데 우리는 그 사실을 확인도 안 하고 부팅 문구까지
+ * 지웠다. 결과가 원장이 본 완전한 빈 화면이다.
+ *
+ * 이제 renderIdle 이 true 를 준 경우에만 치운다. 렌더에 실패했으면 자체 화면과
+ * 부팅 문구가 둘 다 남는다. 보기 좋지는 않아도 단말기 앞에서 원인을 읽을 수 있다.
+ */
 function goIdle() {
-  renderIdle(sdk, () => showIdle(), idleParams());
-  if (sdk?.template?.renderIdlePage) clearOwnScreen();
+  const rendered = renderIdle(sdk, () => showIdle(), idleParams());
+  if (rendered) confirmTemplateRendered();
 }
 
 // ─── 부팅 ──────────────────────────────────────────────────────────────

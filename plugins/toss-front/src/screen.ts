@@ -39,12 +39,39 @@ function root(): HTMLElement | null {
   return el;
 }
 
+/**
+ * index.html 의 #boot 노드를 지우지 않고 같은 문구로 갱신한다.
+ *
+ * ── 왜 바뀌었나 (2026-08-29, 원장 사진 한 장) ──
+ *   0.3.8 까지 여기서 `document.getElementById("boot")?.remove()` 를 했다.
+ *   "스크립트가 돌았으니 부팅 문구는 필요 없다"는 판단이었는데, 정확히 거꾸로였다.
+ *
+ *   Toss 문서(reference/plugin-sdk/front/template.html)는 이렇게 못 박는다:
+ *     "프론트 플러그인의 화면은 반드시 Template API(sdk.template.*)로 구성해야 하며,
+ *      HTML/CSS를 직접 작성하여 화면을 구성할 수 없어요."
+ *   즉 이 파일이 만드는 자체 DOM 은 단말기에서 안 그려질 수 있다. 그런데 우리는
+ *   그리기 직전에 유일하게 보이던 부팅 문구를 지웠다. 결과는 완전한 빈 화면이고,
+ *   단말기 앞에서는 "플러그인이 죽었는지, 그려지지 않은 것인지" 구분할 수가 없다.
+ *   여러 버전을 올리는 동안 화면이 계속 똑같았던 이유가 이것이다 —
+ *   우리가 우리 진단 수단을 스스로 없앴다.
+ *
+ *   이제 지우지 않고 겹친다. 자체 DOM 이 그려지면 그게 위를 덮고(z-index),
+ *   안 그려지면 부팅 노드가 같은 문구를 대신 보여 준다. 어느 쪽이든 빈 화면은 없다.
+ */
+function mirrorToBootNode() {
+  const boot = document.getElementById("boot");
+  if (!boot) return;
+  const title = boot.querySelector(".title");
+  const sub = boot.querySelector(".sub");
+  if (title) title.textContent = currentTitle;
+  if (sub) sub.textContent = currentSubtitle || diagLines[diagLines.length - 1] || "";
+}
+
 function paint() {
   const el = root();
   if (!el) return;
 
-  // index.html 의 부팅 문구를 치운다. 이 시점이면 스크립트가 확실히 실행된 것이다.
-  document.getElementById("boot")?.remove();
+  mirrorToBootNode();
 
   const { bg, accent } = TONE_COLORS[currentTone];
 
@@ -53,6 +80,9 @@ function paint() {
     [
       "position:fixed",
       "inset:0",
+      // #boot 노드 위에 겹친다. 이게 그려지면 부팅 문구는 가려지고,
+      // 안 그려지면 아래의 부팅 문구가 그대로 보인다. 빈 화면이 되는 경우가 없다.
+      "z-index:2147483000",
       `background:${bg}`,
       "color:#e2e8f0",
       "display:flex",
@@ -145,11 +175,36 @@ export function pushDiagLine(line: string) {
   if (typeof document !== "undefined" && document.getElementById(ROOT_ID)) paint();
 }
 
-/** SDK 유휴화면을 쓸 때는 우리 화면을 완전히 치운다. 두 화면이 겹치면 안 된다. */
+/**
+ * 자체 화면만 치운다. 부팅 문구(#boot)는 남긴다.
+ *
+ * SDK 화면에 자리를 넘겨주기 전에 부른다. 아직 SDK 가 그렸다는 증거는 없으므로
+ * 마지막 안전망인 부팅 문구까지 지우지는 않는다.
+ */
 export function clearOwnScreen() {
   if (typeof document === "undefined") return;
   const el = document.getElementById(ROOT_ID);
   if (el) el.remove();
+}
+
+/**
+ * 공식 Template API 가 실제로 그려졌음이 확인됐을 때만 부른다.
+ *
+ * 이때 비로소 부팅 문구를 지운다. #boot 은 position:fixed·inset:0 이라
+ * 남겨 두면 템플릿 화면 위를 덮어 버리기 때문이다.
+ *
+ * ── 0.3.9 의 핵심 ──
+ *   0.3.8 까지는 paint() 첫 줄에서 무조건 #boot 을 지웠다. "스크립트가 돌았으니
+ *   부팅 문구는 필요 없다"는 판단이었는데, 그 다음에 그리는 자체 DOM 이 단말기에서
+ *   안 그려지면 화면에 아무것도 남지 않는다. 여러 버전을 올리는 동안 원장이 본
+ *   화면이 늘 똑같았던 이유다 — 우리가 유일한 단서를 매번 먼저 지웠다.
+ *   이제 "그려졌다"는 양성 증거가 있을 때만 지운다.
+ */
+export function confirmTemplateRendered() {
+  if (typeof document === "undefined") return;
+  const el = document.getElementById(ROOT_ID);
+  if (el) el.remove();
+  document.getElementById("boot")?.remove();
 }
 
 /**

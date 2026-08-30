@@ -12,8 +12,28 @@
  * 결제창은 SDK 가 자기 UI 로 띄운다. 여기서 카드 입력 같은 걸 흉내내지 않는다.
  */
 
+import pageoneLogoUrl from "./assets/pageone-logo-dark.png";
+
 const ROOT_ID = "edusync-front-root";
+const IDLE_STYLE_ID = "edusync-idle-style";
 const MAX_DIAG_LINES = 6;
+
+/**
+ * PAGEONE 브랜드 색.
+ *
+ * 로고의 주황을 기준으로 잡았다. 대기화면은 이 네 갈래(네이비·주황·흰색·회색)
+ * 밖으로 나가지 않는다 — 단말기 화면은 로비에서 멀리서 보이므로 색이 늘어날수록
+ * 읽기만 나빠진다.
+ */
+const BRAND = {
+  navyTop: "#0B1628",
+  navyBottom: "#07111F",
+  orange: "#FF8A00",
+  orangeSoft: "#FF9300",
+  white: "#F8FAFC",
+  gray: "#94A3B8",
+  grayDim: "#64748B",
+} as const;
 
 /**
  * 화면 하단 진단 줄의 최대 길이.
@@ -75,6 +95,20 @@ let showDiag = false;
  */
 let repaintLocked = false;
 
+/**
+ * 지금 화면을 그리는 함수.
+ *
+ * ── 왜 필요한가 ──
+ *   pushDiagLine 과 setScreenVersion 은 "이미 그려져 있으면 다시 그린다" 를 하는데,
+ *   예전에는 그게 무조건 paint() 였다. 대기화면을 전용 렌더러(paintIdle)로 분리한
+ *   뒤에도 그대로 두면, 로그가 한 줄 들어오는 순간 브랜드 대기화면이 기본 화면으로
+ *   조용히 바뀐다. 폴링 오류는 1초마다 로그를 남기므로 반드시 일어난다.
+ *
+ *   그래서 "무엇을 그릴지" 를 화면 진입 시점에 정해 두고, 다시 그릴 때는 그것을
+ *   부른다. 기존 화면들은 전부 paint 를 그대로 쓰므로 동작이 바뀌지 않는다.
+ */
+let currentPainter: () => void = paint;
+
 type Tone = "idle" | "busy" | "error";
 
 /** 화면 하단 버튼 하나. paint() 가 매번 다시 그리므로 로그가 들어와도 사라지지 않는다. */
@@ -103,7 +137,7 @@ const TONE_COLORS: Record<Tone, { bg: string; accent: string }> = {
  */
 export function setScreenVersion(version: string) {
   versionLabel = version;
-  if (typeof document !== "undefined" && document.getElementById(ROOT_ID)) paint();
+  if (typeof document !== "undefined" && document.getElementById(ROOT_ID)) currentPainter();
 }
 
 function root(): HTMLElement | null {
@@ -181,6 +215,16 @@ function makeButton(action: ScreenAction): HTMLButtonElement {
 }
 
 function paint() {
+  // 이 화면이 그려지는 순간부터 "다시 그리기" 는 다시 paint 다.
+  //
+  // 각 show* 함수마다 이 줄을 흩어 놓지 않고 여기 한 곳에 둔 이유: 나중에 새
+  // 화면이 하나 추가됐을 때 거기에 이 줄을 빠뜨리면, 그 화면이 떠 있는 동안
+  // 로그 한 줄이 들어오는 순간 대기화면("결제 준비 완료")으로 다시 그려진다.
+  // 결제·취소 진행 화면에서 그 일이 벌어지면 카드를 대고 있는 사람이 결제가
+  // 끝난 줄 안다. paint() 를 부르는 화면은 정의상 대기화면이 아니므로, 여기서
+  // 되돌리면 빠뜨릴 수가 없다. 그리는 내용에는 영향이 없다.
+  currentPainter = paint;
+
   const el = root();
   if (!el) return;
 
@@ -272,6 +316,453 @@ function paint() {
   }
 }
 
+// ─── 대기화면 전용 렌더러 ─────────────────────────────────────────────
+//
+// paint() 와 분리한 이유:
+//   paint() 는 결제중·실패·관리자메뉴·상태·영수증·페어링이 전부 공유한다. 그중
+//   몇은 돈이 오가는 도중에 뜨는 화면이다. 대기화면 디자인을 위해 그 공용 함수를
+//   고치면, 검증된 화면들이 전부 같이 흔들린다. 그래서 대기화면만 자기 렌더러를
+//   갖고, paint() 가 그리는 내용은 한 글자도 바꾸지 않았다.
+//   (paint() 에 들어간 유일한 변경은 currentPainter 를 자기 자신으로 되돌리는
+//    한 줄이며, 그리는 결과에는 영향이 없다. 이유는 그 자리 주석에 적었다.)
+//
+// Toss 규정과의 관계:
+//   공식 문서는 "화면은 반드시 Template API 로 구성" 을 요구한다. 그래서 goIdle()
+//   은 지금도 renderIdle(=sdk.template.renderIdlePage) 을 먼저 시도하고, 그게
+//   성공하면 이 화면은 아예 지워진다(confirmTemplateRendered). 이 파일이 그리는
+//   것은 그 공식 경로가 이 펌웨어에서 React #299 로 실패할 때의 대체 화면이며,
+//   그 우선순위는 이번 작업에서 바꾸지 않았다.
+
+/** 대기화면 애니메이션. 한 번만 심는다. CSS 트랜스폼만 써서 GPU 부담이 없다. */
+function ensureIdleStyle() {
+  if (document.getElementById(IDLE_STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = IDLE_STYLE_ID;
+  // 정적 문자열이다. 외부 값이 섞이지 않으므로 주입 위험이 없다.
+  style.textContent = `
+@keyframes eduRing {
+  0%   { transform: scale(0.72); opacity: 0.28; }
+  70%  { transform: scale(1.28); opacity: 0.04; }
+  100% { transform: scale(1.34); opacity: 0; }
+}
+@keyframes eduPulse {
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 1; }
+}
+/* 단말기가 애니메이션 감축을 요구하면 정적으로 둔다. */
+@media (prefers-reduced-motion: reduce) {
+  .edu-ring, .edu-dot { animation: none !important; }
+}`;
+  document.head.appendChild(style);
+}
+
+/**
+ * 비접촉 결제 그래픽 (카드 + 단말기 + 전파).
+ *
+ * 인라인 SVG 인 이유: 외부 CDN 이미지를 쓰면 Toss 개발자센터의 ACL/CORS 를 또
+ * 건드려야 한다. 그 문제로 이미 하루를 쓴 적이 있다. 여기서 그 위험을 새로
+ * 만들지 않는다. 정적 문자열이므로 innerHTML 로 넣어도 주입 위험이 없다.
+ */
+const CONTACTLESS_SVG = `
+<svg viewBox="0 0 120 120" width="100%" height="100%" fill="none"
+     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <rect x="20" y="44" width="58" height="38" rx="7"
+        stroke="${BRAND.orange}" stroke-width="3"/>
+  <path d="M20 57 H78" stroke="${BRAND.orange}" stroke-width="3" opacity="0.75"/>
+  <rect x="28" y="66" width="15" height="4" rx="2" fill="${BRAND.orange}" opacity="0.7"/>
+  <path d="M88 48 a17 17 0 0 1 0 30" stroke="${BRAND.orangeSoft}" stroke-width="3.4" opacity="0.9"/>
+  <path d="M95 40 a27 27 0 0 1 0 46" stroke="${BRAND.orangeSoft}" stroke-width="3" opacity="0.5"/>
+  <path d="M102 32 a37 37 0 0 1 0 62" stroke="${BRAND.orangeSoft}" stroke-width="2.6" opacity="0.24"/>
+</svg>`;
+
+function el(tag: string, style: string, text?: string): HTMLElement {
+  const node = document.createElement(tag);
+  node.setAttribute("style", style);
+  // 값은 항상 textContent 로 넣는다 (버전 문자열 등 바깥에서 온 값 포함).
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+/**
+ * 브랜드 대기화면.
+ *
+ * 레이아웃 원칙 — 단말기는 세로 화면이고 해상도를 모른다:
+ *   · 100vh 고정 + overflow:hidden → 스크롤바가 생기지 않는다.
+ *   · 세로는 flex 3분할(헤더 / 본문 flex:1 / 하단)이라 화면이 짧아도 하단 버튼이
+ *     밖으로 밀려나지 않는다. 관리자 버튼이 화면 밖으로 나가면 나가는 길이 막힌다.
+ *   · 글자·여백은 전부 clamp() 라 특정 해상도에 못을 박지 않는다.
+ */
+function paintIdle() {
+  const host = root();
+  if (!host) return;
+
+  mirrorToBootNode();
+  ensureIdleStyle();
+
+  host.setAttribute(
+    "style",
+    [
+      "position:fixed",
+      "inset:0",
+      "z-index:2147483000",
+      `background:radial-gradient(120% 80% at 50% 0%, #12203A 0%, ${BRAND.navyTop} 45%, ${BRAND.navyBottom} 100%)`,
+      `color:${BRAND.white}`,
+      "display:flex",
+      "flex-direction:column",
+      "font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif",
+      "box-sizing:border-box",
+      "padding:clamp(14px,3.2vh,28px) clamp(16px,5vw,40px)",
+      // 세로 단말기에서 무엇이 잘리거나 스크롤바가 생기는 것을 원천 차단한다.
+      "overflow:hidden",
+      "-webkit-tap-highlight-color:transparent",
+    ].join(";")
+  );
+  host.textContent = "";
+
+  // ── 헤더: [로고] | EDUSYNCPRO ............ v0.3.xx ──
+  const header = el(
+    "div",
+    "display:flex;align-items:center;gap:clamp(8px,2vw,14px);width:100%;flex:0 0 auto"
+  );
+
+  const logo = document.createElement("img");
+  logo.src = pageoneLogoUrl;
+  logo.alt = "PAGEONE";
+  // height 만 고정하고 width:auto → 원본 비율이 절대 찌그러지지 않는다.
+  logo.setAttribute(
+    "style",
+    "height:clamp(20px,3.4vh,30px);width:auto;display:block;flex:0 0 auto"
+  );
+  // 어떤 이유로든 이미지가 안 뜨면 깨진 아이콘 대신 글자 워드마크로 대체한다.
+  // 단말기 앞에서 깨진 이미지가 보이는 것보다는 낫다.
+  logo.addEventListener("error", () => {
+    logo.remove();
+    header.insertBefore(
+      el(
+        "div",
+        `font-size:clamp(13px,2vh,17px);font-weight:800;letter-spacing:1px;color:${BRAND.white}`,
+        "PAGEONE"
+      ),
+      header.firstChild
+    );
+  });
+  header.appendChild(logo);
+
+  header.appendChild(
+    el("div", `width:1px;height:clamp(14px,2.4vh,20px);background:rgba(255,255,255,0.18)`)
+  );
+  header.appendChild(
+    el(
+      "div",
+      `font-size:clamp(10px,1.6vh,13px);font-weight:700;letter-spacing:2.4px;color:${BRAND.gray}`,
+      "EDUSYNCPRO"
+    )
+  );
+  header.appendChild(el("div", "flex:1 1 auto"));
+  if (versionLabel) {
+    // 버전은 하드코딩하지 않는다. setScreenVersion 이 package.json 값을 넣어 준다.
+    header.appendChild(
+      el(
+        "div",
+        `font-size:clamp(9px,1.4vh,12px);font-weight:600;color:${BRAND.grayDim};letter-spacing:0.5px`,
+        `v${versionLabel}`
+      )
+    );
+  }
+  host.appendChild(header);
+
+  // 헤더 아래 얇은 오렌지 글로우 라인
+  host.appendChild(
+    el(
+      "div",
+      [
+        "width:100%",
+        "height:1px",
+        "flex:0 0 auto",
+        "margin-top:clamp(10px,1.8vh,16px)",
+        `background:linear-gradient(90deg,rgba(255,138,0,0) 0%,${BRAND.orange} 50%,rgba(255,138,0,0) 100%)`,
+        "box-shadow:0 0 12px rgba(255,138,0,0.45)",
+        "opacity:0.85",
+      ].join(";")
+    )
+  );
+
+  // ── 본문 (남는 세로 공간을 전부 차지하고 그 안에서 가운데 정렬) ──
+  const main = el(
+    "div",
+    [
+      "flex:1 1 auto",
+      "min-height:0", // flex 자식이 넘칠 때 잘리지 않고 줄어들게 하는 핵심
+      "display:flex",
+      "flex-direction:column",
+      "align-items:center",
+      "justify-content:center",
+      "text-align:center",
+      "gap:clamp(10px,2vh,20px)",
+      "width:100%",
+    ].join(";")
+  );
+
+  // 그래픽 + 레이더 링
+  const visual = el(
+    "div",
+    [
+      "position:relative",
+      "width:clamp(112px,20vh,170px)",
+      "height:clamp(112px,20vh,170px)",
+      "flex:0 0 auto",
+      "display:flex",
+      "align-items:center",
+      "justify-content:center",
+    ].join(";")
+  );
+  for (let i = 0; i < 3; i++) {
+    const ring = el(
+      "div",
+      [
+        "position:absolute",
+        "inset:0",
+        "border-radius:50%",
+        `border:1px solid ${BRAND.orange}`,
+        "opacity:0",
+        `animation:eduRing 3.6s ease-out ${i * 1.2}s infinite`,
+      ].join(";")
+    );
+    ring.className = "edu-ring";
+    visual.appendChild(ring);
+  }
+  const art = el("div", "position:relative;width:76%;height:76%");
+  art.innerHTML = CONTACTLESS_SVG; // 정적 상수. 외부 입력 없음.
+  visual.appendChild(art);
+  main.appendChild(visual);
+
+  // 메인 문구
+  main.appendChild(
+    el(
+      "div",
+      [
+        "font-size:clamp(26px,4.6vh,40px)",
+        "font-weight:800",
+        `color:${BRAND.orange}`,
+        "letter-spacing:-0.5px",
+        "line-height:1.25",
+        "text-shadow:0 0 26px rgba(255,138,0,0.28)",
+      ].join(";"),
+      "결제 준비 완료"
+    )
+  );
+  // 부제. white-space:pre-line 이라 위 문자열의 \n 이 그대로 줄바꿈이 된다.
+  // 줄바꿈 위치를 우리가 정하는 이유: 해상도에 따라 "선택하면 / 이" 처럼 어색한
+  // 지점에서 끊기면 학부모가 읽다가 걸린다.
+  main.appendChild(
+    el(
+      "div",
+      [
+        "font-size:clamp(13px,2.1vh,17px)",
+        `color:${BRAND.gray}`,
+        "line-height:1.65",
+        // 폭 주의: ch 는 '0' 한 글자 너비다. 한글은 그 두 배쯤이라 30ch 로 잡았더니
+        // 위에서 정한 두 줄이 네 줄로 다시 접히면서 "선택하면", "수 있습니다." 같은
+        // 외톨이 줄이 생겼다. 줄바꿈은 \n 으로 우리가 정하고, 폭은 그 줄이 안 접힐
+        // 만큼만 넉넉히 준다. 화면이 아주 좁으면 그때만 자연 줄바꿈으로 넘어간다.
+        "max-width:min(94%,32rem)",
+        "word-break:keep-all", // 한국어 단어가 중간에서 끊기지 않게
+        "white-space:pre-line",
+      ].join(";"),
+      "학생 태블릿에서 결제 항목을 선택하면\n이 단말기에서 바로 결제를 진행할 수 있습니다."
+    )
+  );
+
+  // 상태 pill — 새 네트워크 점검을 추가하지 않는다. 이 화면이 떠 있다는 사실
+  // 자체가 "폴링이 돌고 결제를 기다리는 중" 이라는 기존 상태의 표현이다.
+  const pill = el(
+    "div",
+    [
+      "display:inline-flex",
+      "align-items:center",
+      "gap:8px",
+      "padding:clamp(5px,0.9vh,8px) clamp(12px,2.4vw,18px)",
+      "border-radius:999px",
+      `border:1px solid rgba(255,138,0,0.45)`,
+      "background:rgba(255,138,0,0.08)",
+      "flex:0 0 auto",
+    ].join(";")
+  );
+  const dot = el(
+    "div",
+    [
+      "width:7px",
+      "height:7px",
+      "border-radius:50%",
+      `background:${BRAND.orange}`,
+      `box-shadow:0 0 8px ${BRAND.orange}`,
+      "animation:eduPulse 2s ease-in-out infinite",
+    ].join(";")
+  );
+  dot.className = "edu-dot";
+  pill.appendChild(dot);
+  pill.appendChild(
+    el(
+      "div",
+      `font-size:clamp(11px,1.7vh,14px);font-weight:700;color:${BRAND.orangeSoft};letter-spacing:0.3px`,
+      "대기 중"
+    )
+  );
+  main.appendChild(pill);
+
+  host.appendChild(main);
+
+  // ── 3단계 안내 (한 줄) ──
+  const steps = el(
+    "div",
+    [
+      "display:flex",
+      "align-items:center",
+      "justify-content:center",
+      "gap:clamp(6px,1.6vw,14px)",
+      "flex:0 0 auto",
+      "width:100%",
+      "margin-bottom:clamp(10px,1.8vh,18px)",
+      "flex-wrap:nowrap",
+    ].join(";")
+  );
+  const STEPS: Array<[string, string]> = [
+    ["1", "항목 선택"],
+    ["2", "카드/태그"],
+    ["3", "결제 진행"],
+  ];
+  STEPS.forEach(([num, label], i) => {
+    if (i > 0) {
+      steps.appendChild(
+        el(
+          "div",
+          `font-size:clamp(10px,1.5vh,13px);color:${BRAND.grayDim};flex:0 0 auto`,
+          "›"
+        )
+      );
+    }
+    const item = el(
+      "div",
+      "display:flex;align-items:center;gap:6px;flex:0 0 auto;min-width:0"
+    );
+    item.appendChild(
+      el(
+        "div",
+        [
+          "width:clamp(16px,2.4vh,20px)",
+          "height:clamp(16px,2.4vh,20px)",
+          "border-radius:50%",
+          `border:1px solid rgba(255,138,0,0.5)`,
+          `color:${BRAND.orangeSoft}`,
+          "font-size:clamp(9px,1.3vh,11px)",
+          "font-weight:700",
+          "display:flex",
+          "align-items:center",
+          "justify-content:center",
+          "flex:0 0 auto",
+        ].join(";"),
+        num
+      )
+    );
+    item.appendChild(
+      el(
+        "div",
+        `font-size:clamp(10px,1.6vh,13px);color:${BRAND.gray};white-space:nowrap`,
+        label
+      )
+    );
+    steps.appendChild(item);
+  });
+  host.appendChild(steps);
+
+  // ── 관리자 버튼 ──
+  // 학부모·학생이 보는 화면이므로 주 CTA 처럼 보이면 안 된다. 배경 없는 얇은
+  // 주황 테두리까지만. 다만 터치 대상 크기는 충분히 유지한다 (단말기는 터치다).
+  if (currentActions.length > 0) {
+    const row = el(
+      "div",
+      "display:flex;gap:10px;justify-content:center;flex:0 0 auto;width:100%;flex-wrap:wrap"
+    );
+    for (const action of currentActions) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.setAttribute(
+        "style",
+        [
+          "display:inline-flex",
+          "align-items:center",
+          "gap:7px",
+          "padding:clamp(8px,1.4vh,12px) clamp(16px,3.4vw,22px)",
+          "background:transparent",
+          `color:${BRAND.orangeSoft}`,
+          "border:1px solid rgba(255,138,0,0.42)",
+          "border-radius:10px",
+          "font-size:clamp(11px,1.7vh,14px)",
+          "font-weight:600",
+          "cursor:pointer",
+          "touch-action:manipulation",
+          "-webkit-tap-highlight-color:transparent",
+        ].join(";")
+      );
+      // 톱니 아이콘. lucide 는 이 번들에 없고, 아이콘 하나 때문에 패키지를
+      // 추가하지 않는다는 방침이라 인라인 SVG 로 둔다.
+      const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      icon.setAttribute("viewBox", "0 0 24 24");
+      icon.setAttribute("width", "13");
+      icon.setAttribute("height", "13");
+      icon.setAttribute("fill", "none");
+      icon.setAttribute("stroke", "currentColor");
+      icon.setAttribute("stroke-width", "2");
+      icon.setAttribute("stroke-linecap", "round");
+      icon.setAttribute("stroke-linejoin", "round");
+      const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      c.setAttribute("cx", "12");
+      c.setAttribute("cy", "12");
+      c.setAttribute("r", "3");
+      const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      p.setAttribute(
+        "d",
+        "M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+      );
+      icon.appendChild(p);
+      icon.appendChild(c);
+      btn.appendChild(icon);
+      btn.appendChild(el("span", "", action.label));
+      // 클릭 처리는 기존 makeButton 과 똑같이 예외를 삼킨다. 콜백이 터져도
+      // 화면이 죽으면 안 된다 — 여기가 유일한 탈출구다.
+      btn.addEventListener("click", () => {
+        try {
+          action.onClick();
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error("[screen] 버튼 콜백 예외", err);
+          pushDiagLine(`버튼 동작 실패: ${String((err as any)?.message ?? err)}`);
+        }
+      });
+      row.appendChild(btn);
+    }
+    host.appendChild(row);
+  }
+
+  // ── Footer ──
+  host.appendChild(
+    el(
+      "div",
+      [
+        "flex:0 0 auto",
+        "width:100%",
+        "text-align:center",
+        "margin-top:clamp(8px,1.4vh,14px)",
+        "font-size:clamp(8px,1.2vh,10px)",
+        "letter-spacing:1.6px",
+        `color:${BRAND.grayDim}`,
+        "opacity:0.62",
+      ].join(";"),
+      "PAGEONE PAYMENT SYSTEM"
+    )
+  );
+}
+
 /**
  * 대기 화면. 결제 요청이 올 때까지 보여 준다.
  *
@@ -293,15 +784,24 @@ function paint() {
  */
 export function showIdle(opts?: { onAdmin?: () => void }) {
   currentTone = "idle";
-  currentTitle = "결제 요청 대기 중";
-  currentSubtitle = "학생 태블릿에서 결제할 항목을 선택하면 이 화면에 결제창이 열립니다.";
+  // currentTitle/currentSubtitle 은 화면에 직접 쓰이지 않더라도 계속 채운다.
+  // mirrorToBootNode() 가 이 값을 #boot 노드에 복사하기 때문이다. 우리 DOM 이
+  // 어떤 이유로 안 그려져도 부팅 노드에 글자는 남아 있어야 한다 (검은 화면 방지).
+  currentTitle = "결제 준비 완료";
+  currentSubtitle =
+    "학생 태블릿에서 결제 항목을 선택하면 이 단말기에서 바로 결제를 진행할 수 있습니다.";
+  // onClick 은 index.ts 의 openAdminMenu 를 그대로 넘긴다. 라벨만 바뀐다.
   currentActions = opts?.onAdmin
-    ? [{ label: "관리자", kind: "secondary", onClick: opts.onAdmin }]
+    ? [{ label: "관리자 메뉴", kind: "secondary", onClick: opts.onAdmin }]
     : [];
   // 로비에서 학생·학부모가 보는 화면이다. 로그는 걷어낸다.
   showDiag = false;
   repaintLocked = false;
-  paint();
+  // 이 화면만 전용 렌더러를 쓴다. 폴링 로그(pushDiagLine)나 버전 수신
+  // (setScreenVersion)이 뒤늦게 들어와 다시 그릴 때도 대기화면으로 다시
+  // 그려져야 하므로, 그리기 전에 currentPainter 를 먼저 바꾼다.
+  currentPainter = paintIdle;
+  paintIdle();
 }
 
 /**
@@ -415,7 +915,7 @@ export function pushDiagLine(line: string) {
   // repaintLocked 인 동안은 건너뛴다 — 영수증 선택·페어링 입력이 살아 있는 중이라
   // 여기서 다시 그리면 그 버튼과 입력값이 통째로 지워진다.
   if (repaintLocked) return;
-  if (typeof document !== "undefined" && document.getElementById(ROOT_ID)) paint();
+  if (typeof document !== "undefined" && document.getElementById(ROOT_ID)) currentPainter();
 }
 
 /**

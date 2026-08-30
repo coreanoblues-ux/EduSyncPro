@@ -19,6 +19,7 @@ import {
   PARTIAL_PAYMENT_SINCE,
   isOutstanding,
   totalOutstanding,
+  withPrepaidMonths,
 } from "../shared/paymentStatus";
 
 let passed = 0;
@@ -231,6 +232,88 @@ test("경계 이전 초과 납부도 남은 금액 0", () => {
   const m = computeMonthStatus("2025-09", 300000, 350000, PARTIAL_PAYMENT_SINCE);
   assert.equal(m.status, "완납");
   assert.equal(m.remaining, 0);
+});
+
+/* ────────────────────────────────────────────────────────────────────────
+ * withPrepaidMonths — 미리 낸 미래 달이 수납 화면에서 사라지지 않게 한다.
+ *
+ * 2026-08-30 원장 실험: 8월에 어떤 학생의 9월 수강료로 1,000원을 결제했더니
+ * 태블릿에는 보이는데 수납 화면에는 아무 데도 안 나왔다. 달 목록을
+ * "등록일 ~ 오늘" 로만 만들었기 때문이다.
+ *
+ * 반대 방향의 위험이 더 크다는 점이 이 규칙의 핵심이다 — 미래 달을 그냥
+ * 펼치면 전교생이 앞으로 6달치 미납으로 뜬다. 그래서 "돈이 실제로 들어온
+ * 미래 달만" 넣는다. 아래 테스트가 그 두 방향을 다 고정한다.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+console.log("\n─── withPrepaidMonths: 선납한 미래 달만 끼워 넣는다 ───");
+
+const base = ["2026-06", "2026-07", "2026-08"];
+
+test("★ 9월에 1,000원을 미리 냈으면 9월이 목록에 들어온다 (원장이 겪은 그 건)", () => {
+  const net = new Map([["2026-08", 300000], ["2026-09", 1000]]);
+  assert.deepEqual(withPrepaidMonths(base, net), [...base, "2026-09"]);
+});
+
+test("★ 돈이 안 들어온 미래 달은 만들지 않는다 — 전교생이 미납으로 뜨면 안 된다", () => {
+  const net = new Map([["2026-08", 300000]]);
+  assert.deepEqual(withPrepaidMonths(base, net), base);
+});
+
+test("★ 냈다가 전액 환불된 미래 달은 만들지 않는다 (순액 0)", () => {
+  const net = new Map([["2026-09", 0]]);
+  assert.deepEqual(withPrepaidMonths(base, net), base);
+});
+
+test("환불이 더 커서 순액이 음수인 미래 달도 만들지 않는다", () => {
+  const net = new Map([["2026-09", -5000]]);
+  assert.deepEqual(withPrepaidMonths(base, net), base);
+});
+
+test("과거·현재 달은 이미 목록에 있으므로 중복해서 넣지 않는다", () => {
+  const net = new Map([["2026-06", 300000], ["2026-07", 300000], ["2026-08", 300000]]);
+  assert.deepEqual(withPrepaidMonths(base, net), base);
+});
+
+test("여러 달을 미리 냈으면 시간 순으로 붙는다", () => {
+  const net = new Map([["2026-11", 1000], ["2026-09", 1000], ["2026-10", 1000]]);
+  assert.deepEqual(withPrepaidMonths(base, net), [
+    ...base, "2026-09", "2026-10", "2026-11",
+  ]);
+});
+
+test("해를 넘겨도 순서가 맞는다 (2026-12 → 2027-01)", () => {
+  const b = ["2026-12"];
+  const net = new Map([["2027-01", 1000], ["2026-12", 300000]]);
+  assert.deepEqual(withPrepaidMonths(b, net), ["2026-12", "2027-01"]);
+});
+
+test("기본 목록이 비어 있으면(등록일이 미래인 신규생) 낸 달이 그대로 목록이 된다", () => {
+  const net = new Map([["2026-09", 1000]]);
+  assert.deepEqual(withPrepaidMonths([], net), ["2026-09"]);
+});
+
+test("낸 게 하나도 없으면 기본 목록을 그대로 돌려준다", () => {
+  assert.deepEqual(withPrepaidMonths(base, new Map()), base);
+});
+
+test("★ 선납한 9월은 부분납으로 판정된다 — 1,000원만 냈으니 나머지가 남는다", () => {
+  const net = new Map([["2026-09", 1000]]);
+  const months = withPrepaidMonths(base, net).map(m =>
+    computeMonthStatus(m, 300000, net.get(m) || 0, PARTIAL_PAYMENT_SINCE)
+  );
+  const sep = months.find(m => m.month === "2026-09");
+  assert.ok(sep, "9월이 목록에 없다");
+  assert.equal(sep!.status, "부분납");
+  assert.equal(sep!.remaining, 299000);
+});
+
+test("★ 9월을 완납했으면 완납으로 뜬다 (선납 완납도 보여야 한다)", () => {
+  const net = new Map([["2026-09", 300000]]);
+  const months = withPrepaidMonths(base, net).map(m =>
+    computeMonthStatus(m, 300000, net.get(m) || 0, PARTIAL_PAYMENT_SINCE)
+  );
+  assert.equal(months.find(m => m.month === "2026-09")!.status, "완납");
 });
 
 console.log(`\n${failed === 0 ? "✅" : "❌"} 통과 ${passed} · 실패 ${failed}`);

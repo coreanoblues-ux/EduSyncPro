@@ -31,12 +31,14 @@ import {
   setDeviceKey,
   pingServer,
   fetchPendingDispatch,
+  reportRecoveryNotFound,
   ackDispatch,
   reportDispatchResult,
   confirmPayment,
   cancelPayment,
   exchangePairing,
   type PendingDispatch,
+  type RecoveryRequest,
 } from "./api";
 import {
   configureLogger,
@@ -550,8 +552,11 @@ async function recoverBackupIfAny() {
   const result = await p.getPayment({ paymentKey: backup });
   if (result && result.type === "SUCCESS") {
     try {
-      await confirmPaymentFromSdk(result.response);
-      handledPaymentKeys.add(result.response.paymentKey);
+      // backup 은 우리가 넘겼던 paymentKey 그 자체다. getPayment 응답에는
+      // paymentKey 가 안 들어 있으므로(문서상 { paymentMethod, tid,
+      // vanTransactionKey, card } 뿐) 여기서 알려 줘야 한다.
+      await confirmPaymentFromSdk(result.response, { paymentKey: backup });
+      handledPaymentKeys.add(backup);
       log.info("backup 복구 완료", "승인 결과를 서버 원장에 반영했습니다.");
     } catch (err) {
       // 서버 confirm 이 실패하면 backup 을 지우지 않는다 — 다음 부팅에서 재시도할 수 있다.
@@ -562,6 +567,100 @@ async function recoverBackupIfAny() {
   if (typeof p.resetBackupPaymentKey === "function") {
     await p.resetBackupPaymentKey();
   }
+}
+
+/**
+ * 서버가 되물은 결제들을 getPayment 로 확인해서 자동으로 장부에 올린다.
+ *
+ * ── 왜 이게 필요한가 (2026-08-30, 원장 요청) ──
+ *   원장이 말한 그대로다: "실제로는 승인이 되었는데 웹앱에서는 processing 이라고
+ *   나왔다가 expired 로 바뀌고, 결국 사장님앱에서 승인번호를 확인해서 수기로
+ *   눌러야 한다. 너무 번거롭다."
+ *
+ *   그 번거로움의 원인은 서버가 "카드가 긁혔다"는 사실을 알 수 있는 통로가
+ *   confirm 요청 **하나뿐**이었다는 것이다. 그 한 번이 실패하면 서버는 영영
+ *   모른다. 이제 서버가 되물을 수 있고, 답은 단말기 안에 있다.
+ *
+ * ── 근거 (docs.tossplace.com/reference/plugin-sdk/front/payment.html) ──
+ *   getPayment 는 requestPayment 의 결과를 단말기에 14일간 캐시해 두고,
+ *   "WebView reload, 페이지 이동, JS 런타임 재초기화 등으로 데이터를 유실했을
+ *   경우" 다시 꺼내 쓰라고 만들어진 API 다. 우리 상황이 정확히 그것이다.
+ *
+ *   결정적으로 **SUCCESS 결과만 캐시된다.** 그래서 이 함수가 없는 돈을 장부에
+ *   만들어 낼 방법이 없다 — 진짜 실패한 결제는 단말기가 모른다고 답한다.
+ *
+ * ⚠️ 결제 중에는 절대 실행하지 않는다. 학생이 카드를 대고 있는데 getPayment 를
+ *    끼워 넣으면 결제 화면과 경합한다. 호출부에서 busy 를 확인한다.
+ */
+async function runRecoveryChecks(requests: RecoveryRequest[]) {
+  if (!sdk || requests.length === 0) return;
+  const p = sdk.payment;
+  if (typeof p.getPayment !== "function") {
+    // 이 펌웨어에 조회 API 가 없으면 자동 대사는 불가능하다. 수기 대사 경로는
+    // 그대로 살아 있으므로 조용히 포기하되, 왜 자동이 안 되는지는 남긴다.
+    log.warn("자동 대사 불가", "이 펌웨어에는 sdk.payment.getPayment 가 없습니다.");
+    return;
+  }
+
+  for (const request of requests) {
+    const paymentKey = request.paymentKey;
+    // 이미 이번 부팅에서 처리한 건은 건너뛴다. 서버가 아직 장부 반영을 못 봤을
+    // 뿐일 수 있는데, 그 사이 폴링이 여러 번 돌면 같은 걸 반복해서 묻게 된다.
+    if (handledPaymentKeys.has(paymentKey)) continue;
+
+    try {
+      const result = await p.getPayment({ paymentKey });
+
+      if (result && result.type === "SUCCESS") {
+        // 승인 기록이 있었다. 평소 경로로 서버에 올린다 — 서버는 이걸
+        // "지각 승인" 으로 받아 주고 장부에 넣는다.
+        //
+        // request 를 함께 넘기는 이유: getPayment 응답에는 금액도 주문번호도
+        // paymentKey 도 없다. 서버가 확정해 준 값으로 그 구멍을 메운다.
+        log.warn(
+          "자동 대사: 승인 기록 발견",
+          `paymentKey=${paymentKey} — 단말기에 승인 기록이 남아 있습니다. 장부에 올립니다.`
+        );
+        await confirmPaymentFromSdk(result.response, request);
+        handledPaymentKeys.add(paymentKey);
+        log.info("자동 대사 완료", `${paymentKey} 를 수납에 자동 반영했습니다.`);
+        continue;
+      }
+
+      // 조회는 됐는데 SUCCESS 가 아니다 = 승인된 적이 없다.
+      await reportRecoveryNotFound({ paymentKey, code: result?.type ?? "NOT_SUCCESS" });
+      handledPaymentKeys.add(paymentKey);
+      log.info("자동 대사: 승인 없음", `${paymentKey} 는 실제로 승인되지 않았습니다.`);
+    } catch (err) {
+      // getPayment 가 PAYMENT_NOT_FOUND 로 throw 하는 펌웨어도 있다. 그 경우도
+      // "승인 없음" 이지만, 네트워크 오류와 구분이 안 되면 멀쩡한 결제에
+      // "승인 없음" 표식을 찍어 버릴 수 있다. 그래서 코드가 확실히
+      // PAYMENT_NOT_FOUND 일 때만 보고하고, 나머지는 다음 폴링에 다시 시도한다.
+      const code = errCode(err);
+      if (code === "PAYMENT_NOT_FOUND") {
+        try {
+          await reportRecoveryNotFound({ paymentKey, code });
+          handledPaymentKeys.add(paymentKey);
+          log.info("자동 대사: 승인 없음", `${paymentKey} — 단말기에 기록이 없습니다.`);
+        } catch (reportErr) {
+          log.error("자동 대사 보고 실패", reportErr, "다음 폴링에서 다시 시도합니다.");
+        }
+      } else {
+        log.error(
+          "자동 대사 확인 실패",
+          err,
+          `paymentKey=${paymentKey} — 판단을 보류하고 다음 폴링에서 다시 확인합니다.`
+        );
+      }
+    }
+  }
+}
+
+/** SDK 오류에서 코드 문자열만 꺼낸다. 형태가 펌웨어마다 다르므로 넓게 받는다. */
+function errCode(err: any): string | null {
+  if (!err) return null;
+  if (typeof err === "string") return err;
+  return err.code ?? err.errorCode ?? err.type ?? err.name ?? null;
 }
 
 // ─── 폴링 ──────────────────────────────────────────────────────────────
@@ -579,7 +678,7 @@ async function pollOnce() {
   }
   inFlight = true;
   try {
-    const { pending } = await fetchPendingDispatch();
+    const { pending, recover } = await fetchPendingDispatch();
 
     if (consecutivePollErrors > 0) {
       log.info("backend connection 복구", `연속 실패 ${consecutivePollErrors}회 뒤 정상화되었습니다.`);
@@ -605,6 +704,22 @@ async function pollOnce() {
         busy = false;
         goIdle();
         log.info("waiting payment intent", "다음 결제 요청을 기다립니다.");
+      }
+      // 결제를 막 끝냈다. 자동 대사는 다음 폴링으로 미룬다 — 방금 끝난 결제의
+      // confirm 이 아직 서버에 반영되는 중일 수 있고, 그 사이에 같은 건을
+      // 되물으면 쓸데없이 한 번 더 확인하게 된다.
+      return;
+    }
+
+    // 결제 요청이 없을 때만 자동 대사를 돌린다. 단말기의 본업은 결제이고,
+    // 대사는 한가할 때 하는 뒷정리다. 여기서 실패해도 폴링은 계속돼야 하므로
+    // 오류를 밖으로 던지지 않는다 — 던지면 아래 catch 가 이걸 "서버 연결 끊김"
+    // 으로 오해해서 "인터넷을 확인하세요" 화면을 띄운다.
+    if (recover && recover.length > 0 && !busy) {
+      try {
+        await runRecoveryChecks(recover);
+      } catch (err) {
+        log.error("자동 대사 중 오류", err, "다음 폴링에서 다시 시도합니다.");
       }
     }
   } catch (err) {
@@ -1016,34 +1131,58 @@ function humanErr(err: unknown): string {
  *   "장부에 없다" 는 사실을 알고 있는 상태가 된다. 틀린 숫자가 조용히 들어가
  *   맞는 것처럼 보이는 쪽이 훨씬 위험하다.
  */
-async function confirmPaymentFromSdk(r: PaymentResponseSuccess) {
+async function confirmPaymentFromSdk(
+  r: PaymentResponseSuccess,
+  // RecoveryRequest 를 그대로 받을 수 있으면서, backup 복구처럼 paymentKey 하나만
+  // 아는 경로도 쓸 수 있게 나머지는 optional 로 둔다.
+  known?: { paymentKey: string; orderId?: string; amount?: number },
+) {
+  // ⚠️ known 이 왜 있나 (0.3.13 에서 고친 진짜 버그):
+  //   getPayment 로 다시 읽은 캐시 응답에는 **paymentKey 도 orderId 도 amount 도
+  //   없다.** 문서상 그 응답은 { paymentMethod, tid, vanTransactionKey, card } 뿐이다
+  //   (docs.tossplace.com/reference/plugin-sdk/front/payment.html).
+  //   그래서 SDK 응답만 들고 confirm 을 부르던 예전 복구 경로는 아래 amount 검사에
+  //   걸려 죽거나, 서버까지 갔다가 400 {"error":"Required"} 를 맞았다. 0.3.11 때
+  //   단말기 로그에 찍혔던 그 오류의 정체가 이것이다.
+  //
+  //   그래서 복구 경로에서는 서버가 확정해 둔 값(intent)을 그대로 들고 온다.
+  //   금액은 원래도 서버가 정한 값만 신뢰해야 하는 것이라, 이쪽이 오히려 정석이다.
+  //   서버 confirm 은 이 금액을 다시 intent.amount 와 대조하므로 이중으로 걸린다.
+  const paymentKey = r.paymentKey || known?.paymentKey;
+  const amount = typeof r.amount === "number" ? r.amount : known?.amount;
+
   const missing: string[] = [];
-  if (typeof r.amount !== "number") missing.push("amount");
+  if (typeof amount !== "number") missing.push("amount");
   if (!r.paymentMethod) missing.push("paymentMethod");
   if (!r.approvedAt) missing.push("approvedAt");
-  if (!r.orderId) missing.push("orderId");
+  if (!r.orderId && !known?.orderId) missing.push("orderId");
   if (!r.approvalNumber && !r.card?.approveNo) missing.push("approvalNumber");
   if (missing.length > 0) {
     // 값은 찍지 않는다 (카드번호가 섞일 수 있다). 어떤 키가 있었는지 이름만 남긴다.
     log.warn(
       "승인 응답에 빠진 필드",
-      `없음=[${missing.join(", ")}] · 응답 키=[${Object.keys(r ?? {}).join(",")}]`
+      `없음=[${missing.join(", ")}] · 응답 키=[${Object.keys(r ?? {}).join(",")}]` +
+        (known ? " · 서버 확정값으로 보완합니다." : "")
     );
   }
 
-  if (typeof r.amount !== "number" || !Number.isFinite(r.amount)) {
+  if (!paymentKey) {
+    throw new Error("승인 응답에도 서버 요청에도 paymentKey 가 없습니다.");
+  }
+
+  if (typeof amount !== "number" || !Number.isFinite(amount)) {
     throw new Error(
       "승인 응답에 결제 금액(amount)이 없습니다. 금액을 추측해 원장에 기록하지 않습니다."
     );
   }
 
   await confirmPayment({
-    paymentKey: r.paymentKey,
+    paymentKey,
     // 서버는 min(1) 을 요구한다. 빈 문자열이면 "Required" 가 아니라 길이 오류가
     // 나서 원인이 또 흐려지므로, 없을 때는 paymentKey 를 주문번호로 대신 쓴다.
     // paymentKey 는 우리가 intent 를 만들 때 발급한 값이라 대사에 문제가 없다.
-    orderId: r.orderId || r.paymentKey,
-    amount: r.amount,
+    orderId: r.orderId || known?.orderId || paymentKey,
+    amount,
     // 이 단말기는 requestPayment 에서 CASH 를 제외하고 카드만 받는다.
     paymentMethod: r.paymentMethod || "CARD",
     approvalNumber: r.approvalNumber ?? r.card?.approveNo ?? "복구",

@@ -35,6 +35,7 @@ import { deviceGuard } from "./deviceAuth";
 import { verifyVirtualInvoice } from "./virtualInvoice";
 import { classifyConfirm } from "./lifecycle";
 import { getOrCreateSystemUserId } from "./ledgerUser";
+import { markVerifiedNoApproval } from "./recovery";
 
 const router = Router();
 
@@ -421,6 +422,89 @@ function sanitizeRawResponse(raw: any): any {
   walk(clone);
   return clone;
 }
+
+/**
+ * POST /payments/recovery-result — 자동 대사 확인 결과 보고.
+ *
+ * 단말기가 /dispatch/pending 응답의 recover 목록을 받아 getPayment 로 확인한 뒤,
+ * **승인 기록이 없을 때만** 이걸 부른다. 승인이 있었으면 평소의 /payments/confirm
+ * 을 그대로 부르므로 여기 올 일이 없다 (경로가 하나뿐이어야 장부 쓰는 코드가
+ * 한 군데로 모인다).
+ *
+ * ⚠️ 이 엔드포인트는 장부를 만지지 않는다. 돈을 만들지도 지우지도 않는다.
+ *    하는 일은 "다시 묻지 마라" 는 표식을 남기는 것뿐이다. 그래서 설령 단말기가
+ *    거짓으로 보고해도 최악의 결과는 "자동으로는 못 찾았다" 이고, 원장의 수기 대사
+ *    경로는 그대로 남아 있다.
+ *
+ * 왜 상태(status)를 바꾸지 않나:
+ *   TIMEOUT 은 TIMEOUT 그대로 두는 게 사실에 가깝다. 상태를 FAILED 로 바꾸면
+ *   "서버가 실패를 확인했다" 처럼 보이지만 실제로 확인한 건 "이 단말기 캐시에
+ *   없다" 뿐이다. 사실보다 강한 결론을 상태로 박아 넣지 않는다.
+ */
+const recoveryResultSchema = z.object({
+  paymentKey: z.string().min(1),
+  /**
+   * false 만 의미가 있다. true 를 보내는 경로는 존재하지 않는다 —
+   * 승인이 있었으면 confirm 을 부르는 게 유일한 정답이기 때문이다.
+   */
+  found: z.literal(false),
+  /** getPayment 가 준 오류 코드 (PAYMENT_NOT_FOUND 등). 감사 기록용. */
+  code: z.string().max(64).optional(),
+});
+
+router.post("/payments/recovery-result", deviceGuard, async (req: Request, res: Response) => {
+  const parsed = recoveryResultSchema.safeParse(req.body);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    return res.status(400).json({ error: `${issue?.path?.join(".")}: ${issue?.message}` });
+  }
+  const { paymentKey, code } = parsed.data;
+  const device = req.device!;
+
+  try {
+    const [intent] = await db
+      .select({
+        id: paymentIntents.id,
+        status: paymentIntents.status,
+        failureReason: paymentIntents.failureReason,
+      })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.paymentKey, paymentKey),
+          eq(paymentIntents.tenantId, device.tenantId),
+          // 다른 단말기의 결제에 표식을 남기지 못하게 한다. 이걸 안 막으면
+          // 단말기 A 가 단말기 B 에서 긁힌 결제를 "승인 없음" 으로 덮어 버린다.
+          eq(paymentIntents.deviceId, device.id)
+        )
+      );
+    if (!intent) return res.status(404).json({ error: "결제 intent를 찾을 수 없습니다." });
+
+    // 이미 승인된 건에는 표식을 남기지 않는다. 지각 confirm 이 방금 들어왔는데
+    // 뒤늦게 도착한 "승인 없음" 보고가 그 위에 덮이면 기록이 거짓말이 된다.
+    if (intent.status === "APPROVED") {
+      return res.json({ ok: true, ignored: "이미 승인된 결제입니다." });
+    }
+
+    await db
+      .update(paymentIntents)
+      .set({
+        failureReason: markVerifiedNoApproval(intent.failureReason),
+        updatedAt: new Date(),
+      })
+      .where(eq(paymentIntents.id, intent.id));
+
+    console.log(
+      `🔁 자동 대사 결과: paymentKey=${paymentKey} 단말기에 승인 기록 없음` +
+        (code ? ` (${code})` : "") +
+        " — 다시 묻지 않습니다."
+    );
+    return res.json({ ok: true });
+  } catch (err: any) {
+    console.error("recovery-result error:", err?.message ?? err);
+    return res.status(500).json({ error: "확인 결과를 기록하지 못했습니다." });
+  }
+});
 
 // getOrCreateSystemUserId 는 ./ledgerUser 로 옮겼다.
 //

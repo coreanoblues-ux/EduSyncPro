@@ -104,6 +104,55 @@ export function computeMonthStatus(
   return { month, tuition, paid, remaining, status };
 }
 
+/**
+ * 기본 달 목록에 "미리 낸 미래 달"을 끼워 넣는다.
+ *
+ * ── 왜 필요한가 (2026-08-30, 원장 실험) ──
+ *   원장이 8월에 어떤 학생의 **9월** 수강료로 1,000원을 결제해 봤다. 학생 태블릿에는
+ *   제대로 반영됐는데 수납 화면에는 아무 데도 안 나왔다. 돈은 들어왔는데 원장이
+ *   그걸 볼 방법이 없었다.
+ *
+ *   원인은 수납 화면이 달 목록을 "등록일 ~ 오늘" 로만 만들었다는 것이다. 9월은
+ *   아직 오지 않았으므로 목록에 없고, 목록에 없으면 9월에 들어온 돈은 계산에서
+ *   통째로 빠진다. 반면 태블릿(invoicesHelper)은 앞으로 6개월을 함께 보므로
+ *   같은 결제가 거기서는 보였다. 같은 데이터를 두 화면이 다르게 그린 것이다.
+ *
+ * ── 왜 "돈이 들어온 달만" 넣나 ──
+ *   태블릿처럼 미래 6개월을 무조건 펼치면 안 된다. 태블릿은 "낼 수 있는 달"을
+ *   보여 주는 화면이지만, 수납은 "받아야 할 돈"을 보여 주는 화면이다. 미래
+ *   6개월을 그냥 펼치면 전교생이 앞으로 6달치 미납으로 뜨고, 미납 합계가
+ *   실제의 몇 배로 부풀어 원장이 화면을 못 믿게 된다.
+ *
+ *   그래서 미래 달은 **실제로 돈이 들어온 달만** 넣는다. 선납은 보이고,
+ *   아직 청구할 때가 안 된 달은 조용하다.
+ *
+ * @param baseMonths 등록일 ~ 오늘로 만든 기본 달 목록 (YYYY-MM, 오름차순)
+ * @param netByMonth 달별 순액 (원비 - 환불)
+ */
+export function withPrepaidMonths(
+  baseMonths: string[],
+  netByMonth: Map<string, number>,
+): string[] {
+  // 기본 목록의 마지막 달. 이보다 뒤에 있는 달만 "미래" 다.
+  // 목록이 비어 있으면(등록일이 미래인 신규생) 모든 납부 달이 미래다.
+  const lastBase = baseMonths.length > 0 ? baseMonths[baseMonths.length - 1] : "";
+
+  // forEach 로 도는 이유: 이 파일은 클라이언트·서버가 함께 쓰고 tsconfig target 이
+  // 낮아서 Map 을 for...of 로 돌면 downlevelIteration 오류가 난다. 빌드 설정을
+  // 바꾸는 것보다 여기서 피하는 쪽이 파급이 작다.
+  const extra: string[] = [];
+  netByMonth.forEach((net, month) => {
+    if (month <= lastBase) return;        // 이미 기본 목록에 있다
+    if (net <= 0) return;                 // 냈다가 전액 환불된 달은 만들지 않는다
+    extra.push(month);
+  });
+  if (extra.length === 0) return baseMonths;
+
+  // YYYY-MM 은 zero-padded 라 문자열 정렬이 곧 시간 순서다.
+  extra.sort();
+  return [...baseMonths, ...extra];
+}
+
 /** 아직 돈을 더 받아야 하는 달인가. 미납과 부분납이 모두 해당한다. */
 export function isOutstanding(m: MonthPayment): boolean {
   return m.remaining > 0;

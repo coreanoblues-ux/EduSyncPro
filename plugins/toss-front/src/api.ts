@@ -183,8 +183,59 @@ export interface PendingDispatch {
   expiresAt: string;
 }
 
-export function fetchPendingDispatch(): Promise<{ pending: PendingDispatch | null }> {
+/**
+ * 서버가 단말기에게 "이 결제, 승인됐었니?" 하고 되묻는 한 건 (자동 대사 숙제).
+ *
+ * paymentKey 는 토스가 아니라 우리(파트너)가 만들어 넘긴 값이다. 그래서 서버가
+ * 그 값을 알고 있고, 단말기 캐시(getPayment)를 나중에 다시 뒤질 수 있다.
+ * amount·orderId 는 서버가 확정한 값을 그대로 되받아 confirm 에 실어 보내기
+ * 위한 것이다 (아래 recover 주석의 ⚠️ 참고).
+ */
+export interface RecoveryRequest {
+  paymentKey: string;
+  orderId: string;
+  amount: number;
+}
+
+export function fetchPendingDispatch(): Promise<{
+  pending: PendingDispatch | null;
+  /**
+   * 서버가 "이거 승인됐었니?" 하고 되묻는 paymentKey 목록 (자동 대사).
+   *
+   * 서버는 단말기를 직접 부를 수 없으므로(매장 와이파이 뒤, 공인 주소 없음)
+   * 이미 돌고 있는 이 폴링에 숙제를 얹어 보낸다. 우리는 각각을
+   * sdk.payment.getPayment 로 확인해서, 승인 기록이 있으면 평소의 confirm 을
+   * 부르고 없으면 reportRecoveryNotFound 로 답한다.
+   *
+   * ⚠️ amount·orderId 가 왜 여기 실려 오나:
+   *   getPayment 가 돌려주는 캐시 응답에는 **금액도 주문번호도 paymentKey 도
+   *   없다.** 문서상 response 는 { paymentMethod, tid, vanTransactionKey, card }
+   *   뿐이다. 그래서 SDK 응답만 보고 confirm 을 부르면 400 {"error":"Required"}
+   *   가 난다 — 0.3.11 때 단말기 로그에 실제로 찍혔던 그 오류다. 금액은 원래도
+   *   서버가 확정한 값만 써야 하므로 서버가 함께 내려 준다.
+   *
+   * 구버전 서버는 이 필드를 안 보낸다. 그래서 optional 이다 — 플러그인만 먼저
+   * 올라가도 폴링이 깨지지 않아야 한다.
+   */
+  recover?: RecoveryRequest[];
+}> {
   return apiFetch("/api/toss-front/dispatch/pending");
+}
+
+/**
+ * 자동 대사 확인 결과 보고 — "단말기에도 승인 기록이 없다".
+ *
+ * 승인 기록이 **있을** 때는 이걸 부르지 않는다. 그때는 평소의 confirmPayment 를
+ * 부르는 게 유일한 정답이다. 장부에 돈을 적는 경로는 하나뿐이어야 한다.
+ */
+export function reportRecoveryNotFound(body: {
+  paymentKey: string;
+  code?: string;
+}): Promise<{ ok: true }> {
+  return apiFetch("/api/toss-front/payments/recovery-result", {
+    method: "POST",
+    body: JSON.stringify({ paymentKey: body.paymentKey, found: false, code: body.code }),
+  });
 }
 
 /** 단말기가 dispatch 를 받아 결제창을 띄우기 직전에 호출 (DELIVERED 로 표시). */

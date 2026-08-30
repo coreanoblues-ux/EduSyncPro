@@ -15,6 +15,7 @@ import {
   PARTIAL_PAYMENT_SINCE,
   isOutstanding,
   totalOutstanding as sumOutstanding,
+  withPrepaidMonths,
   type MonthPayment,
 } from "@shared/paymentStatus";
 
@@ -186,8 +187,6 @@ export default function Payments({ userRole }: PaymentsProps) {
           if (student && student.isActive === false) onLeaveIds.add(enrollment.id);
           const tuition = enrollment.tuition || classItem.defaultTuition || 0;
 
-          const allMonths = getMonthsBetween(enrollment.startDate, enrollment.endDate, now);
-
           const enrollmentPayments = payments.filter(p => p.enrollmentId === enrollment.id);
 
           // 달마다 순액을 낸다. 환불(음수)이 그대로 상계되므로
@@ -197,6 +196,17 @@ export default function Payments({ userRole }: PaymentsProps) {
             if (!p.paymentMonth) continue;
             netByMonth.set(p.paymentMonth, (netByMonth.get(p.paymentMonth) || 0) + (p.amount || 0));
           }
+
+          // 기본은 "등록일 ~ 오늘". 여기에 미리 낸 미래 달을 얹는다.
+          //
+          // ⚠️ 순서 주의: netByMonth 를 먼저 만들어야 한다. 선납한 달이 어디인지는
+          //    결제 내역을 봐야만 알 수 있기 때문이다. 예전에는 달 목록을 먼저
+          //    만들었고, 그래서 9월에 낸 1,000원이 화면에서 통째로 사라졌다
+          //    (2026-08-30 원장 실험). 이유는 shared/paymentStatus.ts 주석 참고.
+          const allMonths = withPrepaidMonths(
+            getMonthsBetween(enrollment.startDate, enrollment.endDate, now),
+            netByMonth,
+          );
 
           // 판정은 shared/paymentStatus.ts 한 곳에서만 한다.
           //

@@ -39,6 +39,7 @@ import {
 } from "./lifecycle";
 import { verifyVirtualInvoice } from "./virtualInvoice";
 import { publish, subscribe } from "./dispatchBus";
+import { selectRecoveryKeys, type RecoveryCandidate } from "./recovery";
 
 /**
  * 라우터를 두 개로 분리한 이유 (2026-08 버그 수정):
@@ -460,8 +461,100 @@ frontDispatchRouter.get("/dispatch/stream", deviceGuard, async (req: Request, re
  * 필요한 필드를 그대로 갖도록 정규화한다. status='PENDING' 만 픽업 (DELIVERED 는 이미 다른
  * 폴링 사이클이 잡아 결제창까지 띄운 것이므로 재진입 금지).
  */
+/**
+ * 이 단말기에게 "이거 승인됐었니?" 하고 되물을 paymentKey 목록.
+ *
+ * ── 왜 폴링 응답에 얹어 보내나 ──
+ *   서버가 단말기를 직접 부를 방법이 없다. 단말기는 매장 와이파이 뒤에 있고
+ *   공인 주소가 없다. 반대로 단말기는 이미 이 엔드포인트를 주기적으로 두드리고
+ *   있다. 그 왕복에 숙제를 한 줄 얹는 게 새 채널을 뚫는 것보다 훨씬 안전하다 —
+ *   인증도 이미 deviceGuard 로 끝나 있고, 실패해도 다음 폴링에 다시 온다.
+ *
+ * ── 왜 이 단말기의 건만 ──
+ *   getPayment 캐시는 **그 단말기 안에** 있다. 다른 단말기에서 긁힌 결제를
+ *   물어봐야 무조건 NOT_FOUND 다. 그 답을 "승인 없음" 으로 받아 적으면 멀쩡한
+ *   결제를 영영 못 찾게 된다. 그래서 device_id 로 반드시 좁힌다.
+ *
+ *   device_id 가 NULL 인 intent 는 어느 단말기에서 긁혔는지 알 수 없으므로
+ *   자동 대사 대상이 아니다. 그건 수기 대사로 남는다.
+ */
+async function pendingRecoveryKeys(
+  tenantId: string,
+  deviceId: string
+): Promise<Array<{ paymentKey: string; orderId: string; amount: number }>> {
+  const rows = await db
+    .select({
+      paymentKey: paymentIntents.paymentKey,
+      intentStatus: paymentIntents.status,
+      createdAt: paymentIntents.createdAt,
+      failureReason: paymentIntents.failureReason,
+      // ⚠️ amount·orderId 를 서버가 함께 내려 주는 이유 (0.3.13 에서 고친 진짜 버그):
+      //    getPayment 가 돌려주는 캐시 응답에는 **금액도 주문번호도 paymentKey 도
+      //    없다.** 문서상 response 는 { paymentMethod, tid, vanTransactionKey, card }
+      //    뿐이다. 그래서 예전 복구 경로가 SDK 응답만 보고 confirm 을 부르다가
+      //    400 {"error":"Required"} 로 죽었다 (0.3.11 때 단말기 로그에 찍힌 그것).
+      //    금액은 원래도 서버가 확정한 값만 신뢰해야 하므로, 여기서 같이 보낸다.
+      amount: paymentIntents.amount,
+      orderId: paymentDispatches.orderId,
+      // 이 paymentKey 로 수입(양수) 행이 이미 있는가. 상태 플래그가 아니라
+      // 실제로 적힌 돈을 센다 — 웹훅·수기 대사·지각 confirm 어느 경로로 들어왔든
+      // "장부에 있다"는 사실 하나만 보면 되기 때문이다.
+      ledgered: sql<number>`(
+        SELECT count(*)::int FROM ${payments} p
+         WHERE p.external_payment_key = ${paymentIntents.paymentKey}
+           AND p.amount > 0
+      )`,
+    })
+    .from(paymentIntents)
+    // dispatch 는 orderId 를 가져오기 위한 것뿐이라 leftJoin 이다. dispatch 없이
+    // 만들어진 intent(대사 대상이 될 수 있다)를 이 조인 때문에 잃으면 안 된다.
+    .leftJoin(paymentDispatches, eq(paymentDispatches.intentId, paymentIntents.id))
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.deviceId, deviceId),
+        inArray(paymentIntents.status, ["TIMEOUT", "FAILED", "CANCELED"])
+      )
+    )
+    // 최근 것부터. 오래된 건은 어차피 캐시 수명 밖이라 selectRecoveryKeys 가 거른다.
+    .orderBy(desc(paymentIntents.createdAt))
+    .limit(50);
+
+  const candidates: RecoveryCandidate[] = rows.map((r) => ({
+    paymentKey: r.paymentKey,
+    intentStatus: r.intentStatus,
+    createdAt: r.createdAt,
+    alreadyLedgered: (r.ledgered ?? 0) > 0,
+    failureReason: r.failureReason,
+  }));
+
+  const chosen = new Set(selectRecoveryKeys(candidates, new Date()));
+  return rows
+    .filter((r) => chosen.has(r.paymentKey))
+    .map((r) => ({
+      paymentKey: r.paymentKey,
+      // dispatch 가 없으면 orderId 도 없다. 서버 confirm 은 min(1) 을 요구하므로
+      // paymentKey 로 대신한다 — 우리가 발급한 값이라 대사에 지장이 없다.
+      orderId: r.orderId ?? r.paymentKey,
+      amount: r.amount,
+    }));
+}
+
 frontDispatchRouter.get("/dispatch/pending", deviceGuard, async (req: Request, res: Response) => {
   const device = req.device!;
+
+  // 되찾을 게 있으면 함께 실어 보낸다. 여기서 실패해도 결제 전달은 막지 않는다 —
+  // 대사는 부수적인 일이고, 결제를 받는 것이 이 엔드포인트의 본업이기 때문이다.
+  let recover: Array<{ paymentKey: string; orderId: string; amount: number }> = [];
+  try {
+    recover = await pendingRecoveryKeys(device.tenantId, device.id);
+    if (recover.length > 0) {
+      console.log(`🔁 자동 대사 요청: device=${device.id} ${recover.length}건 확인 지시`);
+    }
+  } catch (err) {
+    console.error("자동 대사 목록 조회 실패 (결제 전달은 계속합니다):", err);
+  }
+
   // paymentIntents 와 JOIN 해서 tax/supplyValue/taxExemptValue 를 함께 돌려준다.
   // 플러그인이 SDK 에 넘길 세금·공급가·비과세 값은 서버가 확정한 값만 신뢰한다 (프론트 계산 금지).
   const [row] = await db
@@ -489,8 +582,9 @@ frontDispatchRouter.get("/dispatch/pending", deviceGuard, async (req: Request, r
     )
     .orderBy(paymentDispatches.createdAt)
     .limit(1);
-  if (!row) return res.json({ pending: null });
+  if (!row) return res.json({ pending: null, recover });
   return res.json({
+    recover,
     pending: {
       // dispatchId 는 서버 내부 라우팅 키, requestId 는 플러그인이 SDK 결과 통지 시 사용할 상관관계 ID.
       // 현재 스키마에선 둘이 같은 값을 갖지만 이름을 분리해 두면 나중에 별도 요청식별자를 도입할 여지가 있다.

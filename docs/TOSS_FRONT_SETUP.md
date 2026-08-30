@@ -11,15 +11,25 @@ Railway → 프로젝트 → Variables에 아래를 추가한다.
 | `TOSS_MERCHANT_ID` | 토스플레이스 개발자센터에서 발급받은 가맹점 ID | `/toss-front` 화면에서 단말기 등록 시 500 에러 |
 | `TOSS_FRONT_DEVICE_SECRET` | 단말기 접근 토큰 서명용 32바이트 무작위 값 | 부팅마다 임시 키가 만들어져 재배포 시 단말기 재등록 필요 |
 | `TOSS_FRONT_INVOICE_SECRET` | 가상 청구서 토큰 서명용 | 위와 동일. 청구서 토큰이 재배포 후 무효화 |
-| `TOSS_WEBHOOK_SECRET` | 웹훅 서명 검증용 (Toss 개발자센터에서 웹훅 등록 시 함께 설정) | 모든 웹훅이 `signatureValid=false`로 저장되고 401로 거절됨 |
+| `TOSS_WEBHOOK_SECRET` | 웹훅 서명 검증용 — **토스가 발급해 주는 값** (직접 만들지 않는다) | 모든 웹훅이 `signatureValid=false`로 저장되고 401로 거절됨 |
 
-세 개의 시크릿을 다르게 두는 이유: 하나가 유출돼도 나머지 두 갈래는 영향받지 않는다.
+시크릿을 갈래별로 다르게 두는 이유: 하나가 유출돼도 나머지 갈래는 영향받지 않는다.
 
-세 값 모두 빈 문자열이 안전한 기본값이 아니므로 반드시 32바이트 이상의 무작위 값을 넣는다. 예:
+### 우리가 만드는 값 vs 토스가 주는 값 — 헷갈리면 웹훅이 통째로 죽는다
+
+`TOSS_FRONT_DEVICE_SECRET` 과 `TOSS_FRONT_INVOICE_SECRET` **두 개만** 우리가 만든다.
+빈 문자열이 안전한 기본값이 아니므로 32바이트 이상의 무작위 값을 넣는다:
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 ```
+
+`TOSS_WEBHOOK_SECRET` 은 **여기서 만들면 안 된다.** 토스플레이스 개발자센터에서 웹훅을
+생성할 때 토스가 "서명 정보(Secret Key)" 를 발급해 주고, 서명은 그 키로 계산되어 온다.
+우리가 만든 무작위 값을 넣으면 HMAC 이 영원히 어긋나서 **모든 웹훅이 401** 이 된다 —
+증상이 "미설정" 과 똑같아서 원인을 찾기 매우 어렵다. 반드시 화면에 표시된 값을 그대로 복사한다.
+
+(공식 문서: <https://docs.tossplace.com/reference/open-api/webhook.html>)
 
 ## 2. 개발자센터 앱 등록 (내일 오전)
 

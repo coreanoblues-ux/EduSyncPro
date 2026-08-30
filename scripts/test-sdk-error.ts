@@ -37,6 +37,7 @@ import {
   describeFailure,
   errCode,
   errCodeCandidates,
+  isOriginalTxNotFound,
   isPaymentNotFound,
   safeRawSummary,
 } from "../plugins/toss-front/src/sdkError";
@@ -165,6 +166,52 @@ test("아는 코드가 없으면 첫 후보를 그대로 남긴다", () => {
 
 test("공백은 정리한다", () => {
   assert.equal(errCode({ code: "  TRIMMED  " }), "TRIMMED");
+});
+
+console.log("\n─── 4-b. ★ '원거래 없음' 만 재시도를 허용한다 ───");
+//
+// 취소 중 예외는 기본이 TIMEOUT 이고, TIMEOUT 은 그 결제를 영원히 잠근다.
+// 실제로 시험용 1,000원 한 건이 이렇게 잠겼다. 그런데 단말기가 원거래를
+// 못 찾았다면 취소를 보내지도 못한 것이므로 카드는 확실히 그대로다.
+// 이 부류만 FAILED(재시도 가능)로 본다. 넓히면 이중 취소가 난다.
+
+test("★ 현장 예외 '원거래 없음' 을 잡는다", () => {
+  const e = new Error("원거래 없음");
+  e.name = "TossFrontSDKError";
+  assert.equal(isOriginalTxNotFound(e), true, "★ 이걸 놓쳐서 결제가 잠겼다");
+});
+
+test("★ 실제 로그 원문 그대로도 잡는다", () => {
+  const e = new Error("TossFrontSDKError: 원거래 없음 :: TossFrontSDKError: 원거래 없음");
+  e.name = "TossFrontSDKError";
+  assert.equal(isOriginalTxNotFound(e), true);
+});
+
+test("PAYMENT_NOT_FOUND 도 같은 부류다", () => {
+  assert.equal(isOriginalTxNotFound({ code: PAYMENT_NOT_FOUND }), true);
+});
+
+test("띄어쓰기 없는 표기도 잡는다", () => {
+  assert.equal(isOriginalTxNotFound(new Error("원거래없음")), true);
+});
+
+test("★ 모르는 예외는 절대 재시도 허용으로 새지 않는다", () => {
+  for (const err of [
+    new Error("Failed to fetch"),
+    new Error("timeout of 60000ms exceeded"),
+    new Error("카드를 읽을 수 없습니다"),
+    new Error("통신 오류"),
+    new Error("원거래 조회 실패"), // 비슷하지만 다른 문구다. 추측하지 않는다.
+    { code: "ECONNRESET" },
+    null,
+    undefined,
+  ]) {
+    assert.equal(
+      isOriginalTxNotFound(err as any),
+      false,
+      `★ ${String((err as any)?.message ?? err)} 를 재시도 가능으로 만들었다`,
+    );
+  }
 });
 
 console.log("\n─── 5. 취소 실패 진단 — 한 번뿐인 시험에서 최대한 건진다 ───");

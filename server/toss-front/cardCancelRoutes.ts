@@ -159,6 +159,90 @@ cardCancelAdminRouter.get(
   }
 );
 
+/**
+ * TIMEOUT 으로 잠긴 건을 사람이 확인한 뒤 푼다 (TIMEOUT → FAILED).
+ *
+ * ── 왜 필요한가 (2026-08-31) ──
+ *   TIMEOUT 은 "카드가 취소됐는지 모른다" 는 뜻이고, 부분 유니크 인덱스 안에
+ *   있어서 그 결제를 **영원히 잠근다.** 모르는 상태에서 자동 재시도를 붙이면
+ *   이중 취소가 나기 때문에 이 잠금 자체는 옳다.
+ *
+ *   문제는 나가는 문이 없었다는 것이다. 현장에서 단말기가 "원거래 없음"(조회 키
+ *   오류)을 던졌는데 TIMEOUT 으로 기록되면서, 시험용 1,000원 결제 한 건이
+ *   통째로 잠겼다. 키를 고쳐도 다시 시험할 방법이 없었다.
+ *
+ * ── 안전 근거 ──
+ *   푸는 것은 **사람만** 한다. 서버는 "카드가 안 됐다" 를 스스로 알 수 없으므로
+ *   원장이 토스 사장님 앱에서 실물을 확인했다는 명시적 확인을 요구한다.
+ *   이 엔드포인트는 장부를 건드리지 않는다 — 상태만 FAILED 로 바꿔 재시도를
+ *   허용할 뿐이고, 실제 취소는 그 다음 요청이 처음부터 다시 한다.
+ *
+ *   되돌리기 위험: 만약 카드가 실제로는 취소됐는데 원장이 잘못 확인하고 풀면,
+ *   다음 취소 시도에서 단말기가 "원거래 없음"(이미 취소됨)을 답한다 — 이제
+ *   그 응답이 FAILED 로 기록되므로 장부에는 아무것도 적히지 않는다. 즉 잘못
+ *   풀어도 이중 환불이 장부에 반영되지는 않는다.
+ */
+const releaseCancelSchema = z.object({
+  /** 원장이 사장님 앱에서 "취소 안 됨" 을 확인했다는 명시적 표시. */
+  confirmedNotCancelled: z.literal(true),
+  note: z.string().trim().max(200).optional(),
+});
+
+cardCancelAdminRouter.post(
+  "/admin/card-cancels/:id/release",
+  authGuard,
+  tenantGuard,
+  roleGuard("owner", "superadmin"),
+  async (req: Request, res: Response) => {
+    const parsed = releaseCancelSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "카드가 취소되지 않았음을 확인했다는 표시가 필요합니다.",
+      });
+    }
+    const tenantId = req.user!.tenantId;
+    if (!tenantId) return res.status(400).json({ error: "테넌트를 알 수 없습니다." });
+
+    // 누가 언제 풀었는지는 반드시 남긴다. 돈을 되돌리는 잠금을 사람이 푼
+    // 것이므로, 나중에 장부가 어긋났을 때 여기서부터 되짚어야 한다.
+    // 컬럼 추가(마이그레이션) 없이 failure_reason 뒤에 덧붙인다.
+    const auditNote =
+      ` | 사람확인해제: 사장님앱에서 취소되지 않음을 확인 (${req.user!.id} ${new Date().toISOString()})` +
+      (parsed.data.note ? ` 메모: ${parsed.data.note}` : "");
+
+    // TIMEOUT 에서만 나갈 수 있다. SUCCEEDED 를 푸는 일은 절대 없어야 하고,
+    // DELIVERED(단말기가 처리 중)를 푸는 것도 이중 취소로 이어진다.
+    const [row] = await db
+      .update(paymentCancelDispatches)
+      .set({
+        status: "FAILED",
+        failureReason: sql`LEFT(COALESCE(${paymentCancelDispatches.failureReason}, '') || ${auditNote}, 2000)`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(paymentCancelDispatches.id, req.params.id),
+          eq(paymentCancelDispatches.tenantId, tenantId),
+          eq(paymentCancelDispatches.status, "TIMEOUT")
+        )
+      )
+      .returning({ id: paymentCancelDispatches.id, paymentKey: paymentCancelDispatches.paymentKey });
+
+    if (!row) {
+      return res.status(409).json({
+        error:
+          "결과를 모르는(TIMEOUT) 취소 요청만 풀 수 있습니다. 이미 처리됐거나 진행 중인 건일 수 있으니 목록을 새로고침해 주세요.",
+      });
+    }
+
+    console.warn(
+      `⚠️  카드취소 사람확인 해제: cancel=${row.id} paymentKey=${row.paymentKey} ` +
+        `by=${req.user!.id} — 원장이 '카드 취소되지 않음' 을 확인했습니다. 재시도가 가능해집니다.`
+    );
+    return res.json({ ok: true, paymentKey: row.paymentKey });
+  }
+);
+
 const createCancelSchema = z.object({
   paymentKey: z.string().min(1),
   reason: z.string().trim().max(200).optional(),

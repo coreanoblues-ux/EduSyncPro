@@ -261,6 +261,8 @@ export default function TossFront() {
   // 큰 금액일 때 원장이 직접 쳐 넣는 금액. 취소는 되돌릴 수 없어서, 줄을
   // 잘못 짚었는지 누르기 전에 스스로 알아차리게 하는 장치다 (shared/cancelGuard.ts).
   const [cancelAmountTyped, setCancelAmountTyped] = useState("");
+  // TIMEOUT 으로 잠긴 건을 사람이 확인하고 푸는 대상.
+  const [releaseTarget, setReleaseTarget] = useState<CardCancel | null>(null);
 
   // 진행 중인 건이 있을 때는 자주 본다. 원장이 단말기 앞에 서 있는 시간이기 때문이다.
   const { data: cardCancels = [] } = useQuery<CardCancel[]>({
@@ -301,6 +303,30 @@ export default function TossFront() {
     },
     onError: (e: Error) =>
       toast({ title: "취소 요청 실패", description: e.message, variant: "destructive" }),
+  });
+
+  /**
+   * TIMEOUT 잠금 해제. 장부는 건드리지 않는다 — 상태만 FAILED 로 바꿔
+   * 재시도를 허용할 뿐이고, 실제 취소는 그 다음 요청이 처음부터 다시 한다.
+   */
+  const releaseCancelMutation = useMutation({
+    mutationFn: async (input: { id: string }) =>
+      (
+        await apiRequest("POST", `/api/toss-front/admin/card-cancels/${input.id}/release`, {
+          confirmedNotCancelled: true,
+        })
+      ).json(),
+    onSuccess: () => {
+      setReleaseTarget(null);
+      qc.invalidateQueries({ queryKey: ["/api/toss-front/admin/card-cancels"] });
+      qc.invalidateQueries({ queryKey: ["/api/toss-front/admin/refundable"] });
+      toast({
+        title: "잠금을 풀었습니다",
+        description: "이제 이 결제에 카드 취소를 다시 요청할 수 있습니다.",
+      });
+    },
+    onError: (e: Error) =>
+      toast({ title: "잠금 해제 실패", description: e.message, variant: "destructive" }),
   });
 
   // ─── 수기 대사 ───────────────────────────────────────────────────────
@@ -880,6 +906,24 @@ export default function TossFront() {
                             ? `장부 ${c.ledgerAmount.toLocaleString()}원 반영됨` +
                               (c.cancelApprovalNumber ? ` · 승인번호 ${c.cancelApprovalNumber}` : "")
                             : (c.failureReason ?? "—"))}
+                        {/*
+                          TIMEOUT 은 그 결제를 영원히 잠근다. 나가는 문이 여기다.
+                          서버는 카드가 취소됐는지 스스로 알 수 없으므로, 원장이
+                          사장님 앱에서 실물을 확인했다는 것을 근거로만 푼다.
+                        */}
+                        {c.status === "TIMEOUT" && (
+                          <div className="mt-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={releaseCancelMutation.isPending}
+                              onClick={() => setReleaseTarget(c)}
+                              data-testid={`card-cancel-release-${c.id}`}
+                            >
+                              취소 안 됐음을 확인함 — 다시 시도 가능하게
+                            </Button>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -1165,6 +1209,59 @@ export default function TossFront() {
               data-testid="refund-submit"
             >
               {refundMutation.isPending ? "기록 중…" : "환불 기록"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* TIMEOUT 잠금 해제 확인 */}
+      <Dialog open={!!releaseTarget} onOpenChange={(o) => !o && setReleaseTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>카드가 취소되지 않았는지 확인하셨나요?</DialogTitle>
+          </DialogHeader>
+          {releaseTarget && (
+            <div className="space-y-3">
+              <div className="rounded-md border p-3 text-sm">
+                <div>
+                  <b>{releaseTarget.studentName ?? "—"}</b> · {releaseTarget.paymentMonth ?? "—"}
+                </div>
+                <div className="mt-1 text-lg font-semibold">
+                  {releaseTarget.cancelAmount.toLocaleString()}원
+                </div>
+                {releaseTarget.failureReason && (
+                  <div className="mt-1 break-all text-xs text-muted-foreground">
+                    기록된 사유: {releaseTarget.failureReason}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-md border border-amber-400 bg-amber-50 p-3 text-sm text-amber-900">
+                <div className="font-semibold">먼저 토스 사장님 앱을 확인하세요.</div>
+                <ul className="mt-1 list-disc space-y-1 pl-5">
+                  <li>
+                    이 결제의 <b>취소 내역이 없어야</b> 합니다. 취소가 이미 되어 있으면 닫으세요.
+                  </li>
+                  <li>
+                    푼다고 해서 돈이 움직이지는 않습니다. <b>다시 요청할 수 있게만</b> 됩니다.
+                  </li>
+                  <li>장부는 지금 건드리지 않습니다.</li>
+                </ul>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReleaseTarget(null)}>
+              닫기
+            </Button>
+            <Button
+              disabled={releaseCancelMutation.isPending || !releaseTarget}
+              onClick={() =>
+                releaseTarget && releaseCancelMutation.mutate({ id: releaseTarget.id })
+              }
+              data-testid="card-cancel-release-submit"
+            >
+              {releaseCancelMutation.isPending ? "푸는 중…" : "확인했습니다 — 잠금 풀기"}
             </Button>
           </DialogFooter>
         </DialogContent>

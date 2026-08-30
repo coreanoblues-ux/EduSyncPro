@@ -23,6 +23,7 @@
     "test:card-cancel": "tsx scripts/test-card-cancel.ts",
     "test:cancel-outbox": "tsx scripts/test-cancel-outbox.ts",
     "test:sdk-error": "tsx scripts/test-sdk-error.ts",
+    "test:cancel-payload": "tsx scripts/test-cancel-payload.ts",
     "test:cancel-guard": "tsx scripts/test-cancel-guard.ts",
     "test:ledger-reflection": "tsx scripts/test-ledger-reflection.ts",
     "test:resilience": "tsx scripts/test-server-resilience.ts",

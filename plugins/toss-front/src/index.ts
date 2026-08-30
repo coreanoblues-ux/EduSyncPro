@@ -94,9 +94,11 @@ import {
   describeFailure,
   errCode,
   errCodeCandidates,
+  isOriginalTxNotFound,
   isPaymentNotFound,
   safeRawSummary,
 } from "./sdkError";
+import { toEpochMillis } from "./cancelPayload";
 import {
   showIdle,
   showAdminMenu,
@@ -1071,6 +1073,23 @@ async function handleCancelDispatch(c: PendingCancel) {
     return;
   }
 
+  // 원거래 조회 키를 SDK 가 받는 밀리초 숫자로 바꾼다. 못 바꾸면 부르지 않는다 —
+  // 틀린 키로 부르면 "원거래 없음" 이 나는데, 그때 카드가 건드려졌는지 아닌지를
+  // 우리가 확신할 수 없어진다. 부르지 않으면 확신할 수 있다.
+  const timestampMs = toEpochMillis(c.approvedTimestamp);
+  if (timestampMs === null) {
+    log.error(
+      "카드 취소 불가",
+      new Error(`승인 시각을 해석할 수 없음: ${String(c.approvedTimestamp)}`),
+      `cancel=${c.cancelId} — 원거래를 찾을 키가 없어 단말기를 부르지 않았습니다. ` +
+        `토스 사장님 앱에서 직접 취소한 뒤 원장 화면에서 장부에만 반영해 주세요.`,
+    );
+    await enqueueCancelReport(c, "FAILED", {
+      reason: `승인 시각을 밀리초로 해석할 수 없습니다: ${String(c.approvedTimestamp)}`,
+    });
+    return;
+  }
+
   // ── (b) 선점. 실패하면 절대 SDK 를 부르지 않는다. ──
   //        다른 폴링 사이클이 이미 집어갔다는 뜻이고, 그 사이클이 지금 카드를
   //        취소하는 중일 수 있다. 여기서 밀어붙이면 이중 취소다.
@@ -1111,7 +1130,10 @@ async function handleCancelDispatch(c: PendingCancel) {
     log.info(
       "requestPaymentCancel 호출",
       `cancel=${c.cancelId} 금액=${c.amount} 원승인번호=${c.approvalNumber} ` +
-        `공급가=${c.supplyValue} 세액=${c.tax} 할부=${c.installment}`,
+        `공급가=${c.supplyValue} 세액=${c.tax} 할부=${c.installment} ` +
+        // 조회 키를 반드시 남긴다. "원거래 없음" 이 났을 때 무엇으로 찾았는지
+        // 모르면 다음에 또 추측만 하게 된다.
+        `timestamp=${timestampMs}(${typeof timestampMs}) tid=${c.tid || "(없음)"}`,
     );
     result = await sdk.payment.requestPaymentCancel({
       paymentKey: c.paymentKey,
@@ -1122,7 +1144,7 @@ async function handleCancelDispatch(c: PendingCancel) {
       supplyValue: c.supplyValue,
       taxExemptValue: c.taxExemptValue,
       tip: c.tip,
-      timestamp: c.approvedTimestamp,
+      timestamp: timestampMs, // number 여야 한다. 문자열로 보내면 원거래를 못 찾는다.
       approvalNumber: c.approvalNumber,
       installment: c.installment,
       tid: c.tid,
@@ -1131,20 +1153,45 @@ async function handleCancelDispatch(c: PendingCancel) {
     });
   } catch (err: any) {
     clearInflight(outboxStorage);
-    // ⚠️ 여기서 FAILED 로 보고하면 안 된다. 위 (2) 참고.
+    // 후보를 전부 남긴다. 예외 하나에서 최대한 건져야 한다.
+    const detail = `SDK 예외: ${errCodeCandidates(err).join(" | ") || String(err)}`.slice(
+      0,
+      MAX_REASON_LEN,
+    );
+
+    // ── 예외 중 딱 한 부류만 FAILED 로 보고한다 ──
+    //    "원거래 없음" 은 단말기가 원거래를 특정하지 못했다는 뜻이고, 특정하지
+    //    못했으면 취소를 보내지도 못했다. 카드가 건드려지지 않은 것이 확실하다.
+    //    나머지 예외는 지금까지처럼 TIMEOUT 이다 — 모르면 잠그는 쪽이 맞다.
+    if (isOriginalTxNotFound(err)) {
+      log.error(
+        "requestPaymentCancel — 원거래 없음",
+        err,
+        `cancel=${c.cancelId} — 단말기가 원거래를 찾지 못했습니다. 취소가 시작되지 ` +
+          `않았으므로 카드는 그대로입니다. 조회 키를 고친 뒤 다시 시도할 수 있게 ` +
+          `FAILED 로 보고합니다.`,
+      );
+      await enqueueCancelReport(c, "FAILED", { reason: detail });
+      showStatus({
+        tone: "error",
+        title: "원거래를 찾지 못했습니다",
+        detail:
+          "단말기가 이 결제의 원거래를 찾지 못해 취소가 시작되지 않았습니다.\n" +
+          "카드에서는 아무것도 빠져나가지 않았습니다. 원장 화면에서 다시 요청할 수 있습니다.",
+        actions: [],
+      });
+      await sleep(6000);
+      return;
+    }
+
+    // ⚠️ 그 밖의 예외에서 FAILED 로 보고하면 안 된다. 위 (2) 참고.
     log.error(
       "requestPaymentCancel 예외",
       err,
       `cancel=${c.cancelId} — 카드가 취소됐는지 알 수 없습니다. ` +
         `자동 재시도를 막기 위해 TIMEOUT 으로 보고합니다. 사장님 앱에서 실물을 확인해 주세요.`,
     );
-    await enqueueCancelReport(c, "TIMEOUT", {
-      // 후보를 전부 남긴다. 예외 하나에서 최대한 건져야 한다.
-      reason: `SDK 예외: ${errCodeCandidates(err).join(" | ") || String(err)}`.slice(
-        0,
-        MAX_REASON_LEN,
-      ),
-    });
+    await enqueueCancelReport(c, "TIMEOUT", { reason: detail });
     showFatal(
       "취소 결과를 확인하지 못했습니다",
       "카드가 취소됐는지 알 수 없습니다. 토스 사장님 앱에서 취소 여부를 확인해 주세요. " +

@@ -134,8 +134,16 @@ export interface TossFrontSdk {
       supplyValue: number;
       taxExemptValue: number;
       tip: number;
-      /** 원승인 시각 (밀리초). 원거래 조회 키다. */
-      timestamp: string;
+      /**
+       * 원승인 시각 (밀리초). 원거래 조회 키다.
+       *
+       * ⚠️ **number 다. string 이 아니다.** 0.3.17 까지 이 줄이 `string` 으로
+       *    잘못 선언돼 있었고, 그래서 문자열 "1756555555000" 을 보내며
+       *    "원거래 없음" 을 받고 있었다. 값이 아니라 타입이 틀린 것이었다.
+       *    출처: docs.tossplace.com · Front SDK · payment
+       *          (파라미터 표 `timestamp | number | 필수`, 예 1723628943812)
+       */
+      timestamp: number;
       /** 원승인번호. */
       approvalNumber: string;
       installment: number;

@@ -65,6 +65,39 @@ export function isPaymentNotFound(err: any): boolean {
   return errCodeCandidates(err).some((c) => c === PAYMENT_NOT_FOUND || re.test(c));
 }
 
+/**
+ * 이 예외가 "원거래를 못 찾았다" 를 뜻하는가.
+ *
+ * ── 왜 이 판정이 따로 필요한가 (2026-08-31) ──
+ *   취소 중 예외가 나면 우리는 TIMEOUT("결과를 모른다")으로 보고한다. 카드가
+ *   건드려졌는지 알 수 없을 때 자동 재시도를 막으려는 안전장치다. 그런데
+ *   TIMEOUT 은 부분 유니크 인덱스 안에 있어서 **그 결제는 영원히 다시 취소할 수
+ *   없게 잠긴다.** 사람이 풀어 주기 전까지는.
+ *
+ *   현장에서 이게 문제가 됐다. 단말기가 "원거래 없음" 을 던졌는데 TIMEOUT 으로
+ *   기록되면서, 시험용 1,000원 결제 한 건이 통째로 잠겨 버렸다. 조회 키가
+ *   틀려서 난 실패였는데, 키를 고쳐도 다시 시험할 수가 없었다.
+ *
+ * ── 왜 이건 FAILED 로 봐도 안전한가 ──
+ *   단말기가 원거래를 **찾지 못했다면 취소를 보내지도 못했다.** 취소하려면
+ *   먼저 원거래를 특정해야 하기 때문이다. VAN 까지 갔다가 거절당했더라도
+ *   결론은 같다 — 아무것도 취소되지 않았다. 카드가 건드려지지 않은 것이
+ *   확실한 유일한 예외 부류다.
+ *
+ *   그래서 **아는 문구에만** 참을 준다. 모르는 예외는 지금처럼 TIMEOUT 이다.
+ *   여기를 넓히면 "정말 모르는 실패" 가 재시도 가능으로 새어 나가고, 그건
+ *   이중 취소로 이어진다. 좁게 틀리면 사람이 한 번 풀면 되고, 넓게 틀리면
+ *   학부모 카드에 돈이 두 번 들어간다.
+ */
+const ORIGINAL_TX_NOT_FOUND_PHRASES = ["원거래 없음", "원거래없음"];
+
+export function isOriginalTxNotFound(err: any): boolean {
+  if (isPaymentNotFound(err)) return true;
+  return errCodeCandidates(err).some((c) =>
+    ORIGINAL_TX_NOT_FOUND_PHRASES.some((p) => c.includes(p)),
+  );
+}
+
 /* ───────────────────────── 취소 실패 진단 ─────────────────────────
  *
  * 카드 취소가 실패했을 때 단말기에서 서버로 넘어가는 정보는 실질적으로

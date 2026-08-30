@@ -126,10 +126,22 @@ export default function Payments({ userRole }: PaymentsProps) {
   // 결제를 끝냈는데 수납 화면은 계속 미납이라고 말하는 상태다.
   //
   // 결제 건은 다른 목록보다 훨씬 빨리 변하고, 틀리면 돈 문제로 이어지므로
-  // 여기만 20초 폴링 + 창 포커스 시 갱신을 켠다. 다른 쿼리는 그대로 둔다.
+  // 여기만 폴링 + 창 포커스 시 갱신을 켠다. 다른 쿼리는 그대로 둔다.
+  //
+  // ── 왜 20초에서 5초로 내렸나 (2026-08-30, 원장 요청) ──
+  //   원장의 말: "실제 카드결제 후에는 바로 자동으로 수납등록이 처리되었으면
+  //   좋겠음." 카운터에서 학생이 카드를 대고, 원장은 이 화면을 보고 있다. 그
+  //   장면에서 20초는 "바로" 가 아니다 — 원장은 반영이 안 된 줄 알고 새로고침을
+  //   누르거나 수기 입력을 시작한다. 수기 입력이 들어가면 나중에 자동 반영이
+  //   도착했을 때 같은 돈이 두 줄이 된다.
+  //
+  //   5초로 내려도 비용은 크지 않다. /api/payments 는 학원 하나의 결제 목록이고
+  //   이 화면을 열어 두는 사람은 보통 원장 한 명이다. 화면을 벗어나면 쿼리가
+  //   멈추고, refetchIntervalInBackground 를 켜지 않았으므로 탭이 뒤에 있는
+  //   동안에는 브라우저가 알아서 쉰다.
   const { data: payments = [], isLoading: paymentsLoading } = useQuery<Payment[]>({
     queryKey: ['/api/payments'],
-    refetchInterval: 20000,
+    refetchInterval: 5000,
     refetchOnWindowFocus: true,
     staleTime: 0,
   });

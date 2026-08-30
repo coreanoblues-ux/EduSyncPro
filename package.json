@@ -18,6 +18,8 @@
     "test:reconcile": "tsx scripts/test-reconcile.ts",
     "test:payment-status": "tsx scripts/test-payment-status.ts",
     "test:recovery": "tsx scripts/test-recovery.ts",
+    "test:outbox": "tsx scripts/test-confirm-outbox.ts",
+    "test:ledger-reflection": "tsx scripts/test-ledger-reflection.ts",
     "test:resilience": "tsx scripts/test-server-resilience.ts",
     "test:cors": "tsx scripts/test-cors.ts",
     "plugin:build": "npm --prefix plugins/toss-front install --no-audit --no-fund && npm --prefix plugins/toss-front run build",
@@ -27,6 +29,7 @@
     "db:migrate:toss-front": "tsx scripts/migrate-add-toss-front.ts",
     "db:migrate:toss-front-pairing": "tsx scripts/migrate-add-toss-front-pairing.ts",
     "db:migrate:toss-kiosk": "tsx scripts/migrate-add-toss-kiosk.ts",
+    "db:migrate:payment-idempotency": "tsx scripts/migrate-add-payment-idempotency.ts",
     "db:verify": "tsx scripts/db-verify.ts",
     "grades:preview": "tsx scripts/preview-grades.ts"
   },

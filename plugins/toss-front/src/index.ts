@@ -57,6 +57,20 @@ import {
   type TossFrontSdk,
 } from "./sdk";
 import {
+  OUTBOX_KEY,
+  addEntry,
+  dueEntries,
+  isSettled,
+  isStale,
+  loadOutbox,
+  markAttempt,
+  removeEntry,
+  saveOutbox,
+  type ConfirmPayload,
+  type OutboxEntry,
+  type OutboxStorage,
+} from "./outbox";
+import {
   showIdle,
   showAdminMenu,
   showBusy,
@@ -91,6 +105,16 @@ let busy = false;            // 결제창이 떠 있는 동안 폴링 잠금
 let inFlight = false;        // 이미 fetchPendingDispatch 가 답을 기다리는 중인지
 let consecutivePollErrors = 0;
 const handledPaymentKeys = new Set<string>();
+
+/**
+ * 아직 서버 원장에 못 올린 승인들. 저장소의 사본을 메모리에 들고 다닌다.
+ *
+ * 이 배열이 비어 있지 않다는 것은 "카드에서는 돈이 빠져나갔는데 장부에는 아직
+ * 없는 건이 있다" 는 뜻이다. 그래서 비울 때까지 계속 재시도한다.
+ */
+let outbox: OutboxEntry[] = [];
+/** flushOutbox 재진입 방지. 폴링(1초)이 이전 flush 를 앞지르지 못하게 한다. */
+let flushingOutbox = false;
 
 /** 단말기에 등록된 상점명. 대기화면 제목에 쓴다. 못 읽으면 빈 문자열. */
 let merchantName = "";
@@ -517,7 +541,25 @@ export async function bootstrap() {
     // 연결이 끊겼어도 폴링은 계속 돌린다. 네트워크가 돌아오면 스스로 복구된다.
   }
 
-  // 4) 앱이 결제 도중 꺼졌던 경우 backup 으로 마지막 결과 복구
+  // 4) 지난 부팅에서 서버까지 못 보낸 승인들을 먼저 밀어낸다.
+  //
+  //    backup 복구보다 이걸 먼저 하는 이유: 아웃박스에는 승인 응답이 통째로
+  //    들어 있어 그대로 다시 보내면 되지만, backup 복구는 getPayment 로 단말기
+  //    캐시를 다시 뒤져야 한다. 확실한 쪽을 먼저 처리한다.
+  outbox = loadOutbox(outboxStorage, (msg) =>
+    log.error("아웃박스 읽기 실패", new Error(msg), "이 부팅에서는 빈 아웃박스로 시작합니다."),
+  );
+  await mergeMirroredOutbox().catch(() => {});
+  if (outbox.length > 0) {
+    const total = outbox.reduce((s, e) => s + e.payload.amount, 0);
+    log.warn(
+      "미반영 승인 발견",
+      `${outbox.length}건 합계 ${total}원이 아직 원장에 반영되지 않았습니다. 지금 다시 보냅니다.`,
+    );
+    await flushOutbox("부팅");
+  }
+
+  // 5) 앱이 결제 도중 꺼졌던 경우 backup 으로 마지막 결과 복구
   await recoverBackupIfAny().catch((err) => {
     log.error("backup 복구 실패", err, "미확정 승인이 남아 있을 수 있습니다.");
   });
@@ -557,9 +599,11 @@ async function recoverBackupIfAny() {
       // vanTransactionKey, card } 뿐) 여기서 알려 줘야 한다.
       await confirmPaymentFromSdk(result.response, { paymentKey: backup });
       handledPaymentKeys.add(backup);
-      log.info("backup 복구 완료", "승인 결과를 서버 원장에 반영했습니다.");
+      log.info("backup 복구 완료", "승인 결과를 아웃박스에 넣었습니다. 서버 반영까지 책임집니다.");
     } catch (err) {
-      // 서버 confirm 이 실패하면 backup 을 지우지 않는다 — 다음 부팅에서 재시도할 수 있다.
+      // 여기 오는 건 "보낼 내용을 못 만든" 경우뿐이다 (금액이 없는 등).
+      // 그때는 backup 을 지우지 않는다 — 다음 부팅에서 다시 시도할 수 있다.
+      // 전송 실패는 이제 여기로 오지 않는다. 아웃박스가 들고 계속 재시도한다.
       log.error("backup confirm 실패", err, "backup을 유지하고 다음 부팅에서 재시도합니다.");
       return;
     }
@@ -623,7 +667,11 @@ async function runRecoveryChecks(requests: RecoveryRequest[]) {
         );
         await confirmPaymentFromSdk(result.response, request);
         handledPaymentKeys.add(paymentKey);
-        log.info("자동 대사 완료", `${paymentKey} 를 수납에 자동 반영했습니다.`);
+        // 아웃박스에 들어갔으므로 여기서 놓칠 일은 없다. 아직 서버까지 못 갔다면
+        // 아웃박스에 남아 계속 재시도되고, 그 사실은 위 flushOutbox 가 로그로 남긴다.
+        const settled = !outbox.some((e) => e.payload.paymentKey === paymentKey);
+        if (settled) log.info("자동 대사 완료", `${paymentKey} 를 수납에 자동 반영했습니다.`);
+        else log.warn("자동 대사 접수", `${paymentKey} 를 아웃박스에 넣었습니다. 반영될 때까지 재시도합니다.`);
         continue;
       }
 
@@ -711,6 +759,15 @@ async function pollOnce() {
       return;
     }
 
+    // 못 보낸 승인이 있으면 먼저 그것부터 밀어낸다. 자동 대사보다 앞이다 —
+    // 아웃박스에는 승인 내용이 통째로 들어 있어 그냥 다시 보내면 되지만,
+    // 자동 대사는 단말기 캐시를 뒤져야 하는 더 비싼 길이다.
+    //
+    // flushOutbox 는 내부에서 백오프를 보고 아직 때가 아닌 건은 건너뛰므로,
+    // 매 초 불러도 실제 요청은 1초 → 2초 → … → 5분 간격으로만 나간다.
+    // 던지지 않는 함수라 아래 catch 가 이걸 "서버 연결 끊김" 으로 오해하지 않는다.
+    if (!busy) await flushOutbox("폴링");
+
     // 결제 요청이 없을 때만 자동 대사를 돌린다. 단말기의 본업은 결제이고,
     // 대사는 한가할 때 하는 뒷정리다. 여기서 실패해도 폴링은 계속돼야 하므로
     // 오류를 밖으로 던지지 않는다 — 던지면 아래 catch 가 이걸 "서버 연결 끊김"
@@ -791,14 +848,35 @@ async function handleDispatch(d: PendingDispatch) {
   if (result.type === "SUCCESS") {
     log.info("결제 승인", `승인번호=${result.response.approvalNumber ?? "-"} 금액=${result.response.amount}`);
     try {
-      await confirmPaymentFromSdk(result.response);
-      log.info("원장 반영 완료", "수납 내역에 기록했습니다.");
+      // confirmPaymentFromSdk 는 이제 "아웃박스에 적고 한 번 보내 본다" 이다.
+      // 전송이 실패해도 던지지 않는다 — 승인 기록은 이미 단말기에 남았고,
+      // 폴링과 다음 부팅이 성공할 때까지 계속 다시 보낸다.
+      await confirmPaymentFromSdk(result.response, {
+        // dispatch 가 알고 있는 서버 확정값을 함께 넘긴다. SDK 응답에 금액이나
+        // 주문번호가 비어 오는 펌웨어에서도 장부에 정확한 숫자가 들어가게 한다.
+        paymentKey: d.paymentKey,
+        orderId: d.orderId,
+        amount: d.amount,
+      });
+      if (pendingConfirmCount() === 0) {
+        log.info("원장 반영 완료", "수납 내역에 기록했습니다.");
+      } else {
+        // 승인은 났고 기록도 남겼는데 서버까지는 아직 못 갔다. 예전 같으면
+        // 여기서 끝이었지만 이제는 "미룬 것" 이지 "잃은 것" 이 아니다.
+        log.warn(
+          "원장 반영 지연",
+          `카드 승인은 완료되었고 단말기에 기록했습니다. 서버 전송이 아직 끝나지 않아 재시도합니다.` +
+            ` (대기 ${pendingConfirmCount()}건)`
+        );
+      }
     } catch (err) {
-      // 승인은 났는데 서버 기록이 실패한 경우. 가장 위험한 상태라 강하게 남긴다.
+      // 여기까지 오는 경우는 하나뿐이다: 승인 응답에 금액이나 paymentKey 가 없어
+      // **보낼 내용을 만들지도 못한** 경우. 금액을 추측해 장부에 넣지 않는다는
+      // 원칙 때문에 일부러 던진 것이다. 이건 아웃박스가 구제할 수 없다.
       log.error(
         "승인 후 원장 반영 실패",
         err,
-        "카드 승인은 완료되었으나 수납 기록이 실패했습니다. 원장 확인이 필요합니다."
+        "카드 승인은 완료되었으나 승인 응답이 불완전해 수납 기록을 만들지 못했습니다. 원장 확인이 필요합니다."
       );
     }
     await reportDispatchResult(d.dispatchId, { status: "APPROVED" }).catch(() => {});
@@ -1107,6 +1185,186 @@ function humanErr(err: unknown): string {
   return describeErr(err);
 }
 
+// ─── 아웃박스 (승인 → 원장 반영 보장) ─────────────────────────────────
+//
+// 설계 근거와 배경은 outbox.ts 머리말에 전부 적어 두었다. 여기 있는 것은
+// 그 순수 로직을 단말기의 저장소·네트워크·로그에 연결하는 배선뿐이다.
+
+/**
+ * 아웃박스의 실제 저장 장소.
+ *
+ * ── 왜 localStorage 를 주 저장소로 쓰는가 ──
+ *   승인 직후, 서버로 보내기 **전에** 동기적으로 적어야 한다. sdk.storage 는
+ *   Promise 라서 그 사이에 앱이 죽으면 아무것도 안 남는다. localStorage.setItem
+ *   은 그 자리에서 끝난다. 우리가 지키려는 것이 정확히 "그 사이" 구간이다.
+ *
+ * ── 그러면 sdk.storage 는 왜 같이 쓰는가 ──
+ *   WebView 저장소는 펌웨어 업데이트나 캐시 정리로 날아갈 수 있다. sdk.storage
+ *   는 단말기 앱이 관리하므로 더 오래 산다. 그래서 **거울**로 함께 남기고,
+ *   부팅할 때 양쪽을 합친다(mergeMirroredOutbox). 어느 한쪽이 지워져도 승인
+ *   기록은 살아남는다.
+ *
+ *   sdk.storage 에는 삭제 API 가 없어서 비울 때는 "[]" 를 쓴다. loadOutbox 는
+ *   빈 배열을 그대로 빈 아웃박스로 읽으므로 결과가 같다.
+ */
+const outboxStorage: OutboxStorage = {
+  getItem(key) {
+    try {
+      return typeof localStorage !== "undefined" ? localStorage.getItem(key) : null;
+    } catch {
+      return null;
+    }
+  },
+  setItem(key, value) {
+    try {
+      if (typeof localStorage !== "undefined") localStorage.setItem(key, value);
+    } catch (err) {
+      // 여기서 던지면 승인 직후 흐름이 끊긴다. 메모리 사본은 살아 있으므로
+      // 이번 부팅 동안의 재시도는 계속된다.
+      log.error("아웃박스 localStorage 저장 실패", err, "메모리 사본으로 계속 재시도합니다.");
+    }
+    void storage.setItem(sdk, key, value).catch(() => {});
+  },
+  removeItem(key) {
+    try {
+      if (typeof localStorage !== "undefined") localStorage.removeItem(key);
+    } catch {
+      /* 지우기 실패는 다음 저장에서 덮어써진다 */
+    }
+    void storage.setItem(sdk, key, "[]").catch(() => {});
+  },
+};
+
+function persistOutbox() {
+  saveOutbox(outboxStorage, outbox, (msg) =>
+    log.error("아웃박스 저장 실패", new Error(msg), "메모리 사본으로 계속 재시도합니다."),
+  );
+}
+
+/**
+ * 부팅 시 sdk.storage 쪽 거울을 읽어 localStorage 사본과 합친다.
+ * 중복은 addEntry 가 paymentKey 로 걸러 준다 (기존 재시도 이력이 이긴다).
+ */
+async function mergeMirroredOutbox() {
+  let mirrored: OutboxEntry[] = [];
+  try {
+    const raw = await storage.getItem(sdk, OUTBOX_KEY);
+    if (!raw) return;
+    mirrored = loadOutbox({ getItem: () => raw, setItem: () => {}, removeItem: () => {} });
+  } catch {
+    return;
+  }
+  let added = 0;
+  for (const e of mirrored) {
+    const before = outbox.length;
+    outbox = addEntry(outbox, e.payload, e.firstSeenAt);
+    if (outbox.length > before) added += 1;
+  }
+  if (added > 0) {
+    log.warn(
+      "아웃박스 거울 복구",
+      `단말기 저장소에만 남아 있던 미반영 승인 ${added}건을 되살렸습니다.`,
+    );
+    persistOutbox();
+  }
+}
+
+/**
+ * 승인 한 건을 아웃박스에 적는다. **서버로 보내기 전에** 부른다.
+ * 저장이 끝나야 "이 승인은 잃어버리지 않는다" 가 성립한다.
+ */
+function enqueueConfirm(payload: ConfirmPayload) {
+  const before = outbox.length;
+  outbox = addEntry(outbox, payload, Date.now());
+  if (outbox.length === before) {
+    // 이미 있던 건이다 (재시도 중이거나, 자동 대사가 같은 건을 또 집었거나).
+    // 덮지 않는다 — 덮으면 백오프가 처음으로 되돌아간다.
+    return;
+  }
+  persistOutbox();
+  log.info(
+    "승인 기록 저장",
+    `paymentKey=${payload.paymentKey} 금액=${payload.amount}원 — 단말기에 먼저 적었습니다.`,
+  );
+}
+
+/**
+ * 아웃박스를 서버로 밀어낸다. 성공(또는 "이미 장부에 있음")한 건만 지운다.
+ *
+ * 절대 던지지 않는다. 호출부는 폴링 루프와 부팅 경로이고, 둘 다 여기서 올라온
+ * 예외를 "서버 연결 끊김" 으로 오해해 화면을 덮어 버린다.
+ */
+async function flushOutbox(reason: string) {
+  if (flushingOutbox || outbox.length === 0) return;
+  flushingOutbox = true;
+  try {
+    const now = Date.now();
+    const due = dueEntries(outbox, now);
+    if (due.length === 0) return;
+
+    log.info("아웃박스 전송 시작", `대상 ${due.length}건 / 전체 ${outbox.length}건 · 계기=${reason}`);
+
+    for (const entry of due) {
+      const key = entry.payload.paymentKey;
+      try {
+        const r = await confirmPayment(entry.payload);
+        outbox = removeEntry(outbox, key);
+        persistOutbox();
+        log.info(
+          "원장 반영 완료",
+          `paymentKey=${key} 금액=${entry.payload.amount}원` +
+            (r?.idempotent ? " (서버에 이미 있던 건)" : "") +
+            (entry.attempts > 0 ? ` · 재시도 ${entry.attempts}회 만에 성공` : ""),
+        );
+      } catch (err: any) {
+        const status: number | null =
+          typeof err?.status === "number" ? err.status : null;
+        const body = describeErr(err);
+
+        if (isSettled(status, body)) {
+          // 서버가 "그건 이미 장부에 있다" 고 답했다. 지운다.
+          outbox = removeEntry(outbox, key);
+          persistOutbox();
+          log.info("원장 반영 확인", `paymentKey=${key} — 서버에 이미 기록되어 있습니다.`);
+          continue;
+        }
+
+        outbox = markAttempt(outbox, key, Date.now(), body);
+        persistOutbox();
+
+        const updated = outbox.find((e) => e.payload.paymentKey === key);
+        const attempts = updated?.attempts ?? entry.attempts + 1;
+
+        if (updated && isStale(updated, Date.now())) {
+          // 14일이 넘었다. 자동 복구 가능 구간(getPayment 캐시 수명)을 벗어났으므로
+          // 사람이 봐야 한다. 그래도 데이터는 지우지 않는다 — 수기 대사에 필요하다.
+          log.error(
+            "미반영 승인 장기 방치",
+            err,
+            `paymentKey=${key} 금액=${entry.payload.amount}원 승인번호=${entry.payload.approvalNumber}` +
+              ` — 14일 넘게 원장에 반영되지 못했습니다. 원장이 직접 확인해야 합니다.`,
+          );
+        } else if (attempts <= 3 || attempts % 10 === 0) {
+          // 매 시도마다 로그를 올리면 5분 간격이라도 며칠이면 로그가 이걸로 덮인다.
+          log.warn(
+            "원장 반영 재시도 예정",
+            `paymentKey=${key} 금액=${entry.payload.amount}원 · ${attempts}번째 실패 · ${body.slice(0, 160)}`,
+          );
+        }
+      }
+    }
+  } catch (err) {
+    log.error("아웃박스 전송 중 오류", err, "다음 폴링에서 다시 시도합니다.");
+  } finally {
+    flushingOutbox = false;
+  }
+}
+
+/** 아직 장부에 못 올린 승인이 있는가. 화면·로그 판단에 쓴다. */
+function pendingConfirmCount(): number {
+  return outbox.length;
+}
+
 /**
  * SDK 승인 응답을 서버 원장 형식으로 옮긴다.
  *
@@ -1176,7 +1434,7 @@ async function confirmPaymentFromSdk(
     );
   }
 
-  await confirmPayment({
+  const payload: ConfirmPayload = {
     paymentKey,
     // 서버는 min(1) 을 요구한다. 빈 문자열이면 "Required" 가 아니라 길이 오류가
     // 나서 원인이 또 흐려지므로, 없을 때는 paymentKey 를 주문번호로 대신 쓴다.
@@ -1199,7 +1457,18 @@ async function confirmPaymentFromSdk(
     cardType: r.card?.cardType ?? null,
     installment: r.card?.installmentMonths ?? 0,
     rawResponse: r.raw,
-  });
+  };
+
+  // ⚠️ 순서가 전부다. 적고 나서 보낸다.
+  //
+  //   0.3.13 까지는 여기서 곧장 confirmPayment 를 불렀다. 그 한 번이 실패하면
+  //   payload 는 함수와 함께 사라지고, 카드에서 나간 돈은 장부에 영영 안 들어갔다.
+  //   지금은 저장이 먼저다. 이 줄을 지나면 그 승인은 앱을 껐다 켜도 살아 있다.
+  enqueueConfirm(payload);
+
+  // 보내기는 실패해도 던지지 않는다. 아웃박스가 책임지고 계속 다시 보낸다.
+  // (호출부의 "실패했다" 처리는 이제 의미가 달라졌다 — 아래 주석 참고)
+  await flushOutbox(`승인 직후 (${paymentKey})`);
 }
 
 // ─── 진입 ──────────────────────────────────────────────────────────────

@@ -196,7 +196,23 @@ export const payments = pgTable("payments", {
   // manual 수기 입력은 세 컬럼 모두 null이고 paidVia="MANUAL".
   // 웹훅 재수신 시 external_payment_key로 원거래를 되짚어 상태를 되돌린다.
   externalProvider: externalProviderEnum("external_provider"),
-  externalPaymentKey: text("external_payment_key"), // Toss paymentKey (unique index로 중복 승인 차단)
+  // Toss paymentKey.
+  //
+  // ⚠️ 여기 오래 적혀 있던 "(unique index로 중복 승인 차단)" 은 사실이 아니었다.
+  //    그 인덱스는 만들어진 적이 없다. 실제 중복 방어는
+  //    toss_payment_transactions.payment_key 의 UNIQUE 였고, 승인·웹훅·수기대사
+  //    세 경로가 모두 그 행을 먼저 넣은 뒤 성공했을 때만 여기 넣는 규칙으로만
+  //    유지되고 있었다 — 즉 코드 안에만 있는 방어였다.
+  //
+  //    이제 진짜 인덱스를 만든다: scripts/migrate-add-payment-idempotency.ts
+  //      UNIQUE (external_payment_key) WHERE external_payment_key IS NOT NULL AND amount > 0
+  //    수입 행만 대상이라 환불 음수 행은 자유롭고, 부분결제는 결제키 자체가
+  //    달라서 걸리지 않는다.
+  //
+  //    drizzle 스키마에 .unique() 로 적지 않는 이유: 부분 유니크(WHERE 조건)를
+  //    표현할 수 없어서, 적으면 drizzle-kit 이 환불까지 막는 전체 UNIQUE 로
+  //    바꾸려 든다. 제약은 마이그레이션 스크립트가 단독으로 소유한다.
+  externalPaymentKey: text("external_payment_key"),
   externalTransactionId: varchar("external_transaction_id"), // toss_payment_transactions.id
   paidVia: paidViaEnum("paid_via").default("MANUAL").notNull(),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),

@@ -81,8 +81,13 @@ export interface CancelSourceFacts {
   hasApprovalRecord: boolean;
   /** 원승인번호. SDK 필수 파라미터. */
   approvalNumber: string | null;
-  /** 원승인 timestamp (밀리초 문자열). SDK 필수 파라미터. */
+  /**
+   * 원승인 timestamp. SDK 필수 파라미터이자 **단말기가 원거래를 찾는 조회 키**다.
+   * 저장된 값은 ISO 일 수도 밀리초일 수도 있어 normalizeApprovedTimestamp 로 본다.
+   */
   approvedTimestamp: string | null;
+  /** 단말기 거래번호. SDK 필수 파라미터. 컬럼이 nullable 이라 비어 있을 수 있다. */
+  tid: string | null;
   /** 어느 단말기에서 승인됐는가. 없으면 어디로 보낼지 알 수 없다. */
   deviceId: string | null;
   /** 이 결제에 대해 이미 존재하는 취소 dispatch 의 상태들. */
@@ -173,6 +178,33 @@ export function classifyCardCancel(facts: CancelSourceFacts): CancelDecision {
     };
   }
 
+  // (5-a) 원승인 시각이 밀리초로 해석돼야 한다. 이건 단말기가 **원거래를 찾는
+  //       조회 키**다. 해석이 안 되는 값을 보내면 단말기는 취소 화면을 띄웠다가
+  //       "요청건이 없다" 며 되돌아온다. 원장 입장에선 아무 설명 없이 실패한 것이라
+  //       가장 나쁜 종류의 오류다. 그래서 보내기 전에 여기서 거른다.
+  if (!normalizeApprovedTimestamp(facts.approvedTimestamp)) {
+    return {
+      kind: "reject",
+      needsHuman: true,
+      reason:
+        "이 결제의 승인 시각 기록이 단말기가 알아볼 수 있는 형식이 아니라 카드 취소를 걸 수 없습니다. " +
+        "토스 사장님 앱에서 직접 취소한 뒤, 환불 기록 화면에서 장부에만 반영해 주세요.",
+    };
+  }
+
+  // (5-b) TID 는 원거래를 특정하는 또 하나의 필수 키다 (SDK 필수 파라미터).
+  //       DB 컬럼이 nullable 이라 승인 응답에 없었으면 비어 있을 수 있다.
+  //       비어 있으면 단말기가 원거래를 못 찾는다 — 위와 같은 실패다.
+  if (!facts.tid) {
+    return {
+      kind: "reject",
+      needsHuman: true,
+      reason:
+        "이 결제의 단말기 거래번호(TID)가 기록돼 있지 않아 카드 취소를 걸 수 없습니다. " +
+        "토스 사장님 앱에서 직접 취소한 뒤, 환불 기록 화면에서 장부에만 반영해 주세요.",
+    };
+  }
+
   // 웹훅이 만들어 준 승인 기록은 승인번호가 "WEBHOOK" 이다. 실물 승인번호가 아니라
   // 단말기에 넘길 수 없다. 이걸 거르지 않으면 단말기가 알 수 없는 오류로 실패한다.
   if (facts.approvalNumber === "WEBHOOK") {
@@ -253,3 +285,142 @@ export function classifyCancelResult(
 
 /** 취소 dispatch TTL. 카드 재삽입·서명이 필요할 수 있어 결제(3분)보다 넉넉히 준다. */
 export const CANCEL_DISPATCH_TTL_MS = 5 * 60 * 1000;
+
+// ═══════════════════════════════════════════════════════════════════════
+// 원승인 시각 정규화
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * 저장된 원승인 시각을 **밀리초 문자열**로 바꾼다. 못 바꾸면 null.
+ *
+ * ── 왜 필요한가 (2026-08-30 현장에서 잡은 진짜 원인) ──
+ *   원장이 [카드 취소] 를 누르면 단말기에 취소 화면이 떴다가 곧 "요청건이 없다" 며
+ *   원래 화면으로 돌아갔다. 배달도 됐고 ack 도 됐고 SDK 도 불렸는데 결과만 실패였다.
+ *
+ *   범인은 timestamp 의 형식이었다.
+ *     · SDK requestPaymentCancel 의 timestamp 는 "원승인 시각(밀리초)" 이고
+ *       **원거래를 찾는 조회 키**다 (sdk.ts 선언 참고).
+ *     · 그런데 승인 때 플러그인이 저장한 값은 SDK 승인 응답의 approvedAt,
+ *       즉 ISO 문자열이다 ("2026-08-15T11:23:45.000Z").
+ *   조회 키에 형식이 다른 값을 넣었으니 단말기는 그런 거래가 없다고 답할 수밖에 없다.
+ *   toss_payment_transactions.approved_timestamp 의 스키마 주석이 처음부터
+ *   "밀리초" 라고 적혀 있었는데 기록하는 쪽만 ISO 였다.
+ *
+ * ── 왜 저장값을 고치지 않고 쓸 때 변환하는가 ──
+ *   approved_timestamp 는 단말기가 준 것을 그대로 남긴 감사 기록이다. 지나간 기록을
+ *   덮어쓰면 나중에 "그때 단말기가 뭐라고 했는지" 를 영영 알 수 없다. 해석은 쓰는
+ *   쪽에서 한다.
+ *
+ * ── 왜 두 형식을 다 받는가 ──
+ *   펌웨어에 따라 이미 밀리초를 주는 경우가 있을 수 있다. 어느 쪽이 오든 맞게
+ *   동작해야 하고, **판단이 안 서면 추측해서 보내지 않는다** (null 을 돌려
+ *   호출측이 취소를 거절하게 한다). 조회 키를 틀리게 보내는 것이 바로 이 사고였다.
+ */
+export function normalizeApprovedTimestamp(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  if (s === "") return null;
+
+  // (1) 숫자만 있는 경우 — 이미 epoch 다. 자릿수로 초/밀리초를 가른다.
+  if (/^\d+$/.test(s)) {
+    // 13자리 ≈ 2001~2286년의 밀리초. 우리 도메인의 값은 전부 여기 들어온다.
+    if (s.length === 13) return s;
+    // 10자리 = 초 단위. ×1000 해서 밀리초로 맞춘다.
+    if (s.length === 10) return `${Number(s) * 1000}`;
+    // 그 밖의 자릿수는 무엇인지 모른다. 추측하지 않는다.
+    return null;
+  }
+
+  // (2) ISO 등 날짜 문자열 — 지금 현장의 실제 값이 이것이다.
+  const ms = Date.parse(s);
+  if (!Number.isFinite(ms)) return null;
+  // 1990년 이전/2100년 이후면 파싱이 엉뚱하게 된 것이다. 그런 값은 보내지 않는다.
+  if (ms < 631_152_000_000 || ms > 4_102_444_800_000) return null;
+  return `${ms}`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 재배정 (reroute)
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * 한 번의 폴링에서 살펴볼 PENDING 취소 행 수.
+ *
+ * 학원엔 단말기가 한 대뿐이라 실제로는 늘 0~1건이다. 여러 건을 훑는 이유는
+ * "내 앞으로 온 건"이 목록 뒤에 있을 때 앞의 남의 건 때문에 못 보는 일을 막기 위해서다.
+ */
+export const CANCEL_SCAN_LIMIT = 5;
+
+/**
+ * 폴링하는 단말기의 lastSeenAt 을 다시 찍기까지 기다리는 시간.
+ *
+ * 플러그인은 1초마다 폴링한다. 그때마다 UPDATE 하면 한 행에 초당 한 번씩 쓰는 꼴이라
+ * 필요 없는 테이블 부풀림이 생긴다. 20초면 아래 STALE 판정(90초)의 4분의 1이라
+ * 살아 있는 단말기가 죽은 것으로 보일 일은 없다.
+ */
+export const DEVICE_TOUCH_INTERVAL_MS = 20 * 1000;
+
+/**
+ * 대상 단말기를 "죽었다"고 보기까지의 시간.
+ *
+ * 폴링할 때마다(최대 20초 간격) lastSeenAt 이 갱신되므로, 90초 넘게 조용하면 그 기기 행은
+ * 살아 있는 단말기가 아니다 — 재페어링으로 버려진 행이거나 꺼진 단말기다.
+ * 넉넉히 잡는 이유는, 잘못 짧게 잡아 살아 있는 단말기의 일을 빼앗는 쪽이
+ * 훨씬 위험하기 때문이다(두 대가 같은 카드 취소를 집어가려 든다).
+ */
+export const CANCEL_DEVICE_STALE_MS = 90 * 1000;
+
+/** decideCancelReroute 가 보는 최소한의 정보. DB 행의 부분집합이다. */
+export interface CancelRerouteCandidate {
+  cancelId: string;
+  targetDeviceId: string;
+  targetActive: boolean | null;
+  targetLastSeenAt: Date | null;
+}
+
+/**
+ * 내 앞으로 온 취소가 하나도 없을 때, 남의 앞으로 온 것을 가져와도 되는지 판단한다.
+ *
+ * ── 왜 이 판단이 필요한가 (2026-08-30 현장) ──
+ *   취소는 "원래 결제를 승인했던 단말기 ID" 앞으로 쌓인다. 그런데 플러그인을 다시 올리거나
+ *   단말기를 재페어링하면 toss_front_devices 에 **새 행**이 생긴다. 물리적으로는 같은
+ *   단말기인데 ID 가 달라진 것이다. 그러면 취소는 옛 ID 앞에 남고, 지금 폴링하는 새 ID 는
+ *   가져갈 게 없어 단말기 화면에 아무 일도 일어나지 않는다. 원장 화면에는 "취소 요청됨"
+ *   이라고 떠 있는데 단말기는 조용한, 가장 설명하기 어려운 상태가 된다.
+ *
+ * ── 왜 조건을 붙이는가 ──
+ *   무조건 가져오면 단말기가 두 대인 학원에서 엉뚱한 카운터의 단말기가 취소를 집어간다.
+ *   결제라면 그냥 다시 하면 되지만, 취소는 되돌릴 API 가 우리에게 없다. 그래서
+ *   **대상 단말기가 확실히 조용할 때만** 가져온다. 애매하면 양보하고 아무것도 안 한다.
+ */
+export function decideCancelReroute<T extends CancelRerouteCandidate>(
+  candidates: readonly T[],
+  pollingDeviceId: string,
+  now: number,
+  uptimeMs: number
+): T | null {
+  for (const c of candidates) {
+    if (c.targetDeviceId === pollingDeviceId) return c; // 원래 내 것 (호출측에서 이미 걸렀지만 방어적으로)
+
+    // 비활성 기기 행 = 페어링이 해제된 것. 살아 있을 수 없다.
+    // 이 판정은 시계가 아니라 원장의 명시적 조작에 근거하므로 부팅 직후에도 믿을 수 있다.
+    if (c.targetActive === false) return c;
+
+    // ── 부팅 직후에는 시간 기반 판정을 하지 않는다 ──
+    //   lastSeenAt 은 이 서버 프로세스가 폴링을 받아야 갱신된다. 방금 재배포됐다면
+    //   멀쩡히 켜져 있는 단말기도 아직 한 번도 자기 시각을 찍지 못했다. 그 순간에
+    //   "조용하니 죽었다"고 판단하면 살아 있는 단말기의 취소를 빼앗는다.
+    //   Railway 는 배포마다 재시작하므로 이건 드문 일이 아니다.
+    if (uptimeMs <= CANCEL_DEVICE_STALE_MS) return null;
+
+    // 한 번도 접속한 적 없는 기기 행 앞으로 취소가 있다면, 그 기기는 존재한 적이 없다.
+    if (c.targetLastSeenAt == null) return c;
+
+    if (now - c.targetLastSeenAt.getTime() > CANCEL_DEVICE_STALE_MS) return c;
+
+    // 대상 단말기가 살아 있다. 그 단말기가 자기 폴링에서 가져가게 둔다.
+    // 여기서 continue 하지 않고 멈추는 이유: 순서(createdAt)를 지켜야 한다.
+    return null;
+  }
+  return null;
+}

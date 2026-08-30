@@ -45,8 +45,12 @@ import { isBlocking, OPEN_DISPATCH_STATES } from "./lifecycle";
 import { resolveLedgerUserId, getOrCreateSystemUserId } from "./ledgerUser";
 import {
   CANCEL_DISPATCH_TTL_MS,
+  CANCEL_SCAN_LIMIT,
+  DEVICE_TOUCH_INTERVAL_MS,
   classifyCancelResult,
   classifyCardCancel,
+  decideCancelReroute,
+  normalizeApprovedTimestamp,
   remainingRefundable,
   type CancelDispatchStatus,
 } from "./cardCancel";
@@ -230,6 +234,7 @@ cardCancelAdminRouter.post(
           hasApprovalRecord: !!approval,
           approvalNumber: approval?.approvalNumber ?? null,
           approvedTimestamp: approval?.approvedTimestamp ?? null,
+          tid: approval?.tid ?? null,
           deviceId: intent.deviceId,
           existingCancelStates: existing.map((e) => e.status as CancelDispatchStatus),
         });
@@ -340,6 +345,38 @@ cardCancelAdminRouter.post(
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
+ * 폴링한 단말기의 lastSeenAt 을 찍는다. 마지막 기록에서 DEVICE_TOUCH_INTERVAL_MS 가
+ * 지났을 때만 UPDATE 한다.
+ *
+ * ── 왜 여기서 하는가 ──
+ *   lastSeenAt 은 원래 **토큰 발급·페어링 때만** 기록됐다. 그래서 "이 단말기 살아 있나?"
+ *   를 물으면 "몇 시간 전에 로그인했다" 밖에 답할 수 없었다. 재배정 판단이 그 값을 믿는
+ *   순간, 멀쩡히 켜져 있는 단말기가 죽은 것으로 보인다.
+ *
+ *   deviceGuard 에 넣지 않은 이유: 그건 매일 돈을 받는 결제 경로다. 취소 때문에 결제
+ *   미들웨어를 건드리지 않는다. 이 함수는 dispatch.ts 에서 이미 try/catch 로 감싸
+ *   호출되므로, 여기서 실패해도 결제 폴링은 그대로 돈다.
+ *
+ *   덤으로 관리자 화면의 "마지막 접속" 도 이제 진짜 생존 시각을 보여 준다.
+ */
+const lastTouchAt = new Map<string, number>();
+
+async function touchDevice(deviceId: string, now: number): Promise<void> {
+  const prev = lastTouchAt.get(deviceId) ?? 0;
+  if (now - prev < DEVICE_TOUCH_INTERVAL_MS) return;
+  lastTouchAt.set(deviceId, now);
+  try {
+    await db
+      .update(tossFrontDevices)
+      .set({ lastSeenAt: new Date(now) })
+      .where(eq(tossFrontDevices.id, deviceId));
+  } catch (err: any) {
+    // 생존 표시를 못 찍은 것뿐이다. 취소 폴링을 멈출 이유가 되지 않는다.
+    console.warn(`단말기 생존시각 기록 실패 (${deviceId}): ${err?.message ?? err}`);
+  }
+}
+
+/**
  * 이 단말기가 지금 처리해야 할 취소 한 건. dispatch.ts 의 /dispatch/pending 응답에
  * 얹어 보내기 위한 헬퍼다.
  *
@@ -347,9 +384,24 @@ cardCancelAdminRouter.post(
  * 단말기가 계산하거나 캐시에서 꺼내 쓰게 두면 안 된다 —
  * getPayment 캐시 응답에는 금액도 orderId 도 없다는 걸 0.3.13 에서 이미 겪었다.
  * 취소는 파라미터가 하나만 틀려도 실패하므로 더더욱 서버가 정해서 준다.
+ *
+ * ── 왜 tossDeviceId 로 좁혀 조회하지 않는가 (2026-08-30) ──
+ *   취소는 "원래 결제를 승인했던 단말기 ID" 앞으로 쌓인다. 그런데 플러그인을 다시
+ *   올리거나 단말기를 재페어링하면 toss_front_devices 에 새 행이 생긴다. 물리적으로는
+ *   같은 단말기인데 ID 가 달라진 것이다. 그러면 취소는 옛 ID 앞에 남고, 지금 폴링하는
+ *   새 ID 는 가져갈 게 없다. 원장 화면엔 "취소 요청됨" 인데 단말기는 조용한,
+ *   설명이 안 되는 상태가 된다. 실제로 그 일이 났다.
+ *
+ *   그래서 좁히지 않고 다 본 다음, 대상 단말기가 **확실히 죽었을 때만** 가져온다.
+ *   판단은 decideCancelReroute (cardCancel.ts) 가 한다. 애매하면 아무것도 안 한다 —
+ *   두 단말기가 같은 취소를 집어가면 학부모 카드에 돈이 두 번 들어가고, 우리에겐
+ *   그걸 되돌릴 API 가 없다.
  */
 export async function pendingCancelForDevice(tenantId: string, deviceId: string) {
-  const [row] = await db
+  const now = Date.now();
+  await touchDevice(deviceId, now);
+
+  const rows = await db
     .select({
       cancelId: paymentCancelDispatches.id,
       paymentKey: paymentCancelDispatches.paymentKey,
@@ -366,6 +418,10 @@ export async function pendingCancelForDevice(tenantId: string, deviceId: string)
       tax: paymentIntents.tax,
       supplyValue: paymentIntents.supplyValue,
       taxExemptValue: paymentIntents.taxExemptValue,
+      // ── 배정 진단용 (단말기로 내려보내지 않는다) ──
+      targetDeviceId: paymentCancelDispatches.tossDeviceId,
+      targetActive: tossFrontDevices.isActive,
+      targetLastSeenAt: tossFrontDevices.lastSeenAt,
     })
     .from(paymentCancelDispatches)
     .innerJoin(paymentIntents, eq(paymentIntents.id, paymentCancelDispatches.intentId))
@@ -373,19 +429,94 @@ export async function pendingCancelForDevice(tenantId: string, deviceId: string)
       tossPaymentTransactions,
       eq(tossPaymentTransactions.paymentKey, paymentCancelDispatches.paymentKey)
     )
+    // 취소가 걸린 대상 단말기가 아직 살아 있는지 보려면 조인해야 한다.
+    // 페어링 행이 지워졌을 수도 있으므로 leftJoin 이다.
+    .leftJoin(tossFrontDevices, eq(tossFrontDevices.id, paymentCancelDispatches.tossDeviceId))
     .where(
       and(
         eq(paymentCancelDispatches.tenantId, tenantId),
-        eq(paymentCancelDispatches.tossDeviceId, deviceId),
         eq(paymentCancelDispatches.status, "PENDING")
       )
     )
     .orderBy(paymentCancelDispatches.createdAt)
-    .limit(1);
+    .limit(CANCEL_SCAN_LIMIT);
 
-  if (!row) return null;
+  if (rows.length === 0) return null;
+
+  // 내 앞으로 온 것이 있으면 그것부터. (재배정 판단이 필요 없는 정상 경로)
+  const mine = rows.find((r) => r.targetDeviceId === deviceId);
+  const chosen = mine ?? decideCancelReroute(rows, deviceId, now, process.uptime() * 1000);
+  if (!chosen) return null;
+
+  if (!mine) {
+    // ★ toss_device_id 를 반드시 옮겨야 한다.
+    //   POST /dispatch/cancel/:id/ack 가 tossDeviceId = device.id 로 필터하기 때문에,
+    //   행을 옮기지 않고 내려보내기만 하면 단말기는 ack 에서 409 를 받고 SDK 를 부르지
+    //   않은 채 포기한다. 조용히 아무 일도 안 일어나는 바로 그 증상이 된다.
+    //
+    //   조건부 UPDATE 인 이유: PENDING 이고 아직 옛 단말기 앞으로 있을 때만 옮긴다.
+    //   그 사이 옛 단말기가 집어갔다면(DELIVERED) 0행이 돌아오고 우리는 물러난다.
+    //   카드는 절대 두 번 건드리지 않는다.
+    const moved = await db
+      .update(paymentCancelDispatches)
+      .set({ tossDeviceId: deviceId, updatedAt: new Date() })
+      .where(
+        and(
+          eq(paymentCancelDispatches.id, chosen.cancelId),
+          eq(paymentCancelDispatches.tossDeviceId, chosen.targetDeviceId),
+          eq(paymentCancelDispatches.status, "PENDING")
+        )
+      )
+      .returning({ id: paymentCancelDispatches.id });
+
+    if (moved.length === 0) {
+      // 옛 단말기가 방금 집어갔다. 이번 폴링은 빈손으로 돌아간다.
+      return null;
+    }
+
+    console.warn(
+      `⚠️  카드취소 재배정: ${chosen.paymentKey} (${chosen.amount}원) — ` +
+        `대상 단말기 ${chosen.targetDeviceId} 가 응답 없어 ` +
+        `현재 폴링중인 ${deviceId} 로 옮겼습니다. ` +
+        `(재페어링으로 기기 행이 새로 생긴 경우입니다. ` +
+        `마지막 접속: ${chosen.targetLastSeenAt?.toISOString() ?? "없음"})`
+    );
+  }
+
+  // ★ timestamp 는 단말기가 원거래를 찾는 조회 키다. 형식이 틀리면 단말기는
+  //   "요청건이 없다" 며 되돌아온다 — 2026-08-30 현장에서 실제로 그랬다.
+  //   저장된 값은 ISO 이고 SDK 는 밀리초를 원한다. 여기서 맞춰 준다.
+  // TID 도 원거래 조회 키다. 생성 시점에 걸렀지만, 이 배포 이전에 쌓인 행은
+  // 그 관문을 통과하지 않았다. 내려보내기 직전에 한 번 더 본다.
+  if (!chosen.tid) {
+    console.error(
+      `❌ 카드취소 보류: ${chosen.paymentKey} — 단말기 거래번호(TID)가 없습니다. ` +
+        `사장님 앱에서 취소 후 [장부만] 을 쓰세요.`
+    );
+    return null;
+  }
+
+  const timestamp = normalizeApprovedTimestamp(chosen.approvedTimestamp);
+  if (!timestamp) {
+    // 조회 키를 만들 수 없다. 추측한 값을 보내느니 보내지 않는다.
+    // 원장 화면에는 이미 "취소 요청됨" 이 떠 있으므로, 왜 조용한지 로그에 남긴다.
+    console.error(
+      `❌ 카드취소 보류: ${chosen.paymentKey} — 원승인 시각을 밀리초로 해석할 수 없습니다 ` +
+        `(저장값="${chosen.approvedTimestamp}"). 잘못된 조회 키를 보내면 단말기가 ` +
+        `엉뚱한 거래를 건드릴 수 있어 보내지 않습니다. 사장님 앱에서 취소 후 [장부만] 을 쓰세요.`
+    );
+    return null;
+  }
+
+  const { targetDeviceId, targetActive, targetLastSeenAt, ...payload } = chosen;
+  if (timestamp !== chosen.approvedTimestamp) {
+    console.log(
+      `카드취소 원승인시각 변환: "${chosen.approvedTimestamp}" → "${timestamp}" (${chosen.paymentKey})`
+    );
+  }
   return {
-    ...row,
+    ...payload,
+    approvedTimestamp: timestamp,
     // tip 은 학원 결제 흐름에 없다. SDK 필수 필드라 항상 0 을 명시한다.
     tip: 0,
   };

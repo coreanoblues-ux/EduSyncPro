@@ -45,6 +45,10 @@ import {
   RETRYABLE_CANCEL_STATES,
   OPEN_CANCEL_STATES,
   CANCEL_DISPATCH_TTL_MS,
+  CANCEL_DEVICE_STALE_MS,
+  DEVICE_TOUCH_INTERVAL_MS,
+  decideCancelReroute,
+  normalizeApprovedTimestamp,
   type CancelDispatchStatus,
   type CancelSourceFacts,
 } from "../server/toss-front/cardCancel";
@@ -202,6 +206,8 @@ interface Approval {
   approvalNumber: string | null;
   approvedTimestamp: string | null;
   deviceId: string | null;
+  /** 없으면 실제 승인에서 늘 채워지는 값으로 본다. 빈 TID 는 별도 테스트에서 다룬다. */
+  tid?: string | null;
 }
 
 /** POST /admin/card-cancels 한 번. */
@@ -221,6 +227,7 @@ function requestCancel(
     hasApprovalRecord: approval !== null,
     approvalNumber: approval?.approvalNumber ?? null,
     approvedTimestamp: approval?.approvedTimestamp ?? null,
+    tid: approval === null ? null : (approval.tid ?? "TID-TEST-0001"),
     deviceId: approval?.deviceId ?? null,
     existingCancelStates: queue.statesFor(paymentKey),
   };
@@ -380,7 +387,7 @@ test("★ 27만원 건도 같은 규칙으로 복구된다 (금액은 하드코�
     ledger.insert({ externalPaymentKey: "pk", paymentMonth: 청구월, amount, source: "confirm" });
     const queue = new CancelQueue();
     const intent: Intent = { status: "APPROVED", amount, paymentMonth: 청구월 };
-    const approval: Approval = { approvalNumber: "9", approvedTimestamp: "1", deviceId: "dev-1" };
+    const approval: Approval = { approvalNumber: "9", approvedTimestamp: "1756555555000", deviceId: "dev-1" };
 
     const req = requestCancel(ledger, queue, intent, approval, "pk", NOW);
     assert.equal(req.status, 200);
@@ -400,7 +407,7 @@ test("★ 부분결제 중 한 건만 취소하면 나머지는 그대로 남는
 
   const queue = new CancelQueue();
   const intentB: Intent = { status: "APPROVED", amount: 14_000, paymentMonth: 청구월 };
-  const approval: Approval = { approvalNumber: "9", approvedTimestamp: "1", deviceId: "dev-1" };
+  const approval: Approval = { approvalNumber: "9", approvedTimestamp: "1756555555000", deviceId: "dev-1" };
   const req = requestCancel(ledger, queue, intentB, approval, "pk-b", NOW);
   reportCancelResult(ledger, queue, intentB, req.row!.id, "SUCCESS");
 
@@ -633,6 +640,7 @@ function facts(over: Partial<CancelSourceFacts> = {}): CancelSourceFacts {
     hasApprovalRecord: true,
     approvalNumber: "12345678",
     approvedTimestamp: "1756555555000",
+    tid: "TID-TEST-0001",
     deviceId: "dev-1",
     existingCancelStates: [],
     ...over,
@@ -830,6 +838,215 @@ test("바닥은 0 이다 — 화면에 음수 환불 가능액이 뜨지 않는�
 test("TTL 은 결제(3분)보다 넉넉하다 — 카드 재삽입·서명 시간이 필요하다", () => {
   assert.equal(CANCEL_DISPATCH_TTL_MS, 5 * 60 * 1000);
   assert.ok(CANCEL_DISPATCH_TTL_MS > 3 * 60 * 1000);
+});
+
+// ─────────────────────────────────────────────────────────────────────
+console.log("\n─── 6-b. ★ 원승인 시각 = 단말기가 원거래를 찾는 조회 키 ───");
+//
+// 2026-08-30 현장. 원장이 [카드 취소] 를 눌렀더니 단말기에 취소 화면이 떴다가
+// "요청건이 없다" 며 원래 화면으로 돌아갔다. 배달·ack·SDK 호출까지 다 됐는데
+// 단말기가 원거래를 못 찾은 것이었다.
+//
+// 범인은 timestamp 의 형식이었다.
+//   · SDK requestPaymentCancel 의 timestamp = "원승인 시각(밀리초)", 원거래 조회 키
+//   · 승인 때 플러그인이 저장한 값 = SDK 승인 응답의 approvedAt = ISO 문자열
+// 스키마 주석은 처음부터 "밀리초" 였는데 기록하는 쪽만 ISO 였다. 아무도 안 봤다.
+//
+// 아래 단언들이 그 형식을 코드로 못 박는다.
+
+test("★ ISO 문자열을 밀리초로 바꾼다 (현장에서 실패한 바로 그 값)", () => {
+  const iso = "2026-08-15T11:23:45.000Z";
+  const got = normalizeApprovedTimestamp(iso);
+  assert.equal(got, String(Date.parse(iso)));
+  assert.match(got!, /^\d{13}$/, "★ 단말기는 13자리 밀리초만 조회 키로 받는다");
+});
+
+test("이미 밀리초면 그대로 둔다 (펌웨어가 밀리초를 주는 경우)", () => {
+  assert.equal(normalizeApprovedTimestamp("1756555555000"), "1756555555000");
+});
+
+test("초 단위(10자리)는 1000 을 곱한다", () => {
+  assert.equal(normalizeApprovedTimestamp("1756555555"), "1756555555000");
+});
+
+test("★ 해석할 수 없으면 null — 추측한 조회 키를 보내지 않는다", () => {
+  // 조회 키를 틀리게 보내는 것이 바로 이번 사고였다. 모르면 안 보내는 게 맞다.
+  for (const bad of ["", "   ", "abc", "1", "12345", null, undefined, "0000-00-00"]) {
+    assert.equal(normalizeApprovedTimestamp(bad as any), null, `"${bad}" 를 통과시켰다`);
+  }
+});
+
+test("터무니없는 연도는 거절한다 (파싱이 엉뚱하게 된 경우)", () => {
+  assert.equal(normalizeApprovedTimestamp("1970-01-05T00:00:00Z"), null);
+  assert.equal(normalizeApprovedTimestamp("2999-01-01T00:00:00Z"), null);
+});
+
+test("앞뒤 공백은 무시한다", () => {
+  assert.equal(normalizeApprovedTimestamp("  1756555555000  "), "1756555555000");
+});
+
+test("★ 형식이 깨진 승인시각이면 아예 못 걸게 막는다", () => {
+  // 단말기까지 보내 놓고 조용히 실패하는 것이 원장에게 가장 나쁜 경험이다.
+  const d = classifyCardCancel(facts({ approvedTimestamp: "이상한값" })) as any;
+  assert.equal(d.kind, "reject");
+  assert.equal(d.needsHuman, true, "사람이 사장님 앱에서 처리해야 하는 건이다");
+  assert.match(d.reason, /사장님 앱/, "다음에 뭘 해야 하는지 알려 줘야 한다");
+});
+
+test("★ TID 가 없으면 못 건다 — 이것도 원거래 조회 키다", () => {
+  const d = classifyCardCancel(facts({ tid: null })) as any;
+  assert.equal(d.kind, "reject");
+  assert.equal(d.needsHuman, true);
+  assert.match(d.reason, /사장님 앱/);
+});
+
+test("정상 승인 건은 이 두 관문을 통과한다", () => {
+  // 관문을 세게 잠갔다가 멀쩡한 건까지 막으면 기능이 죽은 것과 같다.
+  const d = classifyCardCancel(facts()) as any;
+  assert.equal(d.kind, "ok");
+  assert.equal(d.cancelAmount, 1000);
+});
+
+test("★ ISO 로 저장된 정상 건은 막지 않는다 — 지금 현장의 값이 이것이다", () => {
+  // 현장 데이터가 전부 ISO 다. 여기서 거절하면 원장은 아무것도 못 한다.
+  const d = classifyCardCancel(facts({ approvedTimestamp: "2026-08-15T11:23:45.000Z" })) as any;
+  assert.equal(d.kind, "ok", "★ ISO 는 변환 가능하므로 통과해야 한다");
+});
+
+// ─────────────────────────────────────────────────────────────────────
+console.log("\n─── 7. 재배정: 죽은 단말기 ID 앞에 취소가 갇히지 않는다 ───");
+//
+// 2026-08-30 현장. 원장 화면엔 "취소 요청됨" 인데 단말기는 아무 반응이 없었다.
+// 원인은 취소가 **원래 결제를 승인했던 단말기 ID** 앞으로 쌓이는데, 그 사이
+// 플러그인 재업로드로 재페어링이 일어나 toss_front_devices 에 새 행이 생긴 것.
+// 물리적으로 같은 단말기인데 ID 가 달라져서 아무도 그 취소를 집어가지 못했다.
+//
+// 아래 단언들이 지키는 선: **애매하면 가져오지 않는다.** 결제는 다시 하면 되지만
+// 취소는 두 대가 집어가면 학부모 카드에 돈이 두 번 들어가고 되돌릴 수단이 없다.
+
+const 폴링기기 = "dev-new";
+/** 부팅한 지 충분히 오래됐다 — 시간 기반 판정을 믿어도 되는 상태. */
+const 안정 = CANCEL_DEVICE_STALE_MS * 10;
+
+function 후보(over: Partial<Parameters<typeof decideCancelReroute>[0][number]> = {}) {
+  return {
+    cancelId: "c1",
+    targetDeviceId: "dev-old",
+    targetActive: true as boolean | null,
+    targetLastSeenAt: null as Date | null,
+    ...over,
+  };
+}
+
+test("★ 대상 단말기가 살아 있으면 남의 취소를 가져오지 않는다", () => {
+  const 방금 = new Date(NOW - 2_000); // 2초 전 폴링 = 확실히 살아 있다
+  const got = decideCancelReroute([후보({ targetLastSeenAt: 방금 })], 폴링기기, NOW, 안정);
+  assert.equal(got, null, "★ 살아 있는 단말기의 취소를 빼앗으면 이중취소가 된다");
+});
+
+test("★ 대상 단말기가 오래 조용하면 가져온다 — 이게 현장 증상의 해결", () => {
+  const 옛날 = new Date(NOW - CANCEL_DEVICE_STALE_MS - 1);
+  const got = decideCancelReroute([후보({ targetLastSeenAt: 옛날 })], 폴링기기, NOW, 안정);
+  assert.equal(got?.cancelId, "c1");
+});
+
+test("한 번도 접속한 적 없는 기기 행 앞의 취소는 가져온다", () => {
+  const got = decideCancelReroute([후보({ targetLastSeenAt: null })], 폴링기기, NOW, 안정);
+  assert.equal(got?.cancelId, "c1", "존재한 적 없는 단말기가 집어갈 리 없다");
+});
+
+test("페어링 해제된(isActive=false) 기기 앞의 취소는 가져온다", () => {
+  const 방금 = new Date(NOW - 1_000);
+  const got = decideCancelReroute(
+    [후보({ targetActive: false, targetLastSeenAt: 방금 })],
+    폴링기기,
+    NOW,
+    안정,
+  );
+  assert.equal(got?.cancelId, "c1");
+});
+
+test("경계: 딱 STALE 시간만큼 조용한 건 아직 살아 있는 것으로 본다", () => {
+  const 경계 = new Date(NOW - CANCEL_DEVICE_STALE_MS);
+  assert.equal(
+    decideCancelReroute([후보({ targetLastSeenAt: 경계 })], 폴링기기, NOW, 안정),
+    null,
+    "애매하면 양보한다",
+  );
+});
+
+test("★ 앞 순서가 살아 있는 단말기 것이면 뒤 건도 건드리지 않는다", () => {
+  // 순서를 건너뛰며 뒤엣것만 집어가면 취소 순서가 뒤바뀐다.
+  const 방금 = new Date(NOW - 1_000);
+  const 옛날 = new Date(NOW - CANCEL_DEVICE_STALE_MS - 1);
+  const got = decideCancelReroute(
+    [
+      후보({ cancelId: "c1", targetDeviceId: "dev-alive", targetLastSeenAt: 방금 }),
+      후보({ cancelId: "c2", targetDeviceId: "dev-dead", targetLastSeenAt: 옛날 }),
+    ],
+    폴링기기,
+    NOW,
+    안정,
+  );
+  assert.equal(got, null);
+});
+
+test("내 앞으로 온 건이 있으면 그것을 그대로 준다", () => {
+  const got = decideCancelReroute(
+    [후보({ targetDeviceId: 폴링기기, targetLastSeenAt: null })],
+    폴링기기,
+    NOW,
+    안정,
+  );
+  assert.equal(got?.cancelId, "c1");
+});
+
+test("PENDING 이 하나도 없으면 null", () => {
+  assert.equal(decideCancelReroute([], 폴링기기, NOW, 안정), null);
+});
+
+// ── 재배포 직후 ──────────────────────────────────────────────────────
+// lastSeenAt 은 이 서버 프로세스가 폴링을 받아야 갱신된다. Railway 는 배포마다
+// 재시작하므로, 부팅 직후에는 살아 있는 단말기도 "몇 시간째 조용"해 보인다.
+
+test("★ 부팅 직후에는 시간만 보고 남의 취소를 가져오지 않는다", () => {
+  const 옛날 = new Date(NOW - 3 * 60 * 60 * 1000); // 3시간 전 = 재배포 전에 찍힌 값
+  assert.equal(
+    decideCancelReroute([후보({ targetLastSeenAt: 옛날 })], 폴링기기, NOW, 5_000),
+    null,
+    "★ 재배포 직후 살아 있는 단말기를 죽은 것으로 오인하면 안 된다",
+  );
+});
+
+test("부팅 직후여도 페어링 해제된 기기 것은 가져온다", () => {
+  // isActive 는 시계가 아니라 원장의 조작에 근거한다. 부팅 시각과 무관하게 믿을 수 있다.
+  const got = decideCancelReroute([후보({ targetActive: false })], 폴링기기, NOW, 5_000);
+  assert.equal(got?.cancelId, "c1");
+});
+
+test("부팅 대기 시간이 지나면 다시 재배정한다 — 영영 막히지 않는다", () => {
+  const 옛날 = new Date(NOW - 3 * 60 * 60 * 1000);
+  const got = decideCancelReroute(
+    [후보({ targetLastSeenAt: 옛날 })],
+    폴링기기,
+    NOW,
+    CANCEL_DEVICE_STALE_MS + 1,
+  );
+  assert.equal(got?.cancelId, "c1");
+});
+
+test("생존시각 기록 주기는 죽음 판정보다 충분히 짧다", () => {
+  // touch 주기가 STALE 에 가까우면 살아 있는 단말기가 죽은 것으로 보인다.
+  assert.ok(
+    DEVICE_TOUCH_INTERVAL_MS * 3 <= CANCEL_DEVICE_STALE_MS,
+    "★ 최소 세 번은 찍을 기회가 있어야 한 번 걸렀다고 죽었다 하지 않는다",
+  );
+});
+
+test("재배정 판단 시간은 폴링 주기(1초)보다 훨씬 길다", () => {
+  // 짧게 잡으면 살아 있는 단말기의 일을 빼앗는다. 그쪽이 훨씬 위험하다.
+  assert.ok(CANCEL_DEVICE_STALE_MS >= 60_000, "폴링 한두 번 걸렀다고 빼앗으면 안 된다");
+  assert.ok(CANCEL_DEVICE_STALE_MS < CANCEL_DISPATCH_TTL_MS, "TTL 안에 재배정 기회가 있어야 한다");
 });
 
 // ─────────────────────────────────────────────────────────────────────

@@ -88,6 +88,7 @@ import {
   type CancelOutboxEntry,
   type CancelReportResult,
 } from "./cancelOutbox";
+import { PAYMENT_NOT_FOUND, errCode, isPaymentNotFound } from "./sdkError";
 import {
   showIdle,
   showAdminMenu,
@@ -734,30 +735,43 @@ async function runRecoveryChecks(requests: RecoveryRequest[]) {
       // "승인 없음" 표식을 찍어 버릴 수 있다. 그래서 코드가 확실히
       // PAYMENT_NOT_FOUND 일 때만 보고하고, 나머지는 다음 폴링에 다시 시도한다.
       const code = errCode(err);
-      if (code === "PAYMENT_NOT_FOUND") {
+      if (isPaymentNotFound(err)) {
         try {
-          await reportRecoveryNotFound({ paymentKey, code });
+          await reportRecoveryNotFound({ paymentKey, code: PAYMENT_NOT_FOUND });
           handledPaymentKeys.add(paymentKey);
           log.info("자동 대사: 승인 없음", `${paymentKey} — 단말기에 기록이 없습니다.`);
         } catch (reportErr) {
           log.error("자동 대사 보고 실패", reportErr, "다음 폴링에서 다시 시도합니다.");
         }
-      } else {
+      } else if (shouldLogRecoveryError(paymentKey, code ?? "unknown", Date.now())) {
+        // 모르는 오류는 판단을 보류한다 (멀쩡한 결제에 "승인 없음" 을 찍지 않는다).
+        // 다만 보류는 계속되므로 같은 줄을 1초마다 남기지는 않는다 — 5분에 한 번만.
         log.error(
           "자동 대사 확인 실패",
           err,
-          `paymentKey=${paymentKey} — 판단을 보류하고 다음 폴링에서 다시 확인합니다.`
+          `paymentKey=${paymentKey} — 판단을 보류하고 다음 폴링에서 다시 확인합니다. ` +
+            `(같은 오류는 5분에 한 번만 기록합니다)`
         );
       }
     }
   }
 }
 
-/** SDK 오류에서 코드 문자열만 꺼낸다. 형태가 펌웨어마다 다르므로 넓게 받는다. */
-function errCode(err: any): string | null {
-  if (!err) return null;
-  if (typeof err === "string") return err;
-  return err.code ?? err.errorCode ?? err.type ?? err.name ?? null;
+/**
+ * 같은 건의 같은 오류를 반복해서 ERROR 로 찍지 않기 위한 기록.
+ *
+ * 로그는 무한하지 않다. 1초마다 같은 줄을 쌓으면 정작 사고가 났을 때 그 앞뒤를
+ * 볼 수 없다 — 이번에 카드취소를 진단하면서 실제로 겪었다.
+ */
+const loggedRecoveryErrors = new Map<string, number>();
+const RECOVERY_ERROR_LOG_INTERVAL_MS = 5 * 60 * 1000;
+
+function shouldLogRecoveryError(paymentKey: string, code: string, now: number): boolean {
+  const k = `${paymentKey}:${code}`;
+  const prev = loggedRecoveryErrors.get(k);
+  if (prev != null && now - prev < RECOVERY_ERROR_LOG_INTERVAL_MS) return false;
+  loggedRecoveryErrors.set(k, now);
+  return true;
 }
 
 // ─── 폴링 ──────────────────────────────────────────────────────────────

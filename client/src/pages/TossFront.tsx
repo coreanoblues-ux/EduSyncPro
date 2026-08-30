@@ -111,6 +111,31 @@ interface Refundable {
   refundable: number;
 }
 
+/**
+ * 단말기에 보낸 카드 취소 한 건의 진행 상황.
+ *
+ * status 는 서버 enum 그대로다. 이름이 헷갈리는 것이 하나 있다:
+ *   TIMEOUT = "실패"가 아니라 **모르는 상태**다. 카드가 취소됐을 수도 있다.
+ *             그래서 서버가 needsHuman=true 를 달아 보낸다.
+ */
+interface CardCancel {
+  id: string;
+  paymentKey: string;
+  status: "PENDING" | "DELIVERED" | "SUCCEEDED" | "FAILED" | "TIMEOUT";
+  cancelAmount: number;
+  ledgerAmount: number;
+  reason: string | null;
+  failureReason: string | null;
+  cancelApprovalNumber: string | null;
+  createdAt: string;
+  respondedAt: string | null;
+  studentName: string | null;
+  className: string | null;
+  paymentMonth: string | null;
+  needsHuman: boolean;
+  hint: string | null;
+}
+
 interface WebhookEvent {
   webhookId: string;
   eventType: string | null;
@@ -217,6 +242,61 @@ export default function TossFront() {
     setRefundAmount(String(r.refundable));
     setRefundReason("");
   }
+
+  // ─── 단말기 카드 취소 ─────────────────────────────────────────────────
+  //
+  // 위의 "환불"과 전혀 다른 동작이다. 헷갈리면 사고가 난다.
+  //
+  //   환불     = 장부에만 적는다. 카드는 원장이 딴 데서 이미 취소했다는 전제.
+  //   카드취소 = 단말기가 카드사에 실제로 취소를 건다. 성공하면 장부는 자동으로 적힌다.
+  //              그래서 이걸 쓴 뒤에 환불까지 누르면 이중 기록이 된다 (서버가 막지만
+  //              애초에 원장이 그렇게 하도록 화면을 만들면 안 된다).
+  //
+  // 금액 입력칸이 없는 이유: Toss Front SDK 는 부분 취소를 지원하지 않는다.
+  // 문서가 "원거래와 동일한 tax, supplyValue, taxExemptValue 를 전달해요"라고
+  // 못 박았다. 전액 아니면 불가다. 그래서 금액은 서버가 정하고 화면은 보여만 준다.
+  const [cancelTarget, setCancelTarget] = useState<Refundable | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+
+  // 진행 중인 건이 있을 때는 자주 본다. 원장이 단말기 앞에 서 있는 시간이기 때문이다.
+  const { data: cardCancels = [] } = useQuery<CardCancel[]>({
+    queryKey: ["/api/toss-front/admin/card-cancels"],
+    refetchInterval: 5_000,
+  });
+
+  /**
+   * 다시 걸면 안 되는 결제키들.
+   *
+   * 서버가 이미 막는다 (classifyCardCancel + 부분 유니크 인덱스). 그런데도 화면에서
+   * 한 번 더 막는 이유는, 막힌 버튼과 눌렀더니 빨간 오류가 뜨는 버튼은 원장에게
+   * 전혀 다른 경험이기 때문이다. 후자는 "고장났나?" 하고 계속 누르게 만든다.
+   *
+   * FAILED 만 빠진다 — 단말기가 "카드를 못 건드렸다"고 명시한 상태라 다시 걸어도 된다.
+   * TIMEOUT 은 여기 포함된다. 모르는 상태에서 다시 거는 것이 이중 취소다.
+   */
+  const lockedKeys = new Set(
+    cardCancels.filter((c) => c.status !== "FAILED").map((c) => c.paymentKey)
+  );
+
+  const cardCancelMutation = useMutation({
+    mutationFn: async (input: { paymentKey: string; reason: string }) =>
+      (await apiRequest("POST", "/api/toss-front/admin/card-cancels", input)).json(),
+    onSuccess: (data: any) => {
+      setCancelTarget(null);
+      setCancelReason("");
+      qc.invalidateQueries({ queryKey: ["/api/toss-front/admin/card-cancels"] });
+      qc.invalidateQueries({ queryKey: ["/api/toss-front/admin/refundable"] });
+      qc.invalidateQueries({ queryKey: ["/api/toss-front/admin/intents"] });
+      qc.invalidateQueries({ queryKey: ["/api/toss-front/admin/summary"] });
+      qc.invalidateQueries({ queryKey: ["/api/payments"] });
+      toast({
+        title: `단말기로 ${Number(data.cancelAmount).toLocaleString()}원 취소 요청을 보냈습니다`,
+        description: data.notice,
+      });
+    },
+    onError: (e: Error) =>
+      toast({ title: "취소 요청 실패", description: e.message, variant: "destructive" }),
+  });
 
   // ─── 수기 대사 ───────────────────────────────────────────────────────
   const [reconcileTarget, setReconcileTarget] = useState<Intent | null>(null);
@@ -743,6 +823,68 @@ export default function TossFront() {
         </DialogContent>
       </Dialog>
 
+      {/* 카드 취소 진행 상황 — 보낸 게 없으면 화면을 어지럽히지 않는다 */}
+      {cardCancels.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>카드 취소 진행 상황</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-left text-muted-foreground">
+                  <tr>
+                    <th className="py-2">요청시각</th>
+                    <th>학생</th>
+                    <th>월</th>
+                    <th className="text-right">취소액</th>
+                    <th>상태</th>
+                    <th>비고</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cardCancels.map((c) => (
+                    <tr key={c.id} className="border-t" data-testid={`card-cancel-${c.id}`}>
+                      <td className="py-2 whitespace-nowrap">
+                        {new Date(c.createdAt).toLocaleString("ko-KR")}
+                      </td>
+                      <td>{c.studentName ?? "—"}</td>
+                      <td>{c.paymentMonth ?? "—"}</td>
+                      <td className="text-right">{c.cancelAmount.toLocaleString()}</td>
+                      <td>
+                        {/*
+                          TIMEOUT 을 빨강이 아니라 보라로 칠한다. 빨강은 "실패했다"로
+                          읽히는데, TIMEOUT 은 실패가 아니라 모르는 상태다. 원장이
+                          실패로 읽고 다시 걸면 이중 취소다 — 색 하나가 돈을 움직인다.
+                        */}
+                        {c.status === "SUCCEEDED" ? (
+                          <Badge className="bg-emerald-100 text-emerald-800">취소 완료</Badge>
+                        ) : c.status === "FAILED" ? (
+                          <Badge className="bg-red-100 text-red-800">실패 (카드 안 건드림)</Badge>
+                        ) : c.status === "TIMEOUT" ? (
+                          <Badge className="bg-purple-100 text-purple-800">확인 필요</Badge>
+                        ) : (
+                          <Badge className="bg-blue-100 text-blue-800">
+                            {c.status === "PENDING" ? "단말기 대기" : "처리 중"}
+                          </Badge>
+                        )}
+                      </td>
+                      <td className="text-xs text-muted-foreground">
+                        {c.hint ??
+                          (c.status === "SUCCEEDED"
+                            ? `장부 ${c.ledgerAmount.toLocaleString()}원 반영됨` +
+                              (c.cancelApprovalNumber ? ` · 승인번호 ${c.cancelApprovalNumber}` : "")
+                            : (c.failureReason ?? "—"))}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* 환불 */}
       <Card>
         <CardHeader>
@@ -750,15 +892,29 @@ export default function TossFront() {
         </CardHeader>
         <CardContent>
           {/*
-            이 경고를 지우지 말 것.
-            현재 서버에는 토스 Open API 시크릿 키가 없어서 카드사에 취소를 걸 수 없다.
-            원장이 "눌렀으니 돈이 돌아갔겠지"라고 오해하는 것이 이 화면에서 가장 큰 사고다.
+            v0.3.15 에서 이 안내를 바꿨다.
+            그 전까지는 "여기서는 카드를 취소할 수 없다"가 맞는 말이었다. Open API
+            시크릿 키가 없으니 서버가 카드사에 취소를 걸 방법이 없었기 때문이다.
+            지금은 단말기의 Front SDK(requestPaymentCancel)가 대신 건다. 경로가
+            달라진 것이지 시크릿 키가 생긴 것은 아니다.
+
+            그래도 아래 "장부만" 경고는 그대로 살려 둔다. 두 버튼이 나란히 있는 지금이
+            오히려 더 위험하다 — 원장이 "장부만"을 누르고 돈이 돌아갔다고 믿는 것이
+            이 화면에서 여전히 가장 큰 사고다.
           */}
           <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-            <div className="font-semibold">먼저 실제 카드 취소를 진행하세요.</div>
-            <div className="mt-1">
-              이 버튼은 <b>학원 장부에만</b> 환불을 기록합니다. 이것만으로는 카드값이
-              돌아가지 않습니다. 순서는 <b>① 토스에서 취소 → ② 여기서 기록</b> 입니다.
+            <div className="font-semibold">버튼이 두 개입니다. 하는 일이 다릅니다.</div>
+            <div className="mt-2 space-y-1.5">
+              <div className="rounded border border-amber-200 bg-white/60 p-2">
+                <b>[카드 취소]</b> — 단말기가 카드사에 <b>실제로 취소를 겁니다.</b> 결제했던
+                카드를 단말기에 대야 합니다. 성공하면 <b>장부에도 자동으로 적힙니다.</b>{" "}
+                평소에는 이것만 쓰시면 됩니다.
+              </div>
+              <div className="rounded border border-amber-200 bg-white/60 p-2">
+                <b>[장부만]</b> — <b>학원 장부에만</b> 적습니다. 카드값은 돌아가지 않습니다.
+                토스 판매자센터에서 <b>이미 취소를 마친 건</b>을 뒤늦게 장부에 맞출 때만
+                쓰세요. [카드 취소] 를 쓴 뒤에는 누르지 마세요 — 이중 기록이 됩니다.
+              </div>
             </div>
             {/*
               "토스에서 취소" 가 어디인지 원장이 물었다 (2026-08-29):
@@ -767,11 +923,13 @@ export default function TossFront() {
               태블릿이 아니라는 것도 명시한다.
             */}
             <div className="mt-2 rounded border border-amber-200 bg-white/60 p-2">
-              <div className="font-semibold">① 취소는 토스 판매자센터에서 합니다</div>
+              <div className="font-semibold">[카드 취소] 가 안 될 때의 우회로</div>
               <ul className="mt-1 list-disc space-y-0.5 pl-5">
                 <li>
                   <b>토스 판매자센터</b> (PC 웹) — 결제내역에서 해당 건을 찾아 취소.
-                  원장님 컴퓨터에서 하시면 됩니다. <b>확실한 경로는 이것뿐입니다.</b>
+                  단말기가 꺼져 있거나 고장났을 때 쓰는 길입니다. 여기서 취소했다면{" "}
+                  <b>반드시 [장부만] 로 장부를 맞춰 주세요</b> — 이 경로는 우리 서버가
+                  알 수 없습니다.
                 </li>
                 <li>
                   <b>단말기에서 나가는 길은 보장되지 않습니다.</b> 대기화면{" "}
@@ -880,14 +1038,38 @@ export default function TossFront() {
                       </td>
                       <td className="text-right">
                         {r.refundable > 0 ? (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => openRefund(r)}
-                            data-testid={`refund-button-${r.paymentKey}`}
-                          >
-                            환불
-                          </Button>
+                          <div className="flex justify-end gap-2">
+                            {/*
+                              카드취소를 먼저(왼쪽에) 둔다. 대부분의 경우 원장이 원하는
+                              것은 "돈을 돌려주는 것"이고, 그건 이제 이 버튼이 한다.
+                              환불은 카드가 이미 딴 데서 취소된 예외 상황용이라
+                              시각적으로 약하게(ghost) 둔다.
+                            */}
+                            <Button
+                              size="sm"
+                              disabled={lockedKeys.has(r.paymentKey)}
+                              title={
+                                lockedKeys.has(r.paymentKey)
+                                  ? "이 결제에는 이미 취소 요청이 있습니다. 위 '카드 취소 진행 상황'을 확인하세요."
+                                  : undefined
+                              }
+                              onClick={() => {
+                                setCancelTarget(r);
+                                setCancelReason("");
+                              }}
+                              data-testid={`card-cancel-button-${r.paymentKey}`}
+                            >
+                              {lockedKeys.has(r.paymentKey) ? "취소 요청됨" : "카드 취소"}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => openRefund(r)}
+                              data-testid={`refund-button-${r.paymentKey}`}
+                            >
+                              장부만
+                            </Button>
+                          </div>
                         ) : (
                           <Badge className="bg-slate-100 text-slate-800">전액 환불됨</Badge>
                         )}
@@ -977,6 +1159,86 @@ export default function TossFront() {
               data-testid="refund-submit"
             >
               {refundMutation.isPending ? "기록 중…" : "환불 기록"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 카드 취소 확인 */}
+      <Dialog open={!!cancelTarget} onOpenChange={(o) => !o && setCancelTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>카드 취소 — 실제로 돈이 돌아갑니다</DialogTitle>
+          </DialogHeader>
+          {cancelTarget && (
+            <div className="space-y-3">
+              <div className="rounded-md border p-3 text-sm">
+                <div>
+                  <b>{cancelTarget.studentName ?? "—"}</b> · {cancelTarget.className ?? "—"} ·{" "}
+                  {cancelTarget.paymentMonth}
+                </div>
+                <div className="mt-1 text-lg font-semibold">
+                  {cancelTarget.refundable.toLocaleString()}원 취소
+                </div>
+                {cancelTarget.refunded > 0 && (
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    카드에서는 승인 전액 {cancelTarget.amount.toLocaleString()}원이 취소되고,
+                    장부에는 아직 안 적힌 {cancelTarget.refundable.toLocaleString()}원만 추가로
+                    적힙니다 (이미 {cancelTarget.refunded.toLocaleString()}원 기록됨).
+                  </div>
+                )}
+              </div>
+
+              {/*
+                이 문단이 이 다이얼로그의 존재 이유다.
+                취소는 결제와 달리 되돌릴 수 없다. 원장이 "일단 눌러보고 아니면 취소"를
+                할 수 없다는 사실을 누르기 전에 알아야 한다.
+              */}
+              <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900">
+                <div className="font-semibold">누르기 전에 확인하세요.</div>
+                <ul className="mt-1 list-disc space-y-1 pl-5">
+                  <li>
+                    <b>결제하셨던 그 카드를 단말기에 대야</b> 취소가 됩니다. 카드 없이는
+                    끝나지 않습니다.
+                  </li>
+                  <li>
+                    한 번 취소되면 <b>되돌릴 수 없습니다.</b> 다시 받으려면 새로 결제해야
+                    합니다.
+                  </li>
+                  <li>취소가 끝날 때까지 단말기에서 카드를 빼지 마세요.</li>
+                  <li>성공하면 장부에 환불이 자동으로 적힙니다. 따로 누르지 마세요.</li>
+                </ul>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-sm font-medium">사유 (선택)</label>
+                <Input
+                  value={cancelReason}
+                  onChange={(e) => setCancelReason(e.target.value)}
+                  placeholder="예: 중도 퇴원, 이중 결제"
+                  maxLength={200}
+                  data-testid="card-cancel-reason-input"
+                />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCancelTarget(null)}>
+              닫기
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={cardCancelMutation.isPending}
+              onClick={() =>
+                cancelTarget &&
+                cardCancelMutation.mutate({
+                  paymentKey: cancelTarget.paymentKey,
+                  reason: cancelReason.trim(),
+                })
+              }
+              data-testid="card-cancel-submit"
+            >
+              {cardCancelMutation.isPending ? "단말기로 보내는 중…" : "단말기에서 카드 취소"}
             </Button>
           </DialogFooter>
         </DialogContent>

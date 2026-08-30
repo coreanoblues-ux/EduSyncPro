@@ -171,12 +171,19 @@ class CancelQueue {
     return true;
   }
 
-  /** 만료 스위퍼. 응답 없는 건을 TIMEOUT 으로 넘긴다. 재시도는 걸지 않는다. */
+  /**
+   * 만료 스위퍼. 재시도는 절대 걸지 않는다. 다만 만료를 한 덩어리로 보지 않는다.
+   *
+   *   PENDING 으로 만료  = 아무 단말기도 집어가지 않았다 (ack 가 없었다).
+   *                        플러그인은 ack 가 실패하면 SDK 를 부르지 않으므로
+   *                        카드는 확실히 안 건드려졌다 → FAILED (재시도 가능)
+   *   DELIVERED 로 만료 = 집어갔는데 결과가 없다. 모른다 → TIMEOUT (사람 호출)
+   */
   sweep(now: number) {
     for (const r of this.rows) {
-      if ((r.status === "PENDING" || r.status === "DELIVERED") && r.expiresAt <= now) {
-        r.status = "TIMEOUT";
-      }
+      if (r.expiresAt > now) continue;
+      if (r.status === "PENDING") r.status = "FAILED";
+      else if (r.status === "DELIVERED") r.status = "TIMEOUT";
     }
   }
 }
@@ -558,7 +565,7 @@ test("★ 단말기 두 대가 같은 취소를 집으려 하면 하나만 성�
   assert.equal(queue.ack(req.row!.id), false, "두 번째는 409 — 카드를 두 번 건드리지 않는다");
 });
 
-test("만료 스위퍼는 TIMEOUT 으로만 넘기고 재시도를 걸지 않는다", () => {
+test("★ 단말기가 집어간 뒤 만료되면 TIMEOUT 이다 (카드 상태를 모른다)", () => {
   const { ledger, queue, intent, approval } = 천원건();
   const req = requestCancel(ledger, queue, intent, approval, "pk-1000", NOW);
   queue.ack(req.row!.id);
@@ -568,6 +575,38 @@ test("만료 스위퍼는 TIMEOUT 으로만 넘기고 재시도를 걸지 않는
   assert.equal(queue.rows[0].status, "TIMEOUT");
   assert.equal(queue.rows.length, 1, "스위퍼가 새 취소를 만들면 안 된다");
   assert.equal(ledger.rows.filter((r) => r.amount < 0).length, 0, "장부도 안 건드린다");
+});
+
+test("★ 아무도 집어가지 않고 만료되면 FAILED 다 — 다시 걸 수 있어야 한다", () => {
+  // 단말기가 꺼져 있었거나, 취소를 모르는 구버전 플러그인이 붙어 있었던 경우다.
+  // ack 가 없었다는 것은 requestPaymentCancel 이 불리지 않았다는 뜻이고,
+  // 그러면 카드는 확실히 안 건드려졌다.
+  const { ledger, queue, intent, approval } = 천원건();
+  requestCancel(ledger, queue, intent, approval, "pk-1000", NOW);
+
+  queue.sweep(NOW + CANCEL_DISPATCH_TTL_MS + 1);
+
+  assert.equal(queue.rows[0].status, "FAILED");
+  assert.equal(ledger.rows.filter((r) => r.amount < 0).length, 0, "장부는 그대로");
+});
+
+test("★ 집어가지 않은 채 만료된 건은 결제를 잠그지 않는다", () => {
+  // 이게 이 구분의 존재 이유다. TIMEOUT 으로 뭉뚱그리면 부분 유니크 인덱스가
+  // 그 결제키를 영영 잠가서, 아무 일도 안 일어났는데 사람이 DB 를 열어야 한다.
+  const { ledger, queue, intent, approval } = 천원건();
+  requestCancel(ledger, queue, intent, approval, "pk-1000", NOW);
+  queue.sweep(NOW + CANCEL_DISPATCH_TTL_MS + 1);
+
+  const again = requestCancel(
+    ledger,
+    queue,
+    intent,
+    approval,
+    "pk-1000",
+    NOW + CANCEL_DISPATCH_TTL_MS + 2
+  );
+  assert.equal(again.status, 200, `★ 단말기를 켜고 다시 걸 수 있어야 한다 (${again.reason ?? ""})`);
+  assert.equal(queue.rows.length, 2);
 });
 
 test("만료 전에는 스위퍼가 건드리지 않는다", () => {

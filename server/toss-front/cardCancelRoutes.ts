@@ -45,7 +45,6 @@ import { isBlocking, OPEN_DISPATCH_STATES } from "./lifecycle";
 import { resolveLedgerUserId, getOrCreateSystemUserId } from "./ledgerUser";
 import {
   CANCEL_DISPATCH_TTL_MS,
-  OPEN_CANCEL_STATES,
   classifyCancelResult,
   classifyCardCancel,
   remainingRefundable,
@@ -609,6 +608,47 @@ cardCancelDeviceRouter.post(
 export function startCancelExpirySweeper(intervalMs = 30_000) {
   const tick = async () => {
     try {
+      // ── 만료된 건을 두 부류로 나눈다. 이 구분이 돈을 살린다. ──
+      //
+      // 상태가 아직 PENDING = **어떤 단말기도 이 건을 가져가지 않았다.**
+      //   ack 는 PENDING → DELIVERED 조건부 UPDATE 이고, 플러그인은 ack 가
+      //   실패하면 SDK 를 부르지 않고 그냥 빠져나온다. 그러니 PENDING 으로
+      //   만료됐다는 것은 requestPaymentCancel 이 한 번도 불리지 않았다는 뜻이고,
+      //   카드는 확실히 안 건드려졌다. 이건 FAILED — 다시 걸어도 안전하다.
+      //
+      // 이걸 TIMEOUT 으로 뭉뚱그리면 어떤 일이 벌어지냐면:
+      //   단말기가 꺼져 있거나 구버전 플러그인이라 요청을 못 집어간 경우에도
+      //   TIMEOUT 이 찍히고, TIMEOUT 은 부분 유니크 인덱스에 포함되므로
+      //   그 결제는 **영영 다시 취소할 수 없게 잠긴다.** 아무 일도 안 일어났는데
+      //   사람이 DB 를 열어야 풀리는 상태가 된다. 그건 우리가 만든 사고다.
+      const undelivered = await db
+        .update(paymentCancelDispatches)
+        .set({
+          status: "FAILED",
+          respondedAt: new Date(),
+          failureReason: "expired-undelivered",
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(paymentCancelDispatches.status, "PENDING"),
+            lt(paymentCancelDispatches.expiresAt, new Date())
+          )
+        )
+        .returning({ key: paymentCancelDispatches.paymentKey });
+      if (undelivered.length > 0) {
+        console.warn(
+          `↩️  단말기가 가져가지 않은 카드취소 ${undelivered.length}건이 만료됐습니다. ` +
+            `카드는 건드려지지 않았으므로 다시 요청할 수 있습니다. ` +
+            `단말기 전원·네트워크·플러그인 버전을 확인하세요: ${undelivered
+              .map((s) => s.key)
+              .join(", ")}`
+        );
+      }
+
+      // 상태가 DELIVERED = 단말기가 집어갔는데 결과를 안 보냈다.
+      //   SDK 가 불렸는지, 카드가 취소됐는지 **모른다.** 모르는 것을 안다고 적으면
+      //   안 되므로 TIMEOUT 으로 두고 사람을 부른다.
       const stale = await db
         .update(paymentCancelDispatches)
         .set({
@@ -619,7 +659,7 @@ export function startCancelExpirySweeper(intervalMs = 30_000) {
         })
         .where(
           and(
-            inArray(paymentCancelDispatches.status, [...OPEN_CANCEL_STATES]),
+            eq(paymentCancelDispatches.status, "DELIVERED"),
             lt(paymentCancelDispatches.expiresAt, new Date())
           )
         )

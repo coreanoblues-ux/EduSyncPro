@@ -67,6 +67,24 @@ export const paymentDispatchStatusEnum = pgEnum("payment_dispatch_status", [
   "FAILED",    // 프론트가 결제 실패 응답을 업로드
 ]);
 
+// ─── 카드 취소 dispatch 상태 ───────────────────────────────────────────
+// 결제 dispatch 와 상태 집합이 다르다. 일부러 다르게 뒀다 — 취소는 "모르는 상태"를
+// 결제와 똑같이 다루면 안 되기 때문이다.
+//
+//   결제가 TIMEOUT 이면: 다시 시도해도 된다. 중복 승인돼도 우리가 환불하면 된다.
+//   취소가 TIMEOUT 이면: 다시 시도하면 안 된다. 카드가 이미 취소됐을 수 있고,
+//                        중복 취소는 학부모 카드로 돈이 두 번 들어가는 사고다.
+//                        되돌릴 API 도 우리에게 없다.
+//
+// 그래서 재시도가 허용되는 상태는 FAILED 하나뿐이다 (cardCancel.ts 참고).
+export const cancelDispatchStatusEnum = pgEnum("payment_cancel_dispatch_status", [
+  "PENDING",   // 큐에 담김. 단말기가 아직 안 집어감 → 카드는 그대로다
+  "DELIVERED", // 단말기가 집어감 → ⚠️ 카드 상태를 알 수 없는 구간
+  "SUCCEEDED", // 취소 성공 + 장부 반영 완료
+  "FAILED",    // 단말기가 명시적 실패 보고 → 카드는 취소되지 않았다 (재시도 가능)
+  "TIMEOUT",   // 만료까지 무응답 → ⚠️ 카드 상태를 알 수 없다 (사람이 확인해야 함)
+]);
+
 // 상담 진행 상태
 // 흐름: 상담문의 → 레벨테스트예정 → 레벨테스트완료 → 반배정상담 → 최종등록 / 대기등록 / 보류
 // 레벨테스트 3단계를 명시적으로 트래킹해서 원장이 "지금 어느 단계에 몇 명 있는지"를
@@ -487,6 +505,54 @@ export const paymentDispatches = pgTable("payment_dispatches", {
   expiresAt: timestamp("expires_at").notNull(),
   // 실패·취소 원인 요약 (개인정보 없음)
   failureReason: text("failure_reason"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// ─── Payment cancel dispatches (원장 → 프론트 카드취소 큐) ──────────────
+// 원장이 웹에서 "카드 취소"를 누르면 서버가 이 행을 만들고, 프론트 단말기가 폴링으로
+// 집어가 sdk.payment.requestPaymentCancel 을 호출한다. 성공 보고가 돌아오면 그때
+// 비로소 payments 에 음수 행을 쓴다.
+//
+// ── 왜 payment_dispatches 를 재사용하지 않았나 ──
+//   그 테이블은 payment_key 와 intent_id 가 **둘 다 UNIQUE** 다. 취소는 원결제와
+//   같은 키를 가리키므로 넣는 순간 23505 가 난다. 그리고 그 UNIQUE 들은 같은 결제가
+//   두 번 dispatch 되는 걸 막는 방어선이라 풀 수 없다. 그래서 테이블을 나눈다.
+//
+// ── 중복 취소 방어 ──
+//   payment_key 에 **부분 유니크 인덱스**를 건다 (WHERE status <> 'FAILED').
+//   FAILED 만 재시도를 허용한다는 규칙을 DB 층에서도 강제하기 위해서다.
+//   애플리케이션 판정(classifyCardCancel)이 뚫려도 DB 가 마지막으로 막는다.
+//   인덱스는 migrate-add-card-cancel.ts 에서 만든다 (drizzle 부분 인덱스 미지원).
+export const paymentCancelDispatches = pgTable("payment_cancel_dispatches", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  // 원결제의 paymentKey. UNIQUE 가 아니다 — 실패한 시도가 기록으로 남고 재시도가
+  // 새 행을 만들기 때문. 동시성 방어는 위의 부분 유니크 인덱스가 한다.
+  paymentKey: text("payment_key").notNull(),
+  intentId: varchar("intent_id").references(() => paymentIntents.id, { onDelete: "cascade" }).notNull(),
+  // 어느 단말기로 보내는가. 원승인이 일어난 그 단말기여야 한다
+  // (payment_intents.device_id). 다른 단말기에 보내면 취소 결과 캐시도 그쪽에 없다.
+  tossDeviceId: varchar("toss_device_id").references(() => tossFrontDevices.id, { onDelete: "set null" }).notNull(),
+  // 카드에서 되돌리는 금액 = 원승인 전액. SDK 가 부분 취소를 지원하지 않는다.
+  cancelAmount: integer("cancel_amount").notNull(),
+  // 성공 시 장부에 적을 금액. 원장이 이미 일부를 수기 환불해 뒀다면 이게 더 작다.
+  // 요청 시점의 계산값이며, 실제 반영 때 다시 계산해서 더 작은 쪽을 쓴다 (이중 계상 방지).
+  ledgerAmount: integer("ledger_amount").notNull(),
+  status: cancelDispatchStatusEnum("status").default("PENDING").notNull(),
+  // 누가 눌렀는가. 돈을 되돌리는 결정이므로 감사 기록이 반드시 필요하다.
+  requestedBy: varchar("requested_by").references(() => users.id, { onDelete: "set null" }),
+  reason: text("reason"),
+  deliveredAt: timestamp("delivered_at"),
+  respondedAt: timestamp("responded_at"),
+  expiresAt: timestamp("expires_at").notNull(),
+  // 단말기가 돌려준 취소 승인번호·TID. 사장님 앱과 대조할 때 쓴다.
+  cancelApprovalNumber: text("cancel_approval_number"),
+  cancelTid: text("cancel_tid"),
+  // 실패·타임아웃 원인 (개인정보 없음)
+  failureReason: text("failure_reason"),
+  // 단말기 응답 원문 최소 필드. 카드 원본번호는 저장 전에 제거한다.
+  rawResponseJson: text("raw_response_json"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });

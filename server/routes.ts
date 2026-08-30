@@ -38,6 +38,11 @@ import {
   frontDispatchRouter,
   startDispatchExpirySweeper,
 } from "./toss-front/dispatch";
+import {
+  cardCancelAdminRouter,
+  cardCancelDeviceRouter,
+  startCancelExpirySweeper,
+} from "./toss-front/cardCancelRoutes";
 import tossPluginLogRouter from "./toss-front/pluginLogs";
 import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
@@ -1820,8 +1825,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // 프리픽스별로 하나씩만 마운트한다 (교차 마운트 금지 — 경로 이중화 사고의 원인이었다).
   app.use("/api/toss-kiosk", kioskDispatchRouter);   // kioskGuard: 태블릿
   app.use("/api/toss-front", frontDispatchRouter);   // deviceGuard: Front 단말기
+  // 카드 취소. 원장(authGuard)과 단말기(deviceGuard)를 파일 안에서 갈라 두었다.
+  // 결제 경로와 파일을 분리한 이유는 cardCancelRoutes.ts 헤더 주석 참고.
+  app.use("/api/toss-front", cardCancelAdminRouter);  // authGuard + owner
+  app.use("/api/toss-front", cardCancelDeviceRouter); // deviceGuard: Front 단말기
   // 만료(3분 초과)된 dispatch를 30초 주기로 TIMEOUT으로 정리.
   startDispatchExpirySweeper();
+  // 만료된 카드취소(5분)를 TIMEOUT 으로 정리. 별도 스위퍼인 이유는 실패 반경을
+  // 나누기 위함이다 — 취소 정리가 죽어도 결제 정리는 계속 돌아야 한다.
+  startCancelExpirySweeper();
 
   const httpServer = createServer(app);
   return httpServer;

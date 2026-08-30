@@ -1,0 +1,644 @@
+/**
+ * 단말기 카드 취소 라우터.
+ *
+ *   원장(웹)  ──POST /admin/card-cancels──▶  서버가 취소 dispatch 생성
+ *                                              │
+ *   프론트 단말기 ◀──폴링 응답의 cancel 필드────┘
+ *        │
+ *        ├─ POST /dispatch/cancel/:id/ack      단말기가 집어감
+ *        └─ POST /dispatch/cancel/:id/result   취소 결과 보고
+ *                                              │
+ *                              성공일 때만 ─────┴──▶ payments 에 음수 행 (장부 반영)
+ *
+ * ── 왜 새 파일인가 ──
+ *   dispatch.ts·admin.ts 는 매일 돈을 받는 경로다. 거기에 취소 로직을 섞으면
+ *   버그 하나가 결제까지 세운다. 취소는 아직 한 번도 현장에서 돌아 본 적이 없는
+ *   기능이므로 실패 반경을 파일 단위로 격리한다.
+ *
+ * ── 이 파일의 단 하나의 규칙 ──
+ *   **장부 음수 행은 단말기가 "카드 취소 성공"을 보고한 뒤에만 쓴다.**
+ *   순서를 뒤집으면 장부엔 환불인데 돈은 안 돌아간 상태가 되고, 그건 학부모와
+ *   다투게 되는 종류의 오류다. 기존 /admin/refunds 는 장부만 적는 별도 기능으로
+ *   그대로 남는다 (카드를 이미 사장님 앱에서 취소한 경우에 쓴다).
+ */
+
+import { Router, Request, Response } from "express";
+import crypto from "crypto";
+import { z } from "zod";
+import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { db } from "../db";
+import {
+  paymentIntents,
+  paymentDispatches,
+  paymentCancelDispatches,
+  tossPaymentTransactions,
+  tossFrontDevices,
+  students,
+  enrollments,
+  classes,
+  payments,
+} from "@shared/schema";
+import { authGuard, tenantGuard, roleGuard } from "../middleware/auth";
+import { deviceGuard } from "./deviceAuth";
+import { publish } from "./dispatchBus";
+import { isBlocking, OPEN_DISPATCH_STATES } from "./lifecycle";
+import { resolveLedgerUserId, getOrCreateSystemUserId } from "./ledgerUser";
+import {
+  CANCEL_DISPATCH_TTL_MS,
+  OPEN_CANCEL_STATES,
+  classifyCancelResult,
+  classifyCardCancel,
+  remainingRefundable,
+  type CancelDispatchStatus,
+} from "./cardCancel";
+
+export const cardCancelAdminRouter = Router();
+export const cardCancelDeviceRouter = Router();
+
+/** pg_advisory_xact_lock 키. dispatch.ts·admin.ts 와 같은 방식. */
+function advisoryKey(input: string): number {
+  return crypto.createHash("sha256").update(input).digest().readInt32BE(0);
+}
+
+/** 원장이 그대로 옮겨 적을 수 있는 DB 오류 한 줄. admin.ts 와 같은 방침. */
+function describeDbError(err: any): string {
+  const bits: string[] = [];
+  if (err?.code) bits.push(`code=${err.code}`);
+  if (err?.constraint) bits.push(`constraint=${err.constraint}`);
+  if (err?.detail) bits.push(`detail=${err.detail}`);
+  const msg = err?.message ?? String(err);
+  return bits.length > 0 ? `${msg} (${bits.join(" · ")})` : msg;
+}
+
+/**
+ * 이 결제의 장부 현황. 상태 플래그가 아니라 실제로 적힌 돈만 센다.
+ * (세 경로 — 단말기 취소·취소 웹훅·수기 환불 — 이 같은 근거를 봐야 중복 계상이 없다.)
+ */
+async function readLedger(
+  tx: any,
+  tenantId: string,
+  paymentKey: string
+): Promise<{ paidIn: number; refunded: number }> {
+  const [row] = await tx
+    .select({
+      paidIn: sql<number>`coalesce(sum(${payments.amount}) FILTER (WHERE ${payments.amount} > 0), 0)::int`,
+      refunded: sql<number>`coalesce(-sum(${payments.amount}) FILTER (WHERE ${payments.amount} < 0), 0)::int`,
+    })
+    .from(payments)
+    .where(and(eq(payments.tenantId, tenantId), eq(payments.externalPaymentKey, paymentKey)));
+  return { paidIn: row?.paidIn ?? 0, refunded: row?.refunded ?? 0 };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 원장용 (authGuard + roleGuard(owner))
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * 왜 원장 전용인가:
+ *   태블릿 인증은 "전화번호 뒤 4자리"다. 그건 학부모 본인 확인용이지 돈을 되돌릴
+ *   권한의 근거가 못 된다. 태블릿은 현관에 놓여 누구나 만진다. 카드 취소는
+ *   authGuard + roleGuard(owner) 뒤에만 둔다 — /admin/refunds 와 같은 기준이다.
+ *
+ *   단말기는 "실행기"일 뿐 "결정 주체"가 아니다.
+ */
+
+/** 취소 요청 이력 — 원장이 진행 상황과 막힌 건을 본다. */
+cardCancelAdminRouter.get(
+  "/admin/card-cancels",
+  authGuard,
+  tenantGuard,
+  roleGuard("owner", "superadmin"),
+  async (req: Request, res: Response) => {
+    const tenantId = req.user!.tenantId;
+    if (!tenantId) return res.json([]);
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+
+    const rows = await db
+      .select({
+        id: paymentCancelDispatches.id,
+        paymentKey: paymentCancelDispatches.paymentKey,
+        status: paymentCancelDispatches.status,
+        cancelAmount: paymentCancelDispatches.cancelAmount,
+        ledgerAmount: paymentCancelDispatches.ledgerAmount,
+        reason: paymentCancelDispatches.reason,
+        failureReason: paymentCancelDispatches.failureReason,
+        cancelApprovalNumber: paymentCancelDispatches.cancelApprovalNumber,
+        createdAt: paymentCancelDispatches.createdAt,
+        deliveredAt: paymentCancelDispatches.deliveredAt,
+        respondedAt: paymentCancelDispatches.respondedAt,
+        expiresAt: paymentCancelDispatches.expiresAt,
+        studentName: students.name,
+        className: classes.name,
+        paymentMonth: paymentIntents.paymentMonth,
+      })
+      .from(paymentCancelDispatches)
+      .innerJoin(paymentIntents, eq(paymentIntents.id, paymentCancelDispatches.intentId))
+      .leftJoin(students, eq(students.id, paymentIntents.studentId))
+      .leftJoin(enrollments, eq(enrollments.id, paymentIntents.enrollmentId))
+      .leftJoin(classes, eq(classes.id, enrollments.classId))
+      .where(eq(paymentCancelDispatches.tenantId, tenantId))
+      .orderBy(desc(paymentCancelDispatches.createdAt))
+      .limit(limit);
+
+    return res.json(
+      rows.map((r) => ({
+        ...r,
+        // 사람이 개입해야 하는 건을 화면에서 바로 구분할 수 있게 표시한다.
+        needsHuman: r.status === "TIMEOUT",
+        hint:
+          r.status === "TIMEOUT"
+            ? "결과를 받지 못했습니다. 토스 사장님 앱에서 취소 여부를 확인한 뒤 처리하세요."
+            : r.status === "DELIVERED"
+              ? "단말기가 처리 중입니다. 단말기 화면을 확인하세요."
+              : null,
+      }))
+    );
+  }
+);
+
+const createCancelSchema = z.object({
+  paymentKey: z.string().min(1),
+  reason: z.string().trim().max(200).optional(),
+});
+
+cardCancelAdminRouter.post(
+  "/admin/card-cancels",
+  authGuard,
+  tenantGuard,
+  roleGuard("owner", "superadmin"),
+  async (req: Request, res: Response) => {
+    const parsed = createCancelSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message });
+    }
+    const tenantId = req.user!.tenantId;
+    if (!tenantId) return res.status(403).json({ error: "테넌트가 없는 계정입니다." });
+    const { paymentKey, reason } = parsed.data;
+
+    class Reject extends Error {
+      constructor(
+        public httpStatus: number,
+        message: string,
+        public needsHuman = false
+      ) {
+        super(message);
+      }
+    }
+
+    try {
+      const built = await db.transaction(async (tx) => {
+        // 취소 버튼은 네트워크가 느리면 반드시 두 번 눌린다. 같은 결제에 대한
+        // 동시 요청을 직렬화하지 않으면 두 요청이 같은 "기존 취소 없음"을 읽고
+        // 둘 다 통과한다 — 그게 이중 취소다.
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${advisoryKey(paymentKey)}, 1)`);
+
+        const [intent] = await tx
+          .select()
+          .from(paymentIntents)
+          .where(
+            and(eq(paymentIntents.paymentKey, paymentKey), eq(paymentIntents.tenantId, tenantId))
+          );
+        if (!intent) throw new Reject(404, "결제 건을 찾을 수 없습니다.");
+
+        // 원승인 기록 — SDK 필수 파라미터(승인번호·승인시각)의 출처.
+        const [approval] = await tx
+          .select()
+          .from(tossPaymentTransactions)
+          .where(
+            and(
+              eq(tossPaymentTransactions.paymentKey, paymentKey),
+              eq(tossPaymentTransactions.tenantId, tenantId)
+            )
+          );
+
+        const ledger = await readLedger(tx, tenantId, paymentKey);
+
+        const existing = await tx
+          .select({ status: paymentCancelDispatches.status })
+          .from(paymentCancelDispatches)
+          .where(
+            and(
+              eq(paymentCancelDispatches.paymentKey, paymentKey),
+              eq(paymentCancelDispatches.tenantId, tenantId)
+            )
+          );
+
+        const decision = classifyCardCancel({
+          intentStatus: intent.status,
+          approvedAmount: intent.amount,
+          ledgerPaidIn: ledger.paidIn,
+          ledgerRefunded: ledger.refunded,
+          hasApprovalRecord: !!approval,
+          approvalNumber: approval?.approvalNumber ?? null,
+          approvedTimestamp: approval?.approvedTimestamp ?? null,
+          deviceId: intent.deviceId,
+          existingCancelStates: existing.map((e) => e.status as CancelDispatchStatus),
+        });
+        if (decision.kind === "reject") {
+          throw new Reject(409, decision.reason, decision.needsHuman ?? false);
+        }
+
+        // 단말기가 살아 있는지. 꺼져 있으면 요청만 쌓이고 아무 일도 안 일어난다.
+        const [device] = await tx
+          .select({ id: tossFrontDevices.id, isActive: tossFrontDevices.isActive })
+          .from(tossFrontDevices)
+          .where(eq(tossFrontDevices.id, intent.deviceId!));
+        if (!device || !device.isActive) {
+          throw new Reject(
+            409,
+            "이 결제를 승인한 단말기가 비활성 상태입니다. 단말기 전원과 연결을 확인해 주세요.",
+            true
+          );
+        }
+
+        // 단말기는 한 번에 하나만 한다. 결제 중에 취소를 밀어 넣으면 두 카드 작업이
+        // 겹친다. payment_dispatches 쪽 진행 건을 함께 본다 (테이블이 다르므로
+        // 여기서 명시적으로 확인해야 한다 — 이걸 빠뜨리면 상호배제가 깨진다).
+        const [openPayment] = await tx
+          .select({
+            status: paymentDispatches.status,
+            expiresAt: paymentDispatches.expiresAt,
+          })
+          .from(paymentDispatches)
+          .where(
+            and(
+              eq(paymentDispatches.tossDeviceId, intent.deviceId!),
+              inArray(paymentDispatches.status, OPEN_DISPATCH_STATES)
+            )
+          )
+          .orderBy(desc(paymentDispatches.expiresAt))
+          .limit(1);
+        if (openPayment && isBlocking(openPayment.status, openPayment.expiresAt)) {
+          throw new Reject(409, "단말기가 지금 결제를 처리 중입니다. 잠시 후 다시 시도해 주세요.");
+        }
+
+        // 장부에 적을 사람. superadmin 은 users 에 행이 없어 FK 가 깨진다 —
+        // 결과 반영 시점에는 로그인 정보가 없으므로 **지금** 실존 id 로 확정해 둔다.
+        const actor = await resolveLedgerUserId(tx, tenantId, req.user!);
+
+        const [row] = await tx
+          .insert(paymentCancelDispatches)
+          .values({
+            tenantId,
+            paymentKey,
+            intentId: intent.id,
+            tossDeviceId: intent.deviceId!,
+            cancelAmount: decision.cancelAmount,
+            ledgerAmount: decision.ledgerAmount,
+            status: "PENDING",
+            requestedBy: actor.userId,
+            reason:
+              (reason ?? "") + (actor.substituted ? ` [실행자 ${actor.actorLabel}]` : "") || null,
+            expiresAt: new Date(Date.now() + CANCEL_DISPATCH_TTL_MS),
+          })
+          .returning();
+
+        return { row, intent, approval: approval!, decision };
+      });
+
+      // 단말기에 즉시 알린다. 안 붙어 있어도 폴링이 1초 안에 집어 간다.
+      publish(built.row.tossDeviceId, "payment.cancel", {
+        cancelId: built.row.id,
+        paymentKey,
+        amount: built.decision.cancelAmount,
+      });
+
+      console.log(
+        `↩️  카드 취소 요청: paymentKey=${paymentKey} ${built.decision.cancelAmount.toLocaleString()}원 → device=${built.row.tossDeviceId}`
+      );
+
+      return res.status(201).json({
+        cancelId: built.row.id,
+        paymentKey,
+        cancelAmount: built.decision.cancelAmount,
+        ledgerAmount: built.decision.ledgerAmount,
+        expiresAt: built.row.expiresAt,
+        notice:
+          "단말기로 취소 요청을 보냈습니다. 단말기 화면의 안내를 따라 주세요. " +
+          "카드 취소가 완료되면 장부에 자동으로 반영됩니다.",
+      });
+    } catch (err: any) {
+      if (err instanceof Reject) {
+        return res.status(err.httpStatus).json({ error: err.message, needsHuman: err.needsHuman });
+      }
+      // 부분 유니크 인덱스 위반 = 이미 진행중/완료된 취소가 있다는 뜻.
+      // 판정에서 걸렀어야 하지만, 동시 요청이 잠금을 우회한 경우 DB 가 마지막으로 막는다.
+      if (err?.code === "23505") {
+        return res.status(409).json({
+          error: "이미 이 결제에 대한 취소가 진행 중이거나 완료되었습니다.",
+        });
+      }
+      console.error("card cancel create error:", err);
+      return res
+        .status(500)
+        .json({ error: `취소 요청 생성 중 오류가 발생했습니다: ${describeDbError(err)}` });
+    }
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════
+// 단말기용 (deviceGuard)
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * 이 단말기가 지금 처리해야 할 취소 한 건. dispatch.ts 의 /dispatch/pending 응답에
+ * 얹어 보내기 위한 헬퍼다.
+ *
+ * SDK requestPaymentCancel 이 요구하는 값을 **서버가 확정해서** 통째로 내려 준다.
+ * 단말기가 계산하거나 캐시에서 꺼내 쓰게 두면 안 된다 —
+ * getPayment 캐시 응답에는 금액도 orderId 도 없다는 걸 0.3.13 에서 이미 겪었다.
+ * 취소는 파라미터가 하나만 틀려도 실패하므로 더더욱 서버가 정해서 준다.
+ */
+export async function pendingCancelForDevice(tenantId: string, deviceId: string) {
+  const [row] = await db
+    .select({
+      cancelId: paymentCancelDispatches.id,
+      paymentKey: paymentCancelDispatches.paymentKey,
+      amount: paymentCancelDispatches.cancelAmount,
+      expiresAt: paymentCancelDispatches.expiresAt,
+      // ── SDK 필수 파라미터 (원거래와 동일해야 한다) ──
+      paymentMethod: tossPaymentTransactions.paymentMethod,
+      approvalNumber: tossPaymentTransactions.approvalNumber,
+      approvedTimestamp: tossPaymentTransactions.approvedTimestamp,
+      installment: tossPaymentTransactions.installment,
+      tid: tossPaymentTransactions.tid,
+      vanTransactionKey: tossPaymentTransactions.vanTransactionKey,
+      // 문서: "원거래와 동일한 tax, supplyValue, taxExemptValue 를 전달해요"
+      tax: paymentIntents.tax,
+      supplyValue: paymentIntents.supplyValue,
+      taxExemptValue: paymentIntents.taxExemptValue,
+    })
+    .from(paymentCancelDispatches)
+    .innerJoin(paymentIntents, eq(paymentIntents.id, paymentCancelDispatches.intentId))
+    .innerJoin(
+      tossPaymentTransactions,
+      eq(tossPaymentTransactions.paymentKey, paymentCancelDispatches.paymentKey)
+    )
+    .where(
+      and(
+        eq(paymentCancelDispatches.tenantId, tenantId),
+        eq(paymentCancelDispatches.tossDeviceId, deviceId),
+        eq(paymentCancelDispatches.status, "PENDING")
+      )
+    )
+    .orderBy(paymentCancelDispatches.createdAt)
+    .limit(1);
+
+  if (!row) return null;
+  return {
+    ...row,
+    // tip 은 학원 결제 흐름에 없다. SDK 필수 필드라 항상 0 을 명시한다.
+    tip: 0,
+  };
+}
+
+/**
+ * POST /dispatch/cancel/:id/ack — 단말기가 취소 요청을 집어감.
+ *
+ * PENDING → DELIVERED 조건부 UPDATE 가 선점(claim) 역할을 한다. 두 폴링 사이클이
+ * 동시에 같은 행을 집어도 한쪽만 1행을 얻으므로 카드 취소가 두 번 걸리지 않는다.
+ * 이 한 줄이 이 파일에서 가장 중요한 동시성 방어다.
+ */
+cardCancelDeviceRouter.post(
+  "/dispatch/cancel/:id/ack",
+  deviceGuard,
+  async (req: Request, res: Response) => {
+    const device = req.device!;
+    const result = await db
+      .update(paymentCancelDispatches)
+      .set({ status: "DELIVERED", deliveredAt: new Date(), updatedAt: new Date() })
+      .where(
+        and(
+          eq(paymentCancelDispatches.id, req.params.id),
+          eq(paymentCancelDispatches.tossDeviceId, device.id),
+          eq(paymentCancelDispatches.status, "PENDING")
+        )
+      )
+      .returning({ id: paymentCancelDispatches.id });
+
+    if (result.length === 0) {
+      // 이미 다른 사이클이 집어갔다. 카드를 두 번 취소하면 안 되므로 확실히 거절한다.
+      return res.status(409).json({ error: "이 취소 요청은 PENDING 상태가 아닙니다." });
+    }
+    return res.json({ ok: true });
+  }
+);
+
+const cancelResultSchema = z.object({
+  /** SDK PaymentResult.type 그대로. */
+  result: z.enum(["SUCCESS", "FAILED", "CANCELED", "TIMEOUT"]),
+  cancelApprovalNumber: z.string().trim().max(64).optional(),
+  cancelTid: z.string().trim().max(128).optional(),
+  reason: z.string().trim().max(300).optional(),
+  /** 감사용 최소 응답. 카드 원본번호는 단말기가 보내기 전에 제거한다. */
+  raw: z.any().optional(),
+});
+
+/**
+ * POST /dispatch/cancel/:id/result — 단말기가 취소 결과를 보고.
+ *
+ * **성공일 때만** 장부에 음수 행을 쓴다. 이 엔드포인트가 이 기능 전체의 심장이다.
+ *
+ * 멱등성:
+ *   같은 결과가 두 번 와도 (재전송·아웃박스) 장부는 한 번만 움직인다. 근거는
+ *   상태 플래그가 아니라 payments 를 다시 세는 것이다 — 취소 웹훅이 먼저 도착해
+ *   이미 음수 행을 적어 뒀다면 여기서 계산한 금액이 0 이 되어 아무것도 안 적는다.
+ *   세 경로가 같은 계산식(remainingRefundable)을 쓰는 이유가 이것이다.
+ */
+cardCancelDeviceRouter.post(
+  "/dispatch/cancel/:id/result",
+  deviceGuard,
+  async (req: Request, res: Response) => {
+    const parsed = cancelResultSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message });
+    }
+    const device = req.device!;
+    const { result, cancelApprovalNumber, cancelTid, reason, raw } = parsed.data;
+    const verdict = classifyCancelResult(result);
+
+    try {
+      const outcome = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .select()
+          .from(paymentCancelDispatches)
+          .where(
+            and(
+              eq(paymentCancelDispatches.id, req.params.id),
+              eq(paymentCancelDispatches.tossDeviceId, device.id),
+              eq(paymentCancelDispatches.tenantId, device.tenantId)
+            )
+          );
+        if (!row) return { kind: "notfound" as const };
+
+        // 이미 마감된 건에 결과가 또 오면 조용히 성공으로 답한다. 단말기 아웃박스가
+        // 재전송했을 뿐이다. 여기서 400 을 주면 단말기가 영원히 재시도한다.
+        if (row.status === "SUCCEEDED" || row.status === "FAILED") {
+          return { kind: "idempotent" as const, status: row.status };
+        }
+
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${advisoryKey(row.paymentKey)}, 1)`);
+
+        if (!verdict.cardCancelled) {
+          // 실패·타임아웃 — 장부는 건드리지 않는다. 카드가 안 돌아갔으므로
+          // 장부에 환불을 적으면 없는 돈을 적는 것이 된다.
+          await tx
+            .update(paymentCancelDispatches)
+            .set({
+              status: verdict.status,
+              respondedAt: new Date(),
+              failureReason: reason ?? result,
+              rawResponseJson: raw ? JSON.stringify(raw).slice(0, 4000) : null,
+              updatedAt: new Date(),
+            })
+            .where(eq(paymentCancelDispatches.id, row.id));
+          return { kind: "failed" as const, status: verdict.status };
+        }
+
+        // ── 여기부터는 카드가 실제로 취소된 경우다 ──
+        const [intent] = await tx
+          .select()
+          .from(paymentIntents)
+          .where(eq(paymentIntents.id, row.intentId));
+
+        const ledger = await readLedger(tx, device.tenantId, row.paymentKey);
+        // 요청 시점 계산값(row.ledgerAmount)이 아니라 **지금** 다시 센다.
+        // 그 사이에 취소 웹훅이나 수기 환불이 들어왔을 수 있다.
+        const toWrite = remainingRefundable(ledger.paidIn, ledger.refunded);
+
+        if (toWrite > 0 && intent) {
+          // requestedBy 는 생성 시점에 실존이 확인된 users.id 다. 그래도 계정이
+          // 그 사이 지워졌을 수 있으니 시스템 사용자로 폴백한다 — 여기서 FK 가
+          // 깨지면 카드는 취소됐는데 장부만 비는, 가장 나쁜 결과가 된다.
+          let createdBy = row.requestedBy;
+          if (createdBy) {
+            const hit = await tx.execute(
+              sql`SELECT id FROM users WHERE id = ${createdBy} LIMIT 1`
+            );
+            if ((hit.rows as any[]).length === 0) createdBy = null;
+          }
+          if (!createdBy) createdBy = await getOrCreateSystemUserId(tx, device.tenantId);
+
+          await tx.insert(payments).values({
+            tenantId: device.tenantId,
+            enrollmentId: intent.enrollmentId,
+            amount: -toWrite,
+            type: "환불",
+            method: "카드",
+            paymentMonth: intent.paymentMonth,
+            paidDate: new Date(),
+            createdBy,
+            notes:
+              `Toss Front 카드취소 (단말기) · ${row.paymentKey}` +
+              (cancelApprovalNumber ? ` · 취소승인 ${cancelApprovalNumber}` : "") +
+              (row.reason ? ` · 사유: ${row.reason}` : ""),
+            externalProvider: "TOSSPLACE",
+            externalPaymentKey: row.paymentKey,
+            paidVia: "TOSS_FRONT",
+          });
+        }
+
+        // 카드가 전액 취소됐으므로 intent 는 CANCELED 로 마감한다.
+        await tx
+          .update(paymentIntents)
+          .set({ status: "CANCELED", cancelledAt: new Date(), updatedAt: new Date() })
+          .where(eq(paymentIntents.id, row.intentId));
+
+        await tx
+          .update(paymentCancelDispatches)
+          .set({
+            status: "SUCCEEDED",
+            respondedAt: new Date(),
+            cancelApprovalNumber: cancelApprovalNumber ?? null,
+            cancelTid: cancelTid ?? null,
+            ledgerAmount: toWrite,
+            rawResponseJson: raw ? JSON.stringify(raw).slice(0, 4000) : null,
+            updatedAt: new Date(),
+          })
+          .where(eq(paymentCancelDispatches.id, row.id));
+
+        return { kind: "succeeded" as const, wrote: toWrite, paymentKey: row.paymentKey };
+      });
+
+      if (outcome.kind === "notfound") {
+        return res.status(404).json({ error: "취소 요청을 찾을 수 없습니다." });
+      }
+      if (outcome.kind === "idempotent") {
+        return res.json({ ok: true, idempotent: true, status: outcome.status });
+      }
+      if (outcome.kind === "failed") {
+        console.warn(
+          `↩️  카드 취소 ${outcome.status}: id=${req.params.id} · ${reason ?? result}` +
+            (outcome.status === "TIMEOUT"
+              ? " — ⚠️ 카드 상태를 알 수 없습니다. 사장님 앱에서 확인이 필요합니다."
+              : "")
+        );
+        return res.json({ ok: true, status: outcome.status });
+      }
+
+      console.log(
+        `✅ 카드 취소 완료: ${outcome.paymentKey} · 장부 반영 ${outcome.wrote.toLocaleString()}원`
+      );
+      return res.json({ ok: true, status: "SUCCEEDED", ledgerWritten: outcome.wrote });
+    } catch (err: any) {
+      console.error("card cancel result error:", err);
+      // 500 을 주면 단말기 아웃박스가 재전송한다. 그게 맞다 — 카드는 이미
+      // 취소됐는데 장부만 못 적은 상태이므로 반드시 다시 와야 한다.
+      return res.status(500).json({ error: `취소 결과 반영 실패: ${describeDbError(err)}` });
+    }
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════
+// 만료 정리
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * 만료된 취소 dispatch 를 TIMEOUT 으로 넘긴다.
+ *
+ * ⚠️ TIMEOUT 은 "실패" 가 아니라 "모름" 이다. 그래서 여기서 자동 재시도를 걸지
+ *    않는다. 부분 유니크 인덱스가 status <> 'FAILED' 이므로 TIMEOUT 행은 그대로
+ *    남아 같은 결제에 대한 새 취소를 막는다. 그게 의도다 — 카드가 이미 취소됐을
+ *    수 있는 상태에서 한 번 더 거는 것보다, 사람이 사장님 앱을 확인하는 게 낫다.
+ *
+ *    PENDING 이 만료된 경우는 단말기가 아예 집어가지 않은 것이라 카드가 안전하지만,
+ *    DELIVERED 와 구분해서 다루면 규칙이 복잡해진다. 둘 다 TIMEOUT 으로 두고
+ *    사람이 목록에서 보고 판단하게 한다 (PENDING 만료는 화면에 "단말기가 받지
+ *    못했습니다" 로 표시된다).
+ */
+export function startCancelExpirySweeper(intervalMs = 30_000) {
+  const tick = async () => {
+    try {
+      const stale = await db
+        .update(paymentCancelDispatches)
+        .set({
+          status: "TIMEOUT",
+          respondedAt: new Date(),
+          failureReason: "expired",
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            inArray(paymentCancelDispatches.status, [...OPEN_CANCEL_STATES]),
+            lt(paymentCancelDispatches.expiresAt, new Date())
+          )
+        )
+        .returning({ id: paymentCancelDispatches.id, key: paymentCancelDispatches.paymentKey });
+      if (stale.length > 0) {
+        console.warn(
+          `⚠️  만료된 카드취소 ${stale.length}건을 TIMEOUT 으로 정리했습니다. ` +
+            `카드 상태를 알 수 없으므로 사장님 앱 확인이 필요합니다: ${stale
+              .map((s) => s.key)
+              .join(", ")}`
+        );
+      }
+    } catch (err) {
+      console.error("cancel expiry sweeper error:", err);
+    }
+  };
+
+  const timer = setInterval(tick, intervalMs);
+  process.once("SIGTERM", () => clearInterval(timer));
+  process.once("SIGINT", () => clearInterval(timer));
+  tick();
+}

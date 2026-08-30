@@ -40,6 +40,7 @@ import {
 import { verifyVirtualInvoice } from "./virtualInvoice";
 import { publish, subscribe } from "./dispatchBus";
 import { selectRecoveryKeys, type RecoveryCandidate } from "./recovery";
+import { pendingCancelForDevice } from "./cardCancelRoutes";
 
 /**
  * 라우터를 두 개로 분리한 이유 (2026-08 버그 수정):
@@ -555,6 +556,19 @@ frontDispatchRouter.get("/dispatch/pending", deviceGuard, async (req: Request, r
     console.error("자동 대사 목록 조회 실패 (결제 전달은 계속합니다):", err);
   }
 
+  // 카드 취소 대기 건. 결제와 같은 왕복에 얹는다 — 단말기는 이미 이 엔드포인트를
+  // 1초마다 두드리고 있고, 새 채널을 뚫는 것보다 훨씬 안전하다 (자동 대사와 같은 이유).
+  //
+  // ⚠️ 응답에 필드를 **추가만** 한다. 지금 현장에 깔린 0.3.14 플러그인은 이 필드를
+  //    모르므로 그냥 무시하고 지나간다. 서버를 먼저 배포해도 결제는 아무 영향이 없다.
+  //    이것이 1단계를 SDK 호출 없이 끊은 이유다.
+  let cancel: Awaited<ReturnType<typeof pendingCancelForDevice>> = null;
+  try {
+    cancel = await pendingCancelForDevice(device.tenantId, device.id);
+  } catch (err) {
+    console.error("취소 대기 조회 실패 (결제 전달은 계속합니다):", err);
+  }
+
   // paymentIntents 와 JOIN 해서 tax/supplyValue/taxExemptValue 를 함께 돌려준다.
   // 플러그인이 SDK 에 넘길 세금·공급가·비과세 값은 서버가 확정한 값만 신뢰한다 (프론트 계산 금지).
   const [row] = await db
@@ -582,9 +596,10 @@ frontDispatchRouter.get("/dispatch/pending", deviceGuard, async (req: Request, r
     )
     .orderBy(paymentDispatches.createdAt)
     .limit(1);
-  if (!row) return res.json({ pending: null, recover });
+  if (!row) return res.json({ pending: null, recover, cancel });
   return res.json({
     recover,
+    cancel,
     pending: {
       // dispatchId 는 서버 내부 라우팅 키, requestId 는 플러그인이 SDK 결과 통지 시 사용할 상관관계 ID.
       // 현재 스키마에선 둘이 같은 값을 갖지만 이름을 분리해 두면 나중에 별도 요청식별자를 도입할 여지가 있다.

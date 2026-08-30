@@ -34,6 +34,7 @@ import {
 import { deviceGuard } from "./deviceAuth";
 import { verifyVirtualInvoice } from "./virtualInvoice";
 import { classifyConfirm } from "./lifecycle";
+import { getOrCreateSystemUserId } from "./ledgerUser";
 
 const router = Router();
 
@@ -421,25 +422,12 @@ function sanitizeRawResponse(raw: any): any {
   return clone;
 }
 
-/**
- * payments.createdBy는 users FK. Toss 결제는 사람이 아닌 시스템이 만들지만
- * users에 자리를 마련해 두지 않으면 FK 위반이 난다. tenant마다 시스템 사용자
- * 한 명을 만들어 놓고 재사용한다. 이 사용자는 로그인 못하도록 isActive=false다.
- */
-async function getOrCreateSystemUserId(tx: any, tenantId: string): Promise<string> {
-  const email = `system+toss-front@${tenantId}.local`;
-  const existing = await tx.execute(sql`
-    SELECT id FROM users WHERE email = ${email} LIMIT 1
-  `);
-  const found = (existing.rows as any[])[0];
-  if (found) return found.id;
-
-  const created = await tx.execute(sql`
-    INSERT INTO users (email, password, name, role, tenant_id, is_active)
-    VALUES (${email}, 'x', 'Toss Front (system)', 'owner', ${tenantId}, false)
-    RETURNING id
-  `);
-  return (created.rows as any[])[0].id;
-}
+// getOrCreateSystemUserId 는 ./ledgerUser 로 옮겼다.
+//
+// 이 함수는 원래 여기에만 있었고, 그래서 나중에 만든 환불·수기 대사 경로는
+// 이 교훈을 못 물려받고 req.user.id 를 그대로 created_by 에 넣었다. superadmin
+// 은 users 에 행이 없어서 그게 곧 FK 위반(23503)이 됐고, 269,000원과 1,000원이
+// 장부에 못 들어갔다. 같은 함정을 세 번째로 파지 않으려고 공용 모듈로 뺐다.
+// 장부에 행을 넣는 코드를 새로 쓸 때는 ledgerUser.resolveLedgerUserId 를 쓸 것.
 
 export default router;

@@ -33,6 +33,7 @@ import { authGuard, tenantGuard, roleGuard } from "../middleware/auth";
 import { publish } from "./dispatchBus";
 import { classifyRefund, refundableAmount } from "./refund";
 import { classifyReconcile } from "./reconcile";
+import { resolveLedgerUserId } from "./ledgerUser";
 
 const router = Router();
 
@@ -346,8 +347,13 @@ router.post(
         if (decision.kind === "reject") throw new RefundReject(409, decision.reason);
 
         // 장부 반영. 부호 규칙에 따라 음수로 넣는다 (Payments 화면이 단순 SUM 한다).
-        // createdBy 는 시스템 사용자가 아니라 실제로 누른 원장이다 — 환불은 사람의
-        // 결정이므로 누가 했는지가 감사 기록에 남아야 한다.
+        //
+        // createdBy 는 실제로 누른 원장이어야 한다 — 환불은 사람의 결정이므로
+        // 누가 했는지가 감사 기록에 남아야 한다. 다만 그 id 가 users 에 실제로
+        // 있어야만 FK 를 통과한다. superadmin 은 users 에 행이 없어서 여기서
+        // 23503 으로 죽었다. 자세한 경위는 ledgerUser.ts 참고.
+        const actor = await resolveLedgerUserId(tx, tenantId, req.user!);
+
         await tx.insert(payments).values({
           tenantId,
           enrollmentId: intent.enrollmentId,
@@ -356,11 +362,13 @@ router.post(
           method: "카드",
           paymentMonth: intent.paymentMonth,
           paidDate: new Date(),
-          createdBy: userId,
+          createdBy: actor.userId,
           notes:
             `Toss Front 환불 (원장 기록) · ${paymentKey}` +
             (reason ? ` · 사유: ${reason}` : "") +
-            (decision.fullyRefunded ? " · 전액" : ` · 부분(${decision.remainingAfter.toLocaleString()}원 남음)`),
+            (decision.fullyRefunded ? " · 전액" : ` · 부분(${decision.remainingAfter.toLocaleString()}원 남음)`) +
+            // 대체했으면 실제로 누른 사람을 여기 남긴다. 이게 없으면 감사 기록이 사라진다.
+            (actor.substituted ? ` · 실행자 ${actor.actorLabel}` : ""),
           externalProvider: "TOSSPLACE",
           externalPaymentKey: paymentKey,
           paidVia: "TOSS_FRONT",
@@ -490,6 +498,12 @@ router.post(
 
         const paidDate = approvedAt ? new Date(approvedAt) : new Date();
 
+        // ⚠️ 이 한 줄이 장부 반영 500 의 원인이었다.
+        //    payments.created_by 는 users(id) 를 가리키는 NOT NULL 외래키인데,
+        //    superadmin 계정은 users 에 행이 없고 id 가 문자열 "admin" 이다.
+        //    그대로 넣으면 23503 으로 트랜잭션이 죽는다. ledgerUser.ts 참고.
+        const actor = await resolveLedgerUserId(tx, tenantId, req.user!);
+
         // 승인 원본 테이블에도 흔적을 남긴다. 여기서 이중 삽입이 한 번 더 걸러진다
         // (advisory lock 이 어떤 이유로 안 먹어도).
         //
@@ -512,7 +526,8 @@ router.post(
             approvedTimestamp: String(paidDate.getTime()),
             rawResponseJson: JSON.stringify({
               source: "manual-reconcile",
-              by: userId,
+              // 여기는 FK 가 없는 감사용 JSON 이라 실제로 누른 사람을 그대로 적는다.
+              by: actor.actorLabel,
               at: new Date().toISOString(),
               note: note ?? null,
             }),
@@ -529,11 +544,12 @@ router.post(
           method: "카드",
           paymentMonth: intent.paymentMonth,
           paidDate,
-          createdBy: userId,
+          createdBy: actor.userId,
           notes:
             `Toss Front 수기 대사 · 승인번호 ${approvalNumber}` +
             ` · 단말기 승인은 됐으나 서버 기록이 누락되어 원장이 확인 후 반영` +
-            (note ? ` · ${note}` : ""),
+            (note ? ` · ${note}` : "") +
+            (actor.substituted ? ` · 실행자 ${actor.actorLabel}` : ""),
           externalProvider: "TOSSPLACE",
           externalPaymentKey: paymentKey,
           externalTransactionId: txRow?.id ?? null,
@@ -545,7 +561,7 @@ router.post(
           .set({
             status: "APPROVED",
             approvedAt: paidDate,
-            failureReason: `manually reconciled by ${userId} (approval ${approvalNumber})`,
+            failureReason: `manually reconciled by ${actor.actorLabel} (approval ${approvalNumber})`,
           })
           .where(eq(paymentIntents.id, intent.id));
 

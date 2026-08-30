@@ -112,6 +112,45 @@ export interface TossFrontSdk {
     getBackupPaymentKey?(): Promise<string | null>;
     getPayment?(input: { paymentKey: string }): Promise<PaymentResult | null>;
     resetBackupPaymentKey?(): Promise<void>;
+    /**
+     * 카드 취소. 원거래 승인 정보를 그대로 되돌려 준다.
+     *
+     * ⚠️ 0.3.14 까지 이 선언이 없었다. 그래서 "Front SDK 로는 단말기 취소가
+     *    불가능하다" 고 잘못 결론 내렸었다 — renderIdlePage 때와 똑같은 실수다.
+     *    타입 선언이 없는 것과 SDK 에 기능이 없는 것은 전혀 다른 사실이다.
+     *    출처: docs.tossplace.com/reference/plugin-sdk/front/payment.html
+     *
+     * 문서가 "원거래와 동일한 tax, supplyValue, taxExemptValue 를 전달해요" 라고
+     * 못박으므로 **부분 취소는 불가능하다.** 서버가 전액만 내려보내는 이유다.
+     *
+     * optional 인 이유: 구형 펌웨어에 이 메서드가 없을 수 있다. 없으면 취소를
+     * 걸지 않고 서버에 FAILED 로 보고한다. 있는 척 부르면 예외가 나는데, 그
+     * 예외 시점에 카드가 건드려졌는지 아닌지를 알 수 없어 최악이다.
+     */
+    requestPaymentCancel?(input: {
+      paymentKey: string;
+      paymentMethod: "CARD" | "CASH" | "BARCODE";
+      tax: number;
+      supplyValue: number;
+      taxExemptValue: number;
+      tip: number;
+      /** 원승인 시각 (밀리초). 원거래 조회 키다. */
+      timestamp: string;
+      /** 원승인번호. */
+      approvalNumber: string;
+      installment: number;
+      tid: string;
+      timeoutMs?: number;
+      localeCode?: string;
+    }): Promise<PaymentResult>;
+    /**
+     * 카드 없이 취소 (NICE VAN 전용). 카드 재삽입이 필요 없다.
+     * 지금은 쓰지 않는다 — VAN 사가 NICE 인지 확인되지 않았고, 확인 못 한 채
+     * 부르면 실패하는데 그 실패 시점의 카드 상태를 알 수 없다.
+     */
+    requestCardlessPaymentCancel?(input: Record<string, unknown>): Promise<PaymentResult>;
+    /** 취소 이력 조회 (복구용). TTL 14일. 3단계에서 실물 응답을 본 뒤 붙인다. */
+    getPaymentCancel?(input: { paymentKey: string }): Promise<PaymentResult | null>;
   };
   /**
    * Toss 공식 sdk.storage 는 객체 인자를 받는다:

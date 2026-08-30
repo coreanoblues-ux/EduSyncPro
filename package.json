@@ -21,6 +21,7 @@
     "test:outbox": "tsx scripts/test-confirm-outbox.ts",
     "test:webhook-sig": "tsx scripts/test-webhook-signature.ts",
     "test:card-cancel": "tsx scripts/test-card-cancel.ts",
+    "test:cancel-outbox": "tsx scripts/test-cancel-outbox.ts",
     "test:ledger-reflection": "tsx scripts/test-ledger-reflection.ts",
     "test:resilience": "tsx scripts/test-server-resilience.ts",
     "test:cors": "tsx scripts/test-cors.ts",

@@ -368,6 +368,26 @@ export function showBusy(orderName: string, amount: number) {
   paint();
 }
 
+/**
+ * 카드 취소 진행 중.
+ *
+ * 결제 화면(showBusy)과 문구를 확실히 다르게 둔다. 이 화면 앞에 서 있는 사람은
+ * 돈을 내러 온 학생이 아니라 환불을 받는 학부모이고, 같은 "1,000원 / 카드를
+ * 대주세요" 를 보면 결제가 또 되는 줄로 오해한다.
+ */
+export function showCancelBusy(amount: number) {
+  currentTone = "busy";
+  currentTitle = `${amount.toLocaleString()}원 결제취소`;
+  currentSubtitle = "결제하셨던 카드를 넣거나 대주세요.\n취소가 끝날 때까지 카드를 빼지 마세요.";
+  // 취소 도중에 화면을 빠져나갈 길을 두지 않는다. 결제보다 더 엄격해야 한다 —
+  // 취소는 중간에 끊기면 "카드가 취소됐는지 모르는" 상태가 되고, 그건 우리가
+  // 자동으로 풀 수 없는 유일한 상태다.
+  currentActions = [];
+  showDiag = false;
+  repaintLocked = false;
+  paint();
+}
+
 /** 치명적 실패. 원장이 읽고 조치할 수 있는 문장으로 쓴다. */
 export function showFatal(title: string, detail: string, opts?: { onAdmin?: () => void }) {
   currentTone = "error";

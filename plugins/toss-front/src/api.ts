@@ -218,8 +218,95 @@ export function fetchPendingDispatch(): Promise<{
    * 올라가도 폴링이 깨지지 않아야 한다.
    */
   recover?: RecoveryRequest[];
+  /**
+   * 원장이 걸어 둔 카드 취소 한 건 (0.3.15~).
+   *
+   * 결제와 같은 왕복에 얹어 온다. 새 폴링 채널을 뚫지 않은 이유는 자동 대사와
+   * 같다 — 이미 1초마다 도는 길에 태우는 게 훨씬 안전하다.
+   *
+   * optional 인 이유가 여기서는 특히 중요하다. 서버(1단계)를 먼저 배포하고
+   * 플러그인(2단계)을 나중에 올리는 순서로 가기 때문에, 이 필드를 모르는
+   * 0.3.14 가 현장에서 계속 돌아도 결제가 멀쩡해야 한다.
+   */
+  cancel?: PendingCancel | null;
 }> {
   return apiFetch("/api/toss-front/dispatch/pending");
+}
+
+/**
+ * 서버가 이 단말기에 걸어 둔 카드 취소 한 건.
+ *
+ * 모든 값이 **서버가 확정한 원거래 정보**다. 단말기가 캐시에서 뒤져 만들지 않는다.
+ * requestPaymentCancel 은 원거래와 완전히 같은 금액 구성을 요구하는데, 그
+ * "완전히 같은" 의 기준점은 승인 당시 서버가 기록해 둔 값뿐이기 때문이다.
+ */
+export interface PendingCancel {
+  cancelId: string;
+  paymentKey: string;
+  /** 취소 금액 (= 원승인 전액). 화면 표시용이며 SDK 에는 넘기지 않는다. */
+  amount: number;
+  expiresAt: string;
+  paymentMethod: "CARD" | "CASH" | "BARCODE";
+  approvalNumber: string;
+  approvedTimestamp: string;
+  installment: number;
+  tid: string;
+  vanTransactionKey: string | null;
+  tax: number;
+  supplyValue: number;
+  taxExemptValue: number;
+  tip: number;
+}
+
+/**
+ * 단말기가 취소 요청을 집어감 (PENDING → DELIVERED).
+ *
+ * 이 호출이 성공해야만 SDK 를 부른다. 실패하면 다른 폴링 사이클이 이미 집어간
+ * 것이므로 **절대 취소를 걸지 않는다.** 결제 ack 와 문장은 같지만 무게가 다르다 —
+ * 결제는 두 번 돼도 환불하면 되지만 취소는 두 번 되면 되돌릴 방법이 없다.
+ */
+export function ackCancel(cancelId: string) {
+  return apiFetch<{ ok: true }>(`/api/toss-front/dispatch/cancel/${cancelId}/ack`, {
+    method: "POST",
+  });
+}
+
+/**
+ * 취소 결과 보고. **HTTP 상태를 그대로 돌려준다.**
+ *
+ * 왜 apiFetch 를 안 쓰나: apiFetch 는 실패를 예외로 바꾸는데, 그러면 아웃박스가
+ * "서버가 409 로 이미 안다고 답한 것" 과 "네트워크가 끊긴 것" 을 구분할 수 없다.
+ * 앞은 지워야 하고 뒤는 남겨야 한다. 결제 confirm 이 같은 이유로 같은 모양을
+ * 쓰고 있다 (outbox.ts isSettled 참고).
+ */
+export async function reportCancelResultRaw(
+  cancelId: string,
+  body: {
+    result: "SUCCESS" | "FAILED" | "CANCELED" | "TIMEOUT";
+    cancelApprovalNumber?: string;
+    cancelTid?: string;
+    reason?: string;
+  },
+): Promise<{ status: number | null; bodyText: string }> {
+  try {
+    const token = await ensureAccessToken();
+    const doFetch = (t: string) =>
+      safeFetch(`${SERVER_URL}/api/toss-front/dispatch/cancel/${cancelId}/result`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${t}` },
+        body: JSON.stringify(body),
+      });
+    let res = await doFetch(token);
+    if (res.status === 401) {
+      await refreshSession();
+      res = await doFetch(accessToken!);
+    }
+    const bodyText = await res.text().catch(() => "");
+    return { status: res.status, bodyText };
+  } catch (err: any) {
+    // status=null 은 "서버에 닿지도 못했다" 는 뜻이다. 아웃박스가 이걸 보고 남긴다.
+    return { status: null, bodyText: err?.message ?? String(err) };
+  }
 }
 
 /**

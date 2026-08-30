@@ -37,7 +37,10 @@ import {
   confirmPayment,
   cancelPayment,
   exchangePairing,
+  ackCancel,
+  reportCancelResultRaw,
   type PendingDispatch,
+  type PendingCancel,
   type RecoveryRequest,
 } from "./api";
 import {
@@ -71,9 +74,25 @@ import {
   type OutboxStorage,
 } from "./outbox";
 import {
+  addCancelReport,
+  cardWasCancelled,
+  clearInflight,
+  dueCancelReports,
+  isCancelReportSettled,
+  loadCancelOutbox,
+  markCancelAttempt,
+  markInflight,
+  readInflight,
+  removeCancelReport,
+  saveCancelOutbox,
+  type CancelOutboxEntry,
+  type CancelReportResult,
+} from "./cancelOutbox";
+import {
   showIdle,
   showAdminMenu,
   showBusy,
+  showCancelBusy,
   showFatal,
   showStatus,
   pushDiagLine,
@@ -115,6 +134,18 @@ const handledPaymentKeys = new Set<string>();
 let outbox: OutboxEntry[] = [];
 /** flushOutbox 재진입 방지. 폴링(1초)이 이전 flush 를 앞지르지 못하게 한다. */
 let flushingOutbox = false;
+
+/**
+ * 아직 서버에 못 올린 **취소 결과** 보고들 (0.3.15~).
+ *
+ * 결제 아웃박스와 목적이 다르다. 저기는 "승인 요청을 다시 보낸다" 이고
+ * 여기는 "이미 끝난 취소의 결과를 다시 알린다" 이다. 취소 요청 자체는
+ * 무슨 일이 있어도 다시 보내지 않는다 (cancelOutbox.ts 헤더 참고).
+ */
+let cancelOutbox: CancelOutboxEntry[] = [];
+let flushingCancels = false;
+/** 같은 취소를 두 번 집지 않는다. 결제의 handledPaymentKeys 와 같은 역할. */
+const handledCancelIds = new Set<string>();
 
 /** 단말기에 등록된 상점명. 대기화면 제목에 쓴다. 못 읽으면 빈 문자열. */
 let merchantName = "";
@@ -559,6 +590,24 @@ export async function bootstrap() {
     await flushOutbox("부팅");
   }
 
+  // 4-b) 못 보낸 취소 결과 + 취소 도중 종료 흔적.
+  //
+  //      결제 아웃박스 바로 뒤에 둔다. 여기 남아 있는 건은 "카드에서 돈이
+  //      돌아갔는데 장부는 아직 모른다" 일 수 있어 승인 미반영과 무게가 같다.
+  cancelOutbox = loadCancelOutbox(outboxStorage, (msg) =>
+    log.error("취소 아웃박스 읽기 실패", new Error(msg), "이 부팅에서는 빈 상태로 시작합니다."),
+  );
+  if (cancelOutbox.length > 0) {
+    log.warn(
+      "미보고 취소 결과 발견",
+      `${cancelOutbox.length}건이 아직 서버에 전달되지 않았습니다. 지금 다시 보냅니다.`,
+    );
+    await flushCancelOutbox("부팅");
+  }
+  await recoverInterruptedCancel().catch((err) => {
+    log.error("중단된 취소 복구 실패", err, "결과를 모르는 취소가 남아 있을 수 있습니다.");
+  });
+
   // 5) 앱이 결제 도중 꺼졌던 경우 backup 으로 마지막 결과 복구
   await recoverBackupIfAny().catch((err) => {
     log.error("backup 복구 실패", err, "미확정 승인이 남아 있을 수 있습니다.");
@@ -726,7 +775,7 @@ async function pollOnce() {
   }
   inFlight = true;
   try {
-    const { pending, recover } = await fetchPendingDispatch();
+    const { pending, recover, cancel } = await fetchPendingDispatch();
 
     if (consecutivePollErrors > 0) {
       log.info("backend connection 복구", `연속 실패 ${consecutivePollErrors}회 뒤 정상화되었습니다.`);
@@ -756,6 +805,32 @@ async function pollOnce() {
       // 결제를 막 끝냈다. 자동 대사는 다음 폴링으로 미룬다 — 방금 끝난 결제의
       // confirm 이 아직 서버에 반영되는 중일 수 있고, 그 사이에 같은 건을
       // 되물으면 쓸데없이 한 번 더 확인하게 된다.
+      return;
+    }
+
+    // 원장이 걸어 둔 카드 취소. 결제가 없을 때만 집는다 — 단말기는 한 번에
+    // 한 장의 카드만 다룰 수 있고, 결제와 취소가 겹치면 어느 쪽 카드인지
+    // 알 수 없게 된다. (서버도 같은 배제를 걸어 두었다.)
+    //
+    // 취소 결과 보고를 먼저 밀어낸다. 못 보낸 보고가 있다는 것은 "카드에서는
+    // 돈이 돌아갔는데 장부는 아직 모른다" 는 뜻이라 무엇보다 급하다.
+    if (!busy) await flushCancelOutbox("폴링");
+
+    if (cancel && !busy && !handledCancelIds.has(cancel.cancelId)) {
+      handledCancelIds.add(cancel.cancelId);
+      busy = true;
+      exitedToHome = false;
+      log.info(
+        "카드 취소 요청 수신",
+        `cancel=${cancel.cancelId} 금액=${cancel.amount}원 결제키=${cancel.paymentKey}`,
+      );
+      try {
+        await handleCancelDispatch(cancel);
+      } finally {
+        busy = false;
+        goIdle();
+        log.info("waiting payment intent", "다음 결제 요청을 기다립니다.");
+      }
       return;
     }
 
@@ -922,6 +997,335 @@ async function handleDispatch(d: PendingDispatch) {
   log.error("결제 실패", new Error(failMsg), `dispatch=${d.dispatchId}`);
   await reportDispatchResult(d.dispatchId, { status: "FAILED", reason: failMsg }).catch(() => {});
   await cancelPayment(d.paymentKey, "sdk failed").catch(() => {});
+}
+
+// ─── 카드 취소 처리 (0.3.15~) ─────────────────────────────────────────
+
+/** 결과 화면을 원장이 읽을 시간을 준다. 이 동안 폴링은 busy 로 잠겨 있다. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 원장이 걸어 둔 카드 취소를 단말기에서 집행한다.
+ *
+ * ══ 이 함수를 결제와 다르게 쓴 곳 세 군데 ══
+ *
+ *   1. requestPaymentCancel 은 **딱 한 번** 부른다. 어떤 경우에도 다시 부르지
+ *      않는다. 결제는 실패하면 다시 걸면 되지만, 취소는 실패했는지조차 확실치
+ *      않을 때가 있고 그때 다시 걸면 학부모 카드로 돈이 두 번 들어간다.
+ *
+ *   2. SDK 호출이 **예외로 끝나면 FAILED 가 아니라 TIMEOUT 으로 보고한다.**
+ *      결제 쪽 handleDispatch 는 같은 상황에서 FAILED 로 보고하는데, 여기서
+ *      그렇게 하면 서버가 "카드를 안 건드렸구나" 하고 재시도를 열어 준다.
+ *      예외가 카드를 건드리기 전에 났는지 후에 났는지 우리는 알 수 없다.
+ *      모르는 것은 모른다고 보고해야 한다. TIMEOUT 이 우리 체계에서 "모른다" 다.
+ *
+ *   3. 결과 보고는 **아웃박스를 거친다.** 카드에서 돈이 돌아갔다는 사실을
+ *      서버가 알아야만 장부에 음수 행이 적힌다. 이 보고가 유실되면 원장이
+ *      겪었던 그 사고 — "카드는 됐는데 장부는 모른다" — 가 방향만 바꿔 재현된다.
+ */
+async function handleCancelDispatch(c: PendingCancel) {
+  // ── (a) 카드를 건드릴 수 없는 게 확실한 경우들. 여기서는 FAILED 가 맞다. ──
+  //        ack 보다 앞에 둔다. 집어 놓고 못 하면 서버 쪽 행이 DELIVERED 로 묶여
+  //        5분간 아무도 손대지 못하는 상태가 된다.
+  if (!sdk) {
+    log.error("카드 취소 불가", new Error("SDK 없음"), `cancel=${c.cancelId}`);
+    await enqueueCancelReport(c, "FAILED", { reason: "sdk unavailable" });
+    return;
+  }
+  if (typeof sdk.payment.requestPaymentCancel !== "function") {
+    // 구형 펌웨어다. 카드는 확실히 건드려지지 않았으므로 FAILED 로 보고해도
+    // 안전하다 (서버가 재시도를 허용하지만, 다시 걸어도 같은 자리에서 멈춘다).
+    log.error(
+      "카드 취소 불가",
+      new Error("requestPaymentCancel 없음"),
+      `cancel=${c.cancelId} — 이 단말기 펌웨어는 취소 API 를 제공하지 않습니다. ` +
+        `토스 사장님 앱에서 직접 취소한 뒤 원장 화면에서 장부에만 반영해 주세요.`,
+    );
+    await enqueueCancelReport(c, "FAILED", {
+      reason: "이 단말기 펌웨어에 requestPaymentCancel 이 없습니다.",
+    });
+    return;
+  }
+
+  // ── (b) 선점. 실패하면 절대 SDK 를 부르지 않는다. ──
+  //        다른 폴링 사이클이 이미 집어갔다는 뜻이고, 그 사이클이 지금 카드를
+  //        취소하는 중일 수 있다. 여기서 밀어붙이면 이중 취소다.
+  try {
+    await ackCancel(c.cancelId);
+    log.info("카드 취소 ack", `cancel=${c.cancelId} DELIVERED 로 표시했습니다.`);
+  } catch (err) {
+    log.warn(
+      "카드 취소 ack 실패",
+      `cancel=${c.cancelId} — 다른 사이클이 이미 집어간 것으로 보고 취소를 걸지 않습니다. ` +
+        `[${describeErr(err).slice(0, 160)}]`,
+    );
+    return;
+  }
+
+  showCancelBusy(c.amount);
+
+  // ── (c) 진행중 표식. SDK 를 부르기 **전에** 남긴다. ──
+  //        여기서 앱이 죽으면 카드 상태를 아무도 모른다. 표식이 있어야 다음
+  //        부팅에서 "취소를 걸다 끊겼다" 는 사실이라도 서버에 알릴 수 있다.
+  const marked = markInflight(
+    outboxStorage,
+    { cancelId: c.cancelId, paymentKey: c.paymentKey, startedAt: Date.now() },
+    (msg) => log.warn("취소 표식 실패", msg),
+  );
+  if (!marked) {
+    // 표식을 못 남겼다고 취소를 포기하지는 않는다. 원장이 요청한 일이고,
+    // 표식이 없으면 "앱이 죽었을 때" 만 손해다. 다만 그 사실은 남긴다.
+    log.warn(
+      "취소 표식 없이 진행",
+      `cancel=${c.cancelId} — 취소 도중 앱이 종료되면 결과를 복구하지 못합니다.`,
+    );
+  }
+
+  // ── (d) 단 한 번의 호출. ──
+  let result: PaymentResult;
+  try {
+    log.info(
+      "requestPaymentCancel 호출",
+      `cancel=${c.cancelId} 금액=${c.amount} 원승인번호=${c.approvalNumber} ` +
+        `공급가=${c.supplyValue} 세액=${c.tax} 할부=${c.installment}`,
+    );
+    result = await sdk.payment.requestPaymentCancel({
+      paymentKey: c.paymentKey,
+      paymentMethod: c.paymentMethod,
+      // 문서: "원거래와 동일한 tax, supplyValue, taxExemptValue 를 전달해요".
+      // 전부 서버가 승인 당시 확정한 값이다. 단말기가 다시 계산하지 않는다.
+      tax: c.tax,
+      supplyValue: c.supplyValue,
+      taxExemptValue: c.taxExemptValue,
+      tip: c.tip,
+      timestamp: c.approvedTimestamp,
+      approvalNumber: c.approvalNumber,
+      installment: c.installment,
+      tid: c.tid,
+      timeoutMs: PAYMENT_TIMEOUT_MS,
+      localeCode: "ko",
+    });
+  } catch (err: any) {
+    clearInflight(outboxStorage);
+    // ⚠️ 여기서 FAILED 로 보고하면 안 된다. 위 (2) 참고.
+    log.error(
+      "requestPaymentCancel 예외",
+      err,
+      `cancel=${c.cancelId} — 카드가 취소됐는지 알 수 없습니다. ` +
+        `자동 재시도를 막기 위해 TIMEOUT 으로 보고합니다. 사장님 앱에서 실물을 확인해 주세요.`,
+    );
+    await enqueueCancelReport(c, "TIMEOUT", {
+      reason: `SDK 예외: ${err?.message ?? String(err)}`,
+    });
+    showFatal(
+      "취소 결과를 확인하지 못했습니다",
+      "카드가 취소됐는지 알 수 없습니다. 토스 사장님 앱에서 취소 여부를 확인해 주세요. " +
+        "확인 전까지 같은 건을 다시 취소하지 마세요.",
+      { onAdmin: openAdminMenu },
+    );
+    await sleep(6000);
+    return;
+  }
+  clearInflight(outboxStorage);
+
+  // ── (e) 결과 보고. 성공했을 때만 서버가 장부에 음수 행을 쓴다. ──
+  const type = result.type as CancelReportResult;
+  let detail: { cancelApprovalNumber?: string; cancelTid?: string; reason?: string };
+
+  if (result.type === "SUCCESS") {
+    // 취소 승인번호·TID 는 원승인의 것이 아니라 **취소 거래의 것**이다.
+    // 나중에 사장님 앱 내역과 대조할 때 이 번호로 찾는다.
+    detail = {
+      cancelApprovalNumber: result.response.approvalNumber ?? undefined,
+      cancelTid: result.response.tid ?? undefined,
+    };
+    log.info(
+      "카드 취소 완료",
+      `cancel=${c.cancelId} 금액=${c.amount}원 취소승인번호=${result.response.approvalNumber ?? "-"}`,
+    );
+  } else {
+    detail = {
+      reason:
+        (result as any).message ??
+        (result as any).reason ??
+        (result as any).code ??
+        "단말기가 사유를 알리지 않았습니다.",
+    };
+    log.warn("카드 취소 미완료", `cancel=${c.cancelId} 결과=${result.type} · ${detail.reason}`);
+  }
+
+  await enqueueCancelReport(c, type, detail);
+
+  // 화면. cardWasCancelled 로 판단한다 — result.type === "CANCELED" 는
+  // "취소 성공" 이 아니라 "사용자가 취소 진행을 물렀다" 이므로 헷갈리면 안 된다.
+  if (cardWasCancelled(type)) {
+    showStatus({
+      title: `${c.amount.toLocaleString()}원 결제취소 완료`,
+      detail:
+        "카드사로 취소 요청이 접수되었습니다. 수납 장부에도 환불로 반영됩니다.\n" +
+        "카드사에 따라 실제 입금까지 2~5영업일이 걸릴 수 있습니다.",
+      actions: [],
+    });
+  } else if (type === "TIMEOUT") {
+    showFatal(
+      "취소 결과를 확인하지 못했습니다",
+      "단말기가 시간 안에 응답하지 못했습니다. 카드가 취소됐는지 알 수 없으므로 " +
+        "토스 사장님 앱에서 확인해 주세요. 확인 전까지 다시 취소하지 마세요.",
+      { onAdmin: openAdminMenu },
+    );
+  } else {
+    showStatus({
+      tone: "error",
+      title: "결제취소가 되지 않았습니다",
+      detail:
+        `카드는 취소되지 않았습니다. (사유: ${String(detail.reason ?? "-").slice(0, 80)})\n` +
+        "원장 화면에서 다시 요청할 수 있습니다.",
+      actions: [],
+    });
+  }
+  await sleep(6000);
+}
+
+/**
+ * 취소 결과를 아웃박스에 적고 즉시 한 번 보내 본다.
+ *
+ * 적는 것이 먼저다. 보내다 실패해도 내용이 단말기에 남아야 다시 보낼 수 있다.
+ * 결제 아웃박스(confirmPaymentFromSdk)와 같은 순서이고, 같은 이유다.
+ */
+async function enqueueCancelReport(
+  c: PendingCancel,
+  result: CancelReportResult,
+  extra: { cancelApprovalNumber?: string; cancelTid?: string; reason?: string },
+) {
+  cancelOutbox = addCancelReport(
+    cancelOutbox,
+    {
+      cancelId: c.cancelId,
+      paymentKey: c.paymentKey,
+      result,
+      cancelApprovalNumber: extra.cancelApprovalNumber,
+      cancelTid: extra.cancelTid,
+      reason: extra.reason,
+    },
+    Date.now(),
+  );
+  persistCancelOutbox();
+  await flushCancelOutbox("취소 직후");
+}
+
+function persistCancelOutbox() {
+  saveCancelOutbox(outboxStorage, cancelOutbox, (msg) =>
+    log.error(
+      "취소 아웃박스 저장 실패",
+      new Error(msg),
+      "앱이 꺼지면 취소 결과 보고가 유실될 수 있습니다.",
+    ),
+  );
+}
+
+/**
+ * 못 보낸 취소 결과를 서버로 밀어낸다. 절대 던지지 않는다.
+ *
+ * 이 재시도는 **안전하다.** 다시 보내는 것은 취소 요청이 아니라 이미 끝난
+ * 취소의 결과이고, 서버는 같은 cancelId 를 두 번 받아도 장부를 한 번만
+ * 움직인다 (금액을 payments 에서 다시 세기 때문이다).
+ */
+async function flushCancelOutbox(reason: string) {
+  if (flushingCancels || cancelOutbox.length === 0) return;
+  flushingCancels = true;
+  try {
+    const due = dueCancelReports(cancelOutbox, Date.now());
+    if (due.length === 0) return;
+
+    log.info(
+      "취소 결과 전송 시작",
+      `대상 ${due.length}건 / 전체 ${cancelOutbox.length}건 · 계기=${reason}`,
+    );
+
+    for (const entry of due) {
+      const { cancelId, paymentKey, result } = entry.payload;
+      const { status, bodyText } = await reportCancelResultRaw(cancelId, {
+        result,
+        cancelApprovalNumber: entry.payload.cancelApprovalNumber,
+        cancelTid: entry.payload.cancelTid,
+        reason: entry.payload.reason,
+      });
+
+      if (isCancelReportSettled(status)) {
+        cancelOutbox = removeCancelReport(cancelOutbox, cancelId);
+        persistCancelOutbox();
+        log.info(
+          "취소 결과 반영 완료",
+          `cancel=${cancelId} 결제키=${paymentKey} 결과=${result}` +
+            (entry.attempts > 0 ? ` · 재시도 ${entry.attempts}회 만에 성공` : "") +
+            (cardWasCancelled(result) ? " — 장부에 환불로 반영되었습니다." : ""),
+        );
+        continue;
+      }
+
+      cancelOutbox = markCancelAttempt(cancelOutbox, cancelId, Date.now(), bodyText);
+      persistCancelOutbox();
+      const attempts =
+        cancelOutbox.find((e) => e.payload.cancelId === cancelId)?.attempts ?? entry.attempts + 1;
+
+      // 카드가 취소된 건의 보고 실패는 그냥 실패가 아니다. 돈은 돌아갔는데
+      // 장부가 모르는 상태이므로 수위를 올린다.
+      if (cardWasCancelled(result)) {
+        log.error(
+          "취소 장부 반영 지연",
+          new Error(bodyText.slice(0, 200)),
+          `cancel=${cancelId} 결제키=${paymentKey} — 카드는 취소됐는데 서버에 알리지 못했습니다.` +
+            ` ${attempts}번째 실패. 성공할 때까지 계속 재시도합니다.`,
+        );
+      } else if (attempts <= 3 || attempts % 10 === 0) {
+        log.warn(
+          "취소 결과 전송 재시도 예정",
+          `cancel=${cancelId} 결과=${result} · ${attempts}번째 실패 · ${bodyText.slice(0, 160)}`,
+        );
+      }
+    }
+  } catch (err) {
+    log.error("취소 결과 전송 중 오류", err, "다음 폴링에서 다시 시도합니다.");
+  } finally {
+    flushingCancels = false;
+  }
+}
+
+/**
+ * 부팅 시, 취소를 걸다가 앱이 죽은 흔적이 있으면 서버에 알린다.
+ *
+ * TIMEOUT 으로 보고하는 이유는 cancelOutbox.ts 헤더에 적었다. 요약하면:
+ * 카드가 취소됐는지 우리는 모르고, SUCCESS 도 FAILED 도 각각 다른 방향의
+ * 사고를 만든다. "모른다" 만이 사실이다.
+ */
+async function recoverInterruptedCancel() {
+  const inflight = readInflight(outboxStorage);
+  if (!inflight) return;
+
+  log.error(
+    "취소 도중 종료 흔적 발견",
+    new Error("cancel inflight marker"),
+    `cancel=${inflight.cancelId} 결제키=${inflight.paymentKey} — 취소를 거는 중에 앱이 종료되었습니다.` +
+      ` 카드 취소 여부를 알 수 없어 TIMEOUT 으로 보고합니다. 사장님 앱에서 실물을 확인해 주세요.`,
+  );
+
+  cancelOutbox = addCancelReport(
+    cancelOutbox,
+    {
+      cancelId: inflight.cancelId,
+      paymentKey: inflight.paymentKey,
+      result: "TIMEOUT",
+      reason: "취소 요청 도중 단말기 앱이 종료되어 결과를 받지 못했습니다.",
+    },
+    Date.now(),
+  );
+  persistCancelOutbox();
+  clearInflight(outboxStorage);
+  // 같은 건을 이 부팅에서 다시 집지 않는다.
+  handledCancelIds.add(inflight.cancelId);
+  await flushCancelOutbox("부팅 · 중단된 취소");
 }
 
 // ─── 영수증 출력 (승인 이후 부가 단계) ───────────────────────────────

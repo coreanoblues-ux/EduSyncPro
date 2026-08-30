@@ -286,6 +286,8 @@ export async function reportCancelResultRaw(
     cancelApprovalNumber?: string;
     cancelTid?: string;
     reason?: string;
+    /** 허용목록을 통과한 응답 요약만 온다. 서버 cancelResultSchema.raw. */
+    raw?: unknown;
   },
 ): Promise<{ status: number | null; bodyText: string }> {
   try {

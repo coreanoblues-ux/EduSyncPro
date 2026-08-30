@@ -55,6 +55,13 @@ export interface CancelReportPayload {
   cancelApprovalNumber?: string;
   cancelTid?: string;
   reason?: string;
+  /**
+   * 감사용 응답 요약. 허용목록을 통과한 필드만 들어온다 (sdkError.safeRawSummary).
+   * 실패 한 건에서 최대한 건지기 위한 것이다 — reason 한 줄로는 부족했다.
+   * optional 인 이유: 이 필드가 없던 시절 단말기에 저장된 아웃박스 항목이
+   * 그대로 남아 있을 수 있다.
+   */
+  raw?: unknown;
 }
 
 export interface CancelOutboxEntry {

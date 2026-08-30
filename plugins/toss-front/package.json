@@ -1,6 +1,6 @@
 {
   "name": "@edusyncpro/toss-front-plugin",
-  "version": "0.3.16",
+  "version": "0.3.17",
   "private": true,
   "description": "EduSyncPro Toss Front 2 결제 단말기 모드 플러그인. 태블릿(웹) 이 만든 결제요청을 1초 폴링으로 받아 카드 승인만 처리한다.",
   "type": "module",

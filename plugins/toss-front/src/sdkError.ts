@@ -64,3 +64,86 @@ export function isPaymentNotFound(err: any): boolean {
   const re = new RegExp(`\\b${PAYMENT_NOT_FOUND}\\b`);
   return errCodeCandidates(err).some((c) => c === PAYMENT_NOT_FOUND || re.test(c));
 }
+
+/* ───────────────────────── 취소 실패 진단 ─────────────────────────
+ *
+ * 카드 취소가 실패했을 때 단말기에서 서버로 넘어가는 정보는 실질적으로
+ * failure_reason **한 줄뿐이다.** raw_response_json 컬럼은 있었지만 단말기가
+ * 아무것도 보내지 않아 늘 null 이었다.
+ *
+ * 그 한 줄마저 이렇게 만들어지고 있었다:
+ *
+ *   result.message ?? result.reason ?? result.code ?? "사유를 알리지 않았습니다"
+ *
+ * 또 ?? 사슬이다. FAILED 가 { code: "...", message: "취소 실패" } 로 오면
+ * 쓸모없는 message 가 먼저 잡히고 **정작 필요한 code 는 버려진다.**
+ * errCode 에서 고친 것과 같은 실수를, 하필 진단 정보를 만드는 자리에서
+ * 한 번 더 하고 있었다.
+ *
+ * 이게 왜 급한가: 원장님께는 시험용 1,000원 결제가 **하나뿐이다.** 그 한 번의
+ * 취소가 실패했을 때 "사유를 알리지 않았습니다" 만 남으면 다음에 무엇을 고쳐야
+ * 할지 알 수 없고, 시험할 결제도 더 없다. 한 번의 실패에서 최대한 건져야 한다.
+ */
+
+/** 서버 cancelResultSchema 의 reason 제한. 넘기면 400 → 단말기가 영원히 재전송한다. */
+export const MAX_REASON_LEN = 300;
+
+/**
+ * 실패 결과에서 사람이 읽을 진단 한 줄을 만든다.
+ * 하나를 고르지 않고 **있는 것을 전부 붙인다.** 무엇이 결정적 단서인지
+ * 지금은 알 수 없기 때문이다.
+ */
+export function describeFailure(result: any): string {
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  for (const key of ["code", "errorCode", "message", "reason"] as const) {
+    const v = result?.[key];
+    if (typeof v !== "string") continue;
+    const s = v.trim();
+    if (s === "" || seen.has(s)) continue;   // 같은 문자열이 code 와 message 에 겹쳐 오는 펌웨어가 있다
+    seen.add(s);
+    parts.push(`${key}=${s}`);
+  }
+  if (parts.length === 0) return "단말기가 사유를 알리지 않았습니다.";
+  return parts.join(" | ").slice(0, MAX_REASON_LEN);
+}
+
+/**
+ * 감사 기록으로 보낼 응답 요약.
+ *
+ * ⚠️ **허용목록으로만 고른다.** 금지목록이 아니다.
+ *    PaymentResponseSuccess 에는 `card.number`(마스킹됐다지만 카드번호 자리다) 와
+ *    무엇이 들었는지 알 수 없는 `raw?: any` 가 있다. 통째로 보내면 그게 그대로
+ *    우리 DB 에 박힌다. 그래서 "아는 안전한 것만" 통과시킨다. 새 펌웨어가 필드를
+ *    늘려도 이 목록에 없으면 자동으로 걸러진다 — 안전한 쪽으로 틀리게 만든다.
+ */
+const SAFE_KEYS = [
+  "type", "code", "errorCode", "message", "reason",
+  "paymentKey", "orderId", "amount", "paymentMethod",
+  "approvalNumber", "approvedAt", "tid", "van", "vanTransactionKey",
+] as const;
+const SAFE_CARD_KEYS = ["issuerName", "acquirerName", "cardType", "installmentMonths"] as const;
+
+export function safeRawSummary(result: any): Record<string, unknown> | null {
+  if (result == null || typeof result !== "object") return null;
+  const out: Record<string, unknown> = {};
+  const take = (src: any, keys: readonly string[], into: Record<string, unknown>) => {
+    for (const k of keys) {
+      const v = src?.[k];
+      if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") into[k] = v;
+    }
+  };
+  take(result, SAFE_KEYS, out);
+  const resp = result.response;
+  if (resp && typeof resp === "object") {
+    const r: Record<string, unknown> = {};
+    take(resp, SAFE_KEYS, r);
+    if (resp.card && typeof resp.card === "object") {
+      const c: Record<string, unknown> = {};
+      take(resp.card, SAFE_CARD_KEYS, c);   // card.number 는 목록에 없다. 의도적이다.
+      if (Object.keys(c).length > 0) r.card = c;
+    }
+    if (Object.keys(r).length > 0) out.response = r;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}

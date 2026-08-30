@@ -88,7 +88,15 @@ import {
   type CancelOutboxEntry,
   type CancelReportResult,
 } from "./cancelOutbox";
-import { PAYMENT_NOT_FOUND, errCode, isPaymentNotFound } from "./sdkError";
+import {
+  MAX_REASON_LEN,
+  PAYMENT_NOT_FOUND,
+  describeFailure,
+  errCode,
+  errCodeCandidates,
+  isPaymentNotFound,
+  safeRawSummary,
+} from "./sdkError";
 import {
   showIdle,
   showAdminMenu,
@@ -1131,7 +1139,11 @@ async function handleCancelDispatch(c: PendingCancel) {
         `자동 재시도를 막기 위해 TIMEOUT 으로 보고합니다. 사장님 앱에서 실물을 확인해 주세요.`,
     );
     await enqueueCancelReport(c, "TIMEOUT", {
-      reason: `SDK 예외: ${err?.message ?? String(err)}`,
+      // 후보를 전부 남긴다. 예외 하나에서 최대한 건져야 한다.
+      reason: `SDK 예외: ${errCodeCandidates(err).join(" | ") || String(err)}`.slice(
+        0,
+        MAX_REASON_LEN,
+      ),
     });
     showFatal(
       "취소 결과를 확인하지 못했습니다",
@@ -1146,7 +1158,15 @@ async function handleCancelDispatch(c: PendingCancel) {
 
   // ── (e) 결과 보고. 성공했을 때만 서버가 장부에 음수 행을 쓴다. ──
   const type = result.type as CancelReportResult;
-  let detail: { cancelApprovalNumber?: string; cancelTid?: string; reason?: string };
+  let detail: {
+    cancelApprovalNumber?: string;
+    cancelTid?: string;
+    reason?: string;
+    raw?: unknown;
+  };
+  // 성공이든 실패든 응답 요약을 남긴다. 허용목록을 통과한 필드만 들어간다
+  // (카드번호·정체불명의 raw 는 걸러진다). 서버 raw_response_json 으로 간다.
+  const rawSummary = safeRawSummary(result);
 
   if (result.type === "SUCCESS") {
     // 취소 승인번호·TID 는 원승인의 것이 아니라 **취소 거래의 것**이다.
@@ -1154,18 +1174,18 @@ async function handleCancelDispatch(c: PendingCancel) {
     detail = {
       cancelApprovalNumber: result.response.approvalNumber ?? undefined,
       cancelTid: result.response.tid ?? undefined,
+      raw: rawSummary ?? undefined,
     };
     log.info(
       "카드 취소 완료",
       `cancel=${c.cancelId} 금액=${c.amount}원 취소승인번호=${result.response.approvalNumber ?? "-"}`,
     );
   } else {
+    // ?? 사슬을 쓰지 않는다. code 와 message 가 같이 오면 둘 다 남겨야 한다 —
+    // 어느 쪽이 결정적 단서인지 지금은 모르고, 시험할 결제는 1,000원 한 건뿐이다.
     detail = {
-      reason:
-        (result as any).message ??
-        (result as any).reason ??
-        (result as any).code ??
-        "단말기가 사유를 알리지 않았습니다.",
+      reason: describeFailure(result),
+      raw: rawSummary ?? undefined,
     };
     log.warn("카드 취소 미완료", `cancel=${c.cancelId} 결과=${result.type} · ${detail.reason}`);
   }
@@ -1211,7 +1231,7 @@ async function handleCancelDispatch(c: PendingCancel) {
 async function enqueueCancelReport(
   c: PendingCancel,
   result: CancelReportResult,
-  extra: { cancelApprovalNumber?: string; cancelTid?: string; reason?: string },
+  extra: { cancelApprovalNumber?: string; cancelTid?: string; reason?: string; raw?: unknown },
 ) {
   cancelOutbox = addCancelReport(
     cancelOutbox,
@@ -1222,6 +1242,7 @@ async function enqueueCancelReport(
       cancelApprovalNumber: extra.cancelApprovalNumber,
       cancelTid: extra.cancelTid,
       reason: extra.reason,
+      raw: extra.raw,
     },
     Date.now(),
   );
@@ -1265,6 +1286,7 @@ async function flushCancelOutbox(reason: string) {
         cancelApprovalNumber: entry.payload.cancelApprovalNumber,
         cancelTid: entry.payload.cancelTid,
         reason: entry.payload.reason,
+        raw: entry.payload.raw,
       });
 
       if (isCancelReportSettled(status)) {

@@ -43,6 +43,7 @@ import {
   cardCancelDeviceRouter,
   startCancelExpirySweeper,
 } from "./toss-front/cardCancelRoutes";
+import { ensureCardCancelSchema } from "./toss-front/cardCancelSchema";
 import tossPluginLogRouter from "./toss-front/pluginLogs";
 import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
@@ -1831,6 +1832,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.use("/api/toss-front", cardCancelDeviceRouter); // deviceGuard: Front 단말기
   // 만료(3분 초과)된 dispatch를 30초 주기로 TIMEOUT으로 정리.
   startDispatchExpirySweeper();
+  // 카드취소 테이블을 서버가 직접 만든다. 운영 DB 는 Railway 안에 있어서 개발 PC 의
+  // 마이그레이션 스크립트가 닿지 않는다 — 붙어 있는 쪽이 만드는 게 맞다.
+  // 실패해도 던지지 않으므로 await 가 기동을 막지 않는다 (cardCancelSchema.ts 참고).
+  //
+  // 스위퍼보다 먼저 await 하는 이유: 순서가 바뀌면 테이블이 생기기 전에 스위퍼가
+  // 첫 tick 을 돌아 "relation does not exist" 를 로그에 뱉는다. 기능상 문제는
+  // 없지만, 배포 직후 로그에 빨간 줄이 뜨면 사람이 그걸 쫓느라 시간을 쓴다.
+  await ensureCardCancelSchema();
   // 만료된 카드취소(5분)를 TIMEOUT 으로 정리. 별도 스위퍼인 이유는 실패 반경을
   // 나누기 위함이다 — 취소 정리가 죽어도 결제 정리는 계속 돌아야 한다.
   startCancelExpirySweeper();

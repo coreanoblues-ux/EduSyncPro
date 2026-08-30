@@ -4,7 +4,10 @@
  * 스펙 (Toss 공식 Open API v1):
  *   HTTP 헤더:
  *     x-toss-timestamp   유닉스 밀리초. 서명 검증 message 의 앞쪽.
- *     x-toss-signature   base64(HMAC-SHA256(secret, `${timestamp}.${rawBody}`))
+ *     x-toss-signature   "v1=" + hex(HMAC-SHA256(secret, `${timestamp}.${rawBody}`))
+ *                        ⚠️ 2026-08-30 이전 이 파일은 base64 로 비교하고 접두사도
+ *                        떼지 않아 **모든 웹훅이 401** 이었다. 검증은 이제
+ *                        webhookSignature.ts 의 순수 함수가 담당한다.
  *     x-toss-webhook-id  전송 단위 식별자. 재전송 시 값이 같음 → 멱등 키.
  *   HTTP 본문(JSON):
  *     {
@@ -36,7 +39,6 @@
  */
 
 import { Router, Request, Response } from "express";
-import crypto from "crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
@@ -47,6 +49,11 @@ import {
 } from "@shared/schema";
 import { webhookCancelAmount } from "./refund";
 import { getOrCreateSystemUserId } from "./ledgerUser";
+import {
+  SIGNATURE_AGE_WARN_MS,
+  signatureAgeMs,
+  verifyTossSignature,
+} from "./webhookSignature";
 
 const router = Router();
 
@@ -58,18 +65,38 @@ if (!WEBHOOK_SECRET) {
 }
 
 // ─── 서명 검증 ────────────────────────────────────────────────────────
-function verifySignature(rawBody: string, timestamp: string, signature: string): boolean {
-  if (!WEBHOOK_SECRET) return false;
-  const message = `${timestamp}.${rawBody}`;
-  const expected = crypto
-    .createHmac("sha256", WEBHOOK_SECRET)
-    .update(message, "utf8")
-    .digest("base64");
-  // 길이 다르면 timingSafeEqual이 예외. Buffer 만든 뒤 사이즈 체크.
-  const aBuf = Buffer.from(expected, "base64");
-  const bBuf = Buffer.from(signature, "base64");
-  if (aBuf.length !== bBuf.length) return false;
-  return crypto.timingSafeEqual(aBuf, bBuf);
+// 계산은 webhookSignature.ts (순수·테스트 가능). 여기서는 환경변수를 붙이고
+// 결과를 로그로 남기는 일만 한다.
+function verifySignature(
+  rawBody: string,
+  timestamp: string,
+  signature: string
+): { ok: boolean; detail: string } {
+  const result = verifyTossSignature(rawBody, timestamp, signature, WEBHOOK_SECRET);
+
+  if (!result.valid) {
+    return { ok: false, detail: result.reason };
+  }
+
+  // 문서 규격은 hex 다. base64 가 실제로 관찰되면 문서와 현실이 다르다는 뜻이므로
+  // 반드시 눈에 띄게 남긴다 (조용히 통과시키면 영원히 모른다).
+  if (result.encoding === "base64") {
+    console.warn(
+      "⚠️  웹훅 서명이 base64 로 도착했습니다. 토스 문서 규격은 hex 입니다. " +
+        "이 로그가 계속 보이면 webhookSignature.ts 의 폴백을 유지해야 합니다."
+    );
+  }
+
+  // 시계 어긋남은 알리되 거절하지 않는다 (이유는 webhookSignature.ts 주석 참고).
+  const age = signatureAgeMs(timestamp);
+  if (age !== null && age > SIGNATURE_AGE_WARN_MS) {
+    console.warn(
+      `⚠️  웹훅 타임스탬프가 현재 시각과 ${Math.round(age / 60000)}분 벌어져 있습니다. ` +
+        "재전송이거나 서버 시계가 어긋났을 수 있습니다 (처리는 계속합니다)."
+    );
+  }
+
+  return { ok: true, detail: result.encoding };
 }
 
 // ─── 엔드포인트 ───────────────────────────────────────────────────────
@@ -100,8 +127,9 @@ router.post("/webhooks", async (req: Request, res: Response) => {
     return res.status(400).json({ error: "필수 헤더 또는 본문이 없습니다." });
   }
 
-  const signatureValid = verifySignature(rawBody, timestamp, signature);
-  if (!signatureValid) {
+  const sig = verifySignature(rawBody, timestamp, signature);
+  if (!sig.ok) {
+    console.warn(`웹훅 서명 검증 실패 (${webhookId}): ${sig.detail}`);
     await insertOrIgnoreEvent(webhookId, {
       eventId,
       deliveryId,
@@ -109,7 +137,9 @@ router.post("/webhooks", async (req: Request, res: Response) => {
       signatureValid: false,
       status: "FAILED",
       payloadJson: rawBody,
-      errorMessage: "signature mismatch",
+      // 원인을 구분해서 남긴다. "시크릿 미설정"과 "서명 불일치"는 원장이 해야 할
+      // 일이 완전히 다르다 (환경변수 설정 vs 토스 콘솔에서 시크릿 재확인).
+      errorMessage: `signature: ${sig.detail}`,
     });
     // 서명 실패는 401로 알려 Toss가 재발송을 멈추게 한다 — 시크릿이 바뀐 상황일 수 있어
     // 계속 재시도하게 두면 로그 폭탄이 된다.

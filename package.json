@@ -19,6 +19,7 @@
     "test:payment-status": "tsx scripts/test-payment-status.ts",
     "test:recovery": "tsx scripts/test-recovery.ts",
     "test:outbox": "tsx scripts/test-confirm-outbox.ts",
+    "test:webhook-sig": "tsx scripts/test-webhook-signature.ts",
     "test:ledger-reflection": "tsx scripts/test-ledger-reflection.ts",
     "test:resilience": "tsx scripts/test-server-resilience.ts",
     "test:cors": "tsx scripts/test-cors.ts",

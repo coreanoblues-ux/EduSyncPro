@@ -54,3 +54,28 @@ export function toEpochMillis(raw: unknown): number | null {
   if (ms < 631_152_000_000 || ms > 4_102_444_800_000) return null;
   return ms;
 }
+
+/**
+ * 취소 요청에 tid 를 실을지 말지 정한다.
+ *
+ * ── 왜 판단이 필요한가 (0.3.19) ──
+ *   문서에서 tid 는 **선택** 값이다 (`tid | string | 선택 | 결제 TID (CAT ID)`).
+ *   그런데 우리는 지금까지 값이 있든 없든 무조건 실어 보냈다.
+ *
+ *   승인 응답에 tid 가 없으면 confirm 은 `r.tid ?? null` 로 서버에 null 을 적고,
+ *   그 null 은 취소 요청까지 내려오면서 빈 문자열이 된다. 그러면 우리는
+ *   단말기에게 **"tid 가 '' 인 거래를 찾아라"** 라고 말한 셈이 된다. 어떤 거래도
+ *   그 조건에 맞지 않으니 결과는 "원거래 없음" 이다.
+ *
+ *   "없는 값" 과 "빈 값" 은 다르다. 없으면 키를 빼야 한다.
+ *   toEpochMillis 가 "해석 못 하면 부르지 않는다" 인 것과 같은 결의 규칙이다.
+ *
+ * 반환값을 그대로 펼쳐 쓰도록(`...cancelTidField(c.tid)`) 객체로 준다.
+ * 호출부에서 삼항 연산자를 쓰면 그 판단이 또 시험할 수 없는 자리로 숨는다.
+ */
+export function cancelTidField(raw: unknown): { tid?: string } {
+  if (typeof raw !== "string") return {};
+  const tid = raw.trim();
+  if (tid === "") return {};
+  return { tid };
+}

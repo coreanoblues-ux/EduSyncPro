@@ -18,27 +18,66 @@
  *      그 기능만 건너뛴다 (예: renderIdlePage 가 없으면 자체 대기화면으로 대체).
  */
 
-import { log } from "./logger";
+import { describeError, log } from "./logger";
 
-// SDK 공식 응답 형태 (Toss Front 2 Plugin SDK 문서 기준).
+/**
+ * CARD 승인 성공 응답. **공식 문서 기준으로 다시 썼다 (0.3.19).**
+ *
+ * ⚠️ 0.3.18 까지 이 타입은 우리가 상상해서 쓴 것이었다. 이렇게 적혀 있었다:
+ *
+ *      approvalNumber?: string;      // ← 최상위에 없다
+ *      approvedAt: string;           // ← 아예 존재하지 않는다
+ *      card?: { approveNo?: string; installmentMonths?: number };
+ *      van?: string;                 // ← card 안에 있다
+ *
+ *    문서의 실제 구조는 아래와 같다:
+ *
+ *      response.paymentMethod
+ *      response.tid
+ *      response.vanTransactionKey
+ *      response.card.timestamp        ← 승인 시각 (원거래 조회 키)
+ *      response.card.approvalNumber   ← 승인번호  (원거래 조회 키)
+ *      response.card.installment
+ *      response.card.van
+ *      response.card.shopCode
+ *
+ *    존재하지 않는 필드를 읽으면 undefined 가 나오고, 우리 코드는 그 자리에
+ *    "복구" 와 `new Date()` 를 채워 넣었다. 그 두 값이 그대로 취소 조회 키가 되어
+ *    현장에서 "원거래 없음" 을 세 번 만들었다. 이 저장소에서 **네 번째** 로
+ *    "내가 쓴 타입 선언이 사실인 줄 알았다" 가 사고의 원인이 된 사례다.
+ *
+ *    그래서 필수/선택 표기도 문서를 따른다. amount·paymentKey·orderId 는
+ *    응답에 없다 — 그 값들은 우리가 요청할 때 쓴 값을 그대로 들고 있어야 한다.
+ */
 export type PaymentResponseSuccess = {
-  paymentKey: string;
-  orderId?: string;
-  amount: number;
   paymentMethod: "CARD" | "CASH" | "BARCODE";
-  approvalNumber?: string;
-  approvedAt: string; // ISO
+  tid?: string;
+  vanTransactionKey?: string;
   card?: {
-    number?: string; // masked
+    /** 승인 시각(epoch ms). **원거래 조회 키.** 예) 1723628943812 */
+    timestamp?: number;
+    /** 승인번호. **원거래 조회 키.** 앞자리 0 이 의미를 가지므로 문자열로 다룬다. */
+    approvalNumber?: string;
+    /** 할부 개월. 일시불은 0. */
+    installment?: number;
+    van?: string;
+    shopCode?: string;
+    /** 마스킹된 카드번호. 표시용이며 저장·전송하지 않는 편이 안전하다. */
+    number?: string;
     issuerName?: string;
     acquirerName?: string;
     cardType?: string;
-    installmentMonths?: number;
-    approveNo?: string;
   };
+
+  // ── 아래는 "있으면 쓰고 없으면 만다" 는 대비용이다. 문서에는 없다. ──
+  //    approval.ts 가 공식 필드를 먼저 보고, 이 이름들은 그 다음에만 본다.
+  //    ⚠️ 이 필드들이 **있을 것이라고 가정하고 코드를 쓰면 안 된다.** 그게 이번 사고다.
+  paymentKey?: string;
+  orderId?: string;
+  amount?: number;
+  approvalNumber?: string;
+  approvedAt?: string;
   van?: string;
-  tid?: string;
-  vanTransactionKey?: string;
   raw?: any;
 };
 
@@ -147,7 +186,12 @@ export interface TossFrontSdk {
       /** 원승인번호. */
       approvalNumber: string;
       installment: number;
-      tid: string;
+      /**
+       * 결제 TID (CAT ID). 문서상 **선택** 값이다 (`tid | string | 선택`).
+       * 그러므로 없을 때는 빈 문자열을 채워 넣지 말고 키 자체를 빼야 한다.
+       * 빈 문자열은 "없음" 이 아니라 "빈 값으로 찾아라" 로 읽힐 수 있다.
+       */
+      tid?: string;
       timeoutMs?: number;
       localeCode?: string;
     }): Promise<PaymentResult>;
@@ -312,6 +356,65 @@ function describeTemplateApi(template: NonNullable<TossFrontSdk["template"]>): s
 /** template API 모양은 부팅당 한 번만 남긴다. 대기화면은 자주 다시 그려지므로 로그가 밀린다. */
 let templateApiLogged = false;
 
+/** SDK 의 React 앱이 마운트하는 컨테이너. index.html 이 만들어 두는 노드다. */
+const TEMPLATE_CONTAINER_ID = "root";
+
+/**
+ * renderIdlePage 를 부르기 **전에** 마운트 지점이 실제로 문서에 붙어 있는지 본다.
+ *
+ * ── 왜 (React #299) ──
+ *   sdk.template.* 는 내부에서 createRoot(document.getElementById("root")) 를 한다.
+ *   그 노드가 없으면 createRoot(null) 이 되어 단말기에 이 문구가 뜬다:
+ *       Minified React error #299 = "Target container is not a DOM element"
+ *
+ *   index.html 은 이 노드를 스크립트보다 위에 두고, 우리 코드는 이 노드를 절대
+ *   지우지 않는다(screen.ts 는 자기 전용 #edusync-front-root 만 만들고 지운다).
+ *   그런데도 여기서 한 번 더 확인하는 이유는 두 가지다:
+ *
+ *     1. 우리가 확인할 수 없는 것이 남아 있다. 단말기 웹뷰가 문서를 다시 그리거나
+ *        SDK 가 자기 화면을 넘겨받으며 노드를 치우는 경우를 우리는 못 본다.
+ *     2. **없을 때 할 수 있는 일이 있다.** div 하나 만들어 붙이는 것은 공짜이고
+ *        되돌릴 필요도 없다. 없는 채로 부르면 예외로 죽고 대기화면이 사라진다.
+ *
+ *   즉 이 함수는 추측으로 덧붙인 fallback 이 아니라, **실패가 확정된 호출을 하지
+ *   않기 위한 관문**이다. 취소 쪽에서 "해석 못 하면 부르지 않는다" 와 같은 결이다.
+ *
+ * 만들어 넣기만 하고 지우지 않는다. 내용도 건드리지 않는다 — 그 안은 SDK 것이다.
+ *
+ * @returns 컨테이너를 확보했으면 true.
+ */
+function ensureTemplateContainer(): boolean {
+  if (typeof document === "undefined") return false;
+  const existing = document.getElementById(TEMPLATE_CONTAINER_ID);
+  // isConnected: 노드가 만들어져 있어도 문서에서 떨어져 있으면 createRoot 는 같은
+  // 이유로 실패한다. "있다" 와 "붙어 있다" 는 다른 사실이다.
+  if (existing && existing.isConnected) return true;
+
+  if (!document.body) {
+    log.warn(
+      "템플릿 컨테이너 없음",
+      `#${TEMPLATE_CONTAINER_ID} 를 만들 body 가 아직 없습니다. 자체 대기화면으로 갑니다.`,
+    );
+    return false;
+  }
+
+  // 떨어져 있는 헌 노드가 있으면 치우고 새로 붙인다. 둘이 공존하면
+  // getElementById 가 어느 쪽을 주는지에 따라 증상이 오락가락한다.
+  if (existing) existing.remove();
+  const el = document.createElement("div");
+  el.id = TEMPLATE_CONTAINER_ID;
+  // 부팅 문구(#boot, position:fixed)보다 뒤에 붙는다. 덮개는 렌더 성공이
+  // 확인된 뒤에 confirmTemplateRendered 가 걷는다 — 순서는 0.3.9 그대로다.
+  document.body.appendChild(el);
+  log.warn(
+    "템플릿 컨테이너 재생성",
+    `#${TEMPLATE_CONTAINER_ID} 가 문서에 없어 다시 만들었습니다. ` +
+      `이 줄이 보이면 index.html 의 노드가 어딘가에서 사라진 것입니다 — ` +
+      `React #299(Target container is not a DOM element) 로 죽기 전에 막았습니다.`,
+  );
+  return true;
+}
+
 /**
  * 유휴 화면을 그린다.
  *
@@ -349,12 +452,23 @@ export function renderIdle(
         `renderIdlePage 선언 인자수=${sdk.template.renderIdlePage.length} · template=${describeTemplateApi(sdk.template)}`
       );
     }
+    // 마운트 지점이 없으면 부르지 않는다. 부르면 React #299 로 죽고, 죽으면
+    // 대기화면이 통째로 사라진다. 확보에 실패했을 때만 자체 화면으로 내려간다.
+    if (!ensureTemplateContainer()) {
+      fallback();
+      return false;
+    }
     try {
       sdk.template.renderIdlePage(params);
       log.info("renderIdlePage 호출 성공", `type=${params?.type ?? "(인자 없음)"}`);
       return true;
     } catch (err) {
-      log.error("renderIdlePage 실패", err, "인자 없이 기본 대기화면으로 다시 시도합니다.");
+      // warn 이다. 여기서 끝난 것이 아니라 바로 아래에서 한 번 더 시도한다.
+      // error 로 찍으면 원장 화면 진단 줄이 빨갛게 차서, 정작 봐야 할 줄을 덮는다.
+      log.warn(
+        "renderIdlePage 실패 — 기본 화면으로 재시도",
+        `${describeError(err)} · 이 펌웨어가 params 를 모를 수 있습니다.`,
+      );
       try {
         sdk.template.renderIdlePage();
         log.info("renderIdlePage 기본 호출 성공", "인자 없는 기본 대기화면으로 그렸습니다.");

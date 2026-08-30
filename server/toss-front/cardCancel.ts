@@ -67,6 +67,28 @@ export const RETRYABLE_CANCEL_STATES: readonly CancelDispatchStatus[] = ["FAILED
 /** 아직 단말기에서 처리 중이라 새 요청을 받으면 안 되는 상태. */
 export const OPEN_CANCEL_STATES: readonly CancelDispatchStatus[] = ["PENDING", "DELIVERED"];
 
+/**
+ * 승인번호 자리에 들어와 있지만 **승인번호가 아닌** 문자열들.
+ *
+ * toss_payment_transactions.approval_number 는 NOT NULL 이다. "값이 없다" 를
+ * 표현할 자리가 없어서, 승인번호를 못 얻은 경로들이 각자 표식을 적어 넣었다:
+ *
+ *   "WEBHOOK" — 웹훅으로만 확인된 결제. 단말기 승인 응답을 받은 적이 없다.
+ *   "복구"     — 0.3.18 까지 플러그인이 적던 값. **이번 "원거래 없음" 사고의
+ *                원인이 정확히 이것이다.** 승인 응답의 실제 구조는
+ *                `response.card.approvalNumber` 인데 우리는 `response.approvalNumber`
+ *                를 읽고 있었고, 없으니 이 문자열로 채웠다. 그리고 취소할 때
+ *                그 문자열을 원거래 조회 키로 단말기에 보냈다. 찾힐 리가 없다.
+ *   "UNKNOWN" — 0.3.19 부터 쓰는 표식. 값이 없다는 사실을 **숨기지 않기 위해**
+ *                일부러 눈에 띄는 값을 넣는다. 플러그인의
+ *                approval.ts:UNKNOWN_APPROVAL_NUMBER 와 같은 문자열이어야 한다
+ *                (scripts/test-approval.ts 가 두 값이 같은지 고정한다).
+ *
+ * 이 중 무엇이든 단말기에 보내면 원거래를 못 찾는다. 보내서 실패하는 대신
+ * 서버에서 미리 막고, 원장에게 "사장님 앱에서 취소 후 장부만" 을 안내한다.
+ */
+export const UNRESOLVABLE_APPROVAL_NUMBERS = ["WEBHOOK", "복구", "UNKNOWN"] as const;
+
 /** 카드 취소를 걸기 위해 SDK 에 넘겨야 하는 사실들. 전부 원승인 기록에서 나온다. */
 export interface CancelSourceFacts {
   /** payment_intents.status. APPROVED 가 아니면 되돌릴 원금이 없다. */
@@ -205,14 +227,18 @@ export function classifyCardCancel(facts: CancelSourceFacts): CancelDecision {
     };
   }
 
-  // 웹훅이 만들어 준 승인 기록은 승인번호가 "WEBHOOK" 이다. 실물 승인번호가 아니라
-  // 단말기에 넘길 수 없다. 이걸 거르지 않으면 단말기가 알 수 없는 오류로 실패한다.
-  if (facts.approvalNumber === "WEBHOOK") {
+  // (5-c) 승인번호 자리에 들어온 **표식**을 거른다.
+  //
+  //   approval_number 는 NOT NULL 이라 "값이 없다" 를 표현할 방법이 없다. 그래서
+  //   승인번호를 못 얻은 경로마다 표식을 적어 넣었다. 어느 것이든 단말기에
+  //   넘기면 원거래를 못 찾는다. 넘겨서 실패하느니 여기서, 사람이 읽을 수 있는
+  //   이유로 막는다. (UNRESOLVABLE_APPROVAL_NUMBERS 주석에 각 표식의 출처가 있다.)
+  if ((UNRESOLVABLE_APPROVAL_NUMBERS as readonly string[]).includes(facts.approvalNumber)) {
     return {
       kind: "reject",
       needsHuman: true,
       reason:
-        "이 결제는 웹훅으로만 확인된 건이라 실제 승인번호가 없습니다. " +
+        `이 결제는 단말기가 준 실제 승인번호가 기록되지 않았습니다(기록된 값: "${facts.approvalNumber}"). ` +
         "토스 사장님 앱에서 직접 취소한 뒤 장부에만 반영해 주세요.",
     };
   }

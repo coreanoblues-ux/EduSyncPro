@@ -256,6 +256,16 @@ export interface PendingCancel {
   supplyValue: number;
   taxExemptValue: number;
   tip: number;
+
+  // ── 아래 둘은 SDK 에 넘기지 않는다. [CANCEL-DIAG] 에만 쓴다. ──
+  //    "원거래 없음" 이 났을 때 물어야 할 첫 질문은 "우리가 보낸 값이 승인 당시
+  //    값과 같은가" 이고, 그 다음이 "그 승인이 언제·어느 VAN 에서 났는가" 다.
+  //    선택 값인 이유: 서버가 먼저 배포되지 않은 조합에서도 플러그인이 그냥
+  //    돌아가야 한다. 없으면 진단 줄에 "(없음)" 이 찍힐 뿐 취소는 영향받지 않는다.
+  /** 승인 당시 VAN 사. 모르면 null. */
+  van?: string | null;
+  /** 원승인 행이 우리 DB 에 적힌 시각(ISO). 승인 시각과 크게 어긋나면 그것도 단서다. */
+  originalCreatedAt?: string | null;
 }
 
 /**

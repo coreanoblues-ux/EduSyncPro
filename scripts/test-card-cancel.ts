@@ -49,6 +49,7 @@ import {
   DEVICE_TOUCH_INTERVAL_MS,
   decideCancelReroute,
   normalizeApprovedTimestamp,
+  UNRESOLVABLE_APPROVAL_NUMBERS,
   type CancelDispatchStatus,
   type CancelSourceFacts,
 } from "../server/toss-front/cardCancel";
@@ -680,12 +681,27 @@ test("★ 승인번호·승인시각이 없으면 못 건다 (SDK 필수 파라�
   }
 });
 
-test('★ 승인번호가 "WEBHOOK" 인 건은 못 건다 (실물 승인번호가 아니다)', () => {
-  // 웹훅이 만들어 준 승인 기록이다. 이걸 그대로 단말기에 넘기면 알 수 없는 오류로 죽는다.
-  const d = classifyCardCancel(facts({ approvalNumber: "WEBHOOK" })) as any;
-  assert.equal(d.kind, "reject");
-  assert.equal(d.needsHuman, true);
-  assert.match(d.reason, /웹훅으로만 확인된/);
+test("★ 승인번호 자리의 표식들은 전부 못 건다 (실물 승인번호가 아니다)", () => {
+  // 승인번호 칼럼이 NOT NULL 이라 "없음" 을 적을 자리가 없어서, 승인번호를 못 얻은
+  // 경로들이 각자 표식을 넣어 두었다. 무엇이든 그대로 단말기에 넘기면 원거래를
+  // 못 찾는다 — 2026-08-31 "원거래 없음" 사고에서 실제로 보낸 값이 "복구" 였다.
+  //
+  // 목록 자체를 돌려서 시험한다. 표식이 하나 늘면 여기도 자동으로 같이 늘어야
+  // 하기 때문이다. 손으로 적어 두면 그때 빠뜨린다.
+  for (const marker of UNRESOLVABLE_APPROVAL_NUMBERS) {
+    const d = classifyCardCancel(facts({ approvalNumber: marker })) as any;
+    assert.equal(d.kind, "reject", `${marker} 를 통과시켰다`);
+    assert.equal(d.needsHuman, true, `${marker} 는 사람이 사장님 앱에서 처리해야 한다`);
+    // 원장이 화면에서 읽는 문장이다. 어떤 값이 문제였는지 보여야 문의가 줄어든다.
+    assert.ok(d.reason.includes(marker), `${marker} 가 사유에 안 보인다`);
+    assert.match(d.reason, /사장님 앱/);
+  }
+});
+
+test("정상 승인번호는 이 관문을 통과한다 (표식만 걸러야 한다)", () => {
+  // 표식 목록이 지나치게 넓어져 멀쩡한 취소를 막는 일이 없도록 반대편도 고정한다.
+  const d = classifyCardCancel(facts({ approvalNumber: "01234567" })) as any;
+  assert.notEqual(d.kind, "reject");
 });
 
 test("★ 단말기를 모르면 못 건다 (보낼 곳이 없다)", () => {

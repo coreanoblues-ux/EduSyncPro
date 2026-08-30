@@ -155,7 +155,24 @@ const SAFE_KEYS = [
   "paymentKey", "orderId", "amount", "paymentMethod",
   "approvalNumber", "approvedAt", "tid", "van", "vanTransactionKey",
 ] as const;
-const SAFE_CARD_KEYS = ["issuerName", "acquirerName", "cardType", "installmentMonths"] as const;
+/**
+ * card 안에서 통과시킬 것들.
+ *
+ * 앞의 네 개는 표시용이고, 뒤의 다섯 개는 **취소할 때 원거래를 찾는 키**다
+ * (2026-08-31). 공식 문서의 CARD SUCCESS 구조가 `response.card.timestamp` /
+ * `.approvalNumber` / `.installment` / `.van` / `.shopCode` 인데 우리는
+ * 이것들을 요약에서 통째로 버리고 있었다. 그래서 승인 당시의 진짜 값이
+ * rawResponseJson 에도 남지 않았고, 나중에 대조할 근거가 없었다.
+ *
+ * 특히 shopCode 는 우리 테이블에 칼럼이 없다. 여기로 남겨 두면 마이그레이션
+ * 없이도 승인 원본이 보존된다.
+ *
+ * card.number 는 여전히 목록에 없다. 의도적이다.
+ */
+const SAFE_CARD_KEYS = [
+  "issuerName", "acquirerName", "cardType", "installmentMonths",
+  "timestamp", "approvalNumber", "installment", "van", "shopCode",
+] as const;
 
 export function safeRawSummary(result: any): Record<string, unknown> | null {
   if (result == null || typeof result !== "object") return null;

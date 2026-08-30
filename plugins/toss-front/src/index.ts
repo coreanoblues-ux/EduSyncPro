@@ -98,7 +98,14 @@ import {
   isPaymentNotFound,
   safeRawSummary,
 } from "./sdkError";
-import { toEpochMillis } from "./cancelPayload";
+import { cancelTidField, toEpochMillis } from "./cancelPayload";
+import {
+  UNKNOWN_APPROVAL_NUMBER,
+  describeResponseShape,
+  extractApproval,
+  formatCancelDiag,
+  type TerminalKnownView,
+} from "./approval";
 import {
   showIdle,
   showAdminMenu,
@@ -987,7 +994,11 @@ async function handleDispatch(d: PendingDispatch) {
     // 부분결제의 경우 한 dispatch = 한 카드 승인 = 한 paymentKey 이므로,
     // 이 흐름은 각 카드 승인마다 독립적으로 한 번씩 돌며 각기 다른 영수증을 뽑는다.
     try {
-      await promptReceiptPrintAfterApproval(result.response.paymentKey);
+      // ★ 우리가 보낸 d.paymentKey 를 쓴다. 응답의 paymentKey 가 아니다.
+      //   공식 CARD SUCCESS 응답에는 paymentKey 가 없다 (0.3.19 에서 확인).
+      //   여기서 result.response.paymentKey 를 읽으면 undefined 가 흘러들어가
+      //   영수증을 엉뚱한 키로 뽑으려 한다. 원본은 언제나 **우리가 보낸 값**이다.
+      await promptReceiptPrintAfterApproval(d.paymentKey);
     } catch (err) {
       log.error(
         "영수증 흐름 예외 (무시)",
@@ -1124,30 +1135,72 @@ async function handleCancelDispatch(c: PendingCancel) {
     );
   }
 
+  // ── (c-2) 부르기 전에 단말기에게 먼저 **물어본다.** 읽기 전용이라 안전하다. ──
+  //
+  //   왜 취소 전에 하나:
+  //     "원거래 없음" 이 두 번 났고 두 번 다 내가 추측으로 원인을 정했다. 원장님이
+  //     ZIP 을 올리고 단말기 앞에 서는 왕복은 싸지 않은데, 시험할 결제는 1,000원
+  //     한 건뿐이다. 그러니 한 번의 왕복에서 **사실도 얻고 고칠 기회도 얻어야** 한다.
+  //     실패한 뒤에 물어보면 사실만 얻는다. 부르기 전에 물어보면, 단말기가 아는
+  //     조회 키(tid)를 그대로 받아 이번 시도에 쓸 수 있다.
+  //
+  //   왜 조회 결과로 취소를 막지는 않나:
+  //     getPayment 은 14일 캐시이고 SUCCESS 만 남는다. 캐시에 없다고 해서 취소가
+  //     안 된다는 보장은 없다. 조회를 통과 조건으로 삼으면 정당한 환불을 막을 수
+  //     있다. 그래서 이 조회는 **기록만 하고 길은 막지 않는다.**
+  //
+  //   ★ 그리고 이 결과를 취소 payload 에 끼워 넣지도 않는다. 진단 전용이다.
+  const probed = await probeOriginalTransaction(c, timestampMs);
+
+  // ── (c-3) 보낼 값을 **한 번만** 만든다. ──
+  //
+  //   로그와 실제 호출이 같은 객체를 봐야 한다. 따로 만들면 로그는 맞는데 호출은
+  //   틀린 상황이 생기고, 그러면 로그가 우리를 속인다. 이번 사고에서 우리를
+  //   가장 오래 붙잡은 것이 정확히 그런 종류의 거짓말이었다 (sdk.ts 의 틀린
+  //   타입 선언).
+  //
+  //   전부 **승인 당시 서버가 받아 적은 원본**이다. 여기서 다시 계산하는 값은
+  //   하나도 없다. 지금 시각도, 수강료에서 되뽑은 세액도 쓰지 않는다.
+  //
+  //   tid 는 문서상 **선택** 값이다. 0.3.18 까지 우리는 값이 없어도 무조건
+  //   실어 보냈는데, 빈 문자열은 "없음" 이 아니라 "tid 가 '' 인 거래를 찾아라"
+  //   로 읽힐 수 있다. 없는 값은 키째로 뺀다.
+  const payload = {
+    paymentKey: c.paymentKey, // ★ 환불 요청 ID(c.cancelId)가 아니다. 원결제 키다.
+    paymentMethod: c.paymentMethod,
+    // 문서: "원거래와 동일한 tax, supplyValue, taxExemptValue 를 전달해요".
+    tax: c.tax,
+    supplyValue: c.supplyValue,
+    taxExemptValue: c.taxExemptValue,
+    tip: c.tip,
+    timestamp: timestampMs, // number 여야 한다. 문자열로 보내면 원거래를 못 찾는다.
+    approvalNumber: c.approvalNumber,
+    installment: c.installment,
+    ...cancelTidField(c.tid), // 값이 없으면 키 자체가 빠진다.
+  };
+
+  // ── (c-4) [CANCEL-DIAG] — 호출 **직전** 한 덩어리. ──
+  //   원장님은 단말기 로그를 사진으로 찍어 보낸다. 값이 흩어져 있으면 한 장에
+  //   안 들어오고, 그러면 우리는 또 추측을 시작한다.
+  log.warn(
+    "취소 직전 진단",
+    formatCancelDiag({
+      cancelRequestId: c.cancelId,
+      originalPaymentKey: c.paymentKey,
+      payload,
+      terminal: probed,
+      van: c.van ?? null,
+      vanTransactionKey: c.vanTransactionKey,
+      originalCreatedAt: c.originalCreatedAt ?? null,
+      rawStoredTimestamp: String(c.approvedTimestamp),
+    }),
+  );
+
   // ── (d) 단 한 번의 호출. ──
   let result: PaymentResult;
   try {
-    log.info(
-      "requestPaymentCancel 호출",
-      `cancel=${c.cancelId} 금액=${c.amount} 원승인번호=${c.approvalNumber} ` +
-        `공급가=${c.supplyValue} 세액=${c.tax} 할부=${c.installment} ` +
-        // 조회 키를 반드시 남긴다. "원거래 없음" 이 났을 때 무엇으로 찾았는지
-        // 모르면 다음에 또 추측만 하게 된다.
-        `timestamp=${timestampMs}(${typeof timestampMs}) tid=${c.tid || "(없음)"}`,
-    );
     result = await sdk.payment.requestPaymentCancel({
-      paymentKey: c.paymentKey,
-      paymentMethod: c.paymentMethod,
-      // 문서: "원거래와 동일한 tax, supplyValue, taxExemptValue 를 전달해요".
-      // 전부 서버가 승인 당시 확정한 값이다. 단말기가 다시 계산하지 않는다.
-      tax: c.tax,
-      supplyValue: c.supplyValue,
-      taxExemptValue: c.taxExemptValue,
-      tip: c.tip,
-      timestamp: timestampMs, // number 여야 한다. 문자열로 보내면 원거래를 못 찾는다.
-      approvalNumber: c.approvalNumber,
-      installment: c.installment,
-      tid: c.tid,
+      ...payload,
       timeoutMs: PAYMENT_TIMEOUT_MS,
       localeCode: "ko",
     });
@@ -1172,6 +1225,8 @@ async function handleCancelDispatch(c: PendingCancel) {
           `FAILED 로 보고합니다.`,
       );
       await enqueueCancelReport(c, "FAILED", { reason: detail });
+      // 무엇으로 찾았는지·단말기가 그 결제를 아는지는 (c-2) 에서 이미 로그에 남았다.
+      // 여기서 다시 묻지 않는다 — 같은 사실을 두 번 적으면 로그만 흐려진다.
       showStatus({
         tone: "error",
         title: "원거래를 찾지 못했습니다",
@@ -1267,6 +1322,125 @@ async function handleCancelDispatch(c: PendingCancel) {
     });
   }
   await sleep(6000);
+}
+
+/**
+ * 취소를 걸기 **전에** 단말기에게 "이 결제, 너 알고 있니?" 하고 물어본다.
+ *
+ * ── 왜 이 함수가 생겼나 ──
+ *   0.3.17 에서 timestamp 형식(ISO→밀리초)을 고쳤는데 현장에서 또 "원거래 없음"
+ *   이 났다. 0.3.18 에서 타입(string→number)을 고쳤는데 **또** 났다. 두 번 다
+ *   내가 추측으로 원인을 정하고 원장님께 ZIP 을 올리게 했다. 시험할 수 있는
+ *   결제는 1,000원 한 건뿐이고, 단말기 앞까지 가는 왕복은 싸지 않다.
+ *   그러니 이제 추측을 그만두고 **사실을 가져온다.**
+ *
+ * ── 왜 이 조회가 안전한가 ──
+ *   getPayment 은 단말기 캐시(14일)를 **읽기만** 한다. 카드에 아무 일도 일으키지
+ *   않는다. 그래서 취소 직전에 불러도 이중 취소 위험이 없다. 문서상 SUCCESS
+ *   결과만 캐시에 남는다.
+ *
+ * ── 무엇이 갈리나 ──
+ *   • 기록이 있으면 → 단말기는 이 결제를 **알고 있다.** 그러면 "원거래 없음" 의
+ *     원인은 조회 키(tid·승인번호·시각) 중 하나가 틀린 것이다. 어느 것이 틀렸는지는
+ *     [CANCEL-DIAG] 의 MATCH/MISMATCH 줄이 알려 준다.
+ *   • 기록이 없으면 → 키를 아무리 고쳐도 소용없다는 뜻이다 (다른 단말기에서
+ *     승인됐거나 보관 기간이 지났거나). 그때는 사장님 앱에서 취소하고 장부만
+ *     맞추는 길로 간다. 다만 **이 조회 결과로 취소를 막지는 않는다** — 캐시가
+ *     비었다고 취소가 불가능하다는 보장은 어디에도 없고, 정당한 환불을 우리
+ *     추측으로 막는 쪽이 더 나쁘다.
+ *
+ * ── ★ 이 함수는 취소의 해결책이 아니다 (0.3.19 에서 좁혔다) ──
+ *   한때 여기서 읽은 tid 를 취소 payload 에 **대신 끼워 넣었다.** 그건 원인을
+ *   모르는 채 덧붙인 fallback 이었다. 값이 우연히 맞아 취소가 됐어도 우리는
+ *   무엇이 틀렸었는지 영영 모르고, 다음 결제에서 또 같은 일이 난다.
+ *   getPayment 은 **진단**과, 우리 DB 에 값이 아예 비었을 때의 **복구 보고**
+ *   용도로만 쓴다. 취소에 실어 보내는 값은 언제나 승인 당시 우리가 받아 적은
+ *   원본이다. 그래야 "받아 적기가 틀렸다" 는 사실이 드러난다 — 이번 사고의
+ *   진짜 원인이 정확히 그것이었다.
+ *
+ * 절대 던지지 않는다. 진단이 본류를 망가뜨리면 안 된다.
+ *
+ * @returns 단말기가 아는 조회 키들. 모르면 null. **진단 전용.**
+ */
+async function probeOriginalTransaction(
+  c: PendingCancel,
+  sentTimestamp: number,
+): Promise<TerminalKnownView | null> {
+  // 무엇으로 찾았는지를 먼저 남긴다. 조회가 실패해도 이 줄은 남는다.
+  //
+  // 서버가 준 원문 문자열을 그대로 같이 찍는 이유: 저장된 승인 시각에 시간대가
+  // 빠져 있으면 Date.parse 가 KST 기준으로 9시간을 밀어 버린다. 변환값만 봐서는
+  // 그게 보이지 않는다. 원문·밀리초·사람이 읽는 시각을 나란히 놓아야 보인다.
+  let human = "(해석 불가)";
+  try {
+    human = new Date(sentTimestamp).toISOString();
+  } catch {
+    /* 무시 */
+  }
+  log.warn(
+    "원거래 조회 키 점검",
+    `cancel=${c.cancelId} paymentKey=${c.paymentKey} ` +
+      `원문승인시각="${String(c.approvedTimestamp)}" → ${sentTimestamp} (${human}) ` +
+      `원승인번호=${c.approvalNumber} tid=${c.tid || "(없음)"} ` +
+      `vanTxKey=${c.vanTransactionKey || "(없음)"} 금액=${c.amount}`,
+  );
+
+  const p = sdk?.payment;
+  if (!p || typeof p.getPayment !== "function") {
+    log.warn(
+      "원거래 조회 불가",
+      "이 단말기 펌웨어는 getPayment 를 제공하지 않습니다. 우리 기록의 조회 키로 그대로 겁니다.",
+    );
+    return null;
+  }
+
+  try {
+    const found = await p.getPayment({ paymentKey: c.paymentKey });
+    if (!found || found.type !== "SUCCESS") {
+      // 단말기가 이 paymentKey 를 모른다. 그래도 취소는 걸어 본다 (위 주석 참고).
+      log.warn(
+        "원거래 조회 — 단말기에 기록 없음",
+        `cancel=${c.cancelId} getPayment 결과=${found ? found.type : "null"} — ` +
+          `단말기 캐시(14일·승인 성공분)에 이 결제가 없습니다. 여기서 또 "원거래 없음" 이 ` +
+          `나면 조회 키 문제가 아니라 단말기에 원거래가 남아 있지 않은 것입니다. ` +
+          `그때는 사장님 앱에서 취소한 뒤 원장 화면 [장부만] 을 쓰시면 됩니다. ` +
+          `일단은 우리 기록의 키로 취소를 걸어 봅니다.`,
+      );
+      return null;
+    }
+
+    // 단말기는 알고 있다. 그러면 "원거래 없음" 의 원인은 조회 키다.
+    // 응답에서 허용목록을 통과한 필드만 찍는다 (카드번호는 목록에 없다).
+    const summary = safeRawSummary(found);
+    log.warn(
+      "원거래 조회 — 단말기가 알고 있음",
+      `cancel=${c.cancelId} 단말기가아는값=${JSON.stringify(summary ?? {})} · ` +
+        `우리가보낼값={"tid":"${c.tid || ""}","approvalNumber":"${c.approvalNumber}",` +
+        `"timestamp":${sentTimestamp}}`,
+    );
+
+    // 승인 응답과 **같은 구조**이므로 같은 해석기를 쓴다. 여기만 따로 손으로
+    // 파싱하면 그 자리가 또 틀릴 수 있는 자리가 된다 (이번 사고가 그랬다).
+    const a = extractApproval(found.response, {
+      paymentKey: c.paymentKey,
+      paymentMethod: c.paymentMethod,
+    });
+    return {
+      timestamp: a.timestamp,
+      approvalNumber: a.approvalNumber,
+      installment: a.installment,
+      tid: a.tid,
+      vanTransactionKey: a.vanTransactionKey,
+    };
+  } catch (err) {
+    // 조회 자체가 예외로 끝났다. 이것도 사실이므로 남긴다. 카드는 그대로다.
+    log.warn(
+      "원거래 조회 실패",
+      `cancel=${c.cancelId} — getPayment 가 예외로 끝났습니다. 우리 기록의 키로 그대로 겁니다. ` +
+        `[${describeErr(err).slice(0, 160)}]`,
+    );
+    return null;
+  }
 }
 
 /**
@@ -1893,26 +2067,36 @@ async function confirmPaymentFromSdk(
   //   그래서 복구 경로에서는 서버가 확정해 둔 값(intent)을 그대로 들고 온다.
   //   금액은 원래도 서버가 정한 값만 신뢰해야 하는 것이라, 이쪽이 오히려 정석이다.
   //   서버 confirm 은 이 금액을 다시 intent.amount 와 대조하므로 이중으로 걸린다.
-  const paymentKey = r.paymentKey || known?.paymentKey;
+  const paymentKey = known?.paymentKey || r.paymentKey;
   const amount = typeof r.amount === "number" ? r.amount : known?.amount;
-
-  const missing: string[] = [];
-  if (typeof amount !== "number") missing.push("amount");
-  if (!r.paymentMethod) missing.push("paymentMethod");
-  if (!r.approvedAt) missing.push("approvedAt");
-  if (!r.orderId && !known?.orderId) missing.push("orderId");
-  if (!r.approvalNumber && !r.card?.approveNo) missing.push("approvalNumber");
-  if (missing.length > 0) {
-    // 값은 찍지 않는다 (카드번호가 섞일 수 있다). 어떤 키가 있었는지 이름만 남긴다.
-    log.warn(
-      "승인 응답에 빠진 필드",
-      `없음=[${missing.join(", ")}] · 응답 키=[${Object.keys(r ?? {}).join(",")}]` +
-        (known ? " · 서버 확정값으로 보완합니다." : "")
-    );
-  }
 
   if (!paymentKey) {
     throw new Error("승인 응답에도 서버 요청에도 paymentKey 가 없습니다.");
+  }
+
+  // ★ 0.3.19 의 핵심 한 줄.
+  //   지금까지는 여기서 r.approvedAt / r.approvalNumber 처럼 **존재하지 않는
+  //   필드**를 읽고, 없으면 `new Date()` 와 "복구" 로 메웠다. 그 두 값이 그대로
+  //   취소 조회 키가 되어 현장에서 "원거래 없음" 을 만들었다.
+  //   이제 공식 구조(response.card.timestamp / card.approvalNumber)에서 읽고,
+  //   없으면 **없다고 적는다.** 자세한 경위는 approval.ts 머리주석에 있다.
+  const approval = extractApproval(r, { paymentKey });
+
+  // 응답에 실제로 어떤 키가 있었는지 이름만 남긴다 (값은 카드번호가 섞일 수 있다).
+  // 이번 사고에서 우리에게 없었던 단서가 정확히 이 한 줄이다.
+  log.info(
+    "승인 응답 구조",
+    `${describeResponseShape(r)} · 시각출처=${approval.timestampSource ?? "(없음)"} ` +
+      `승인번호출처=${approval.approvalNumberSource ?? "(없음)"}`,
+  );
+
+  if (approval.missing.length > 0) {
+    log.warn(
+      "승인 응답에 취소용 조회 키가 없음",
+      `없음=[${approval.missing.join(", ")}] — 이 결제는 장부에는 정상 기록되지만 ` +
+        `단말기 카드취소를 걸 수 없습니다. 환불이 필요하면 토스 사장님 앱에서 취소한 뒤 ` +
+        `원장 화면에서 [장부만] 반영해 주세요.`,
+    );
   }
 
   if (typeof amount !== "number" || !Number.isFinite(amount)) {
@@ -1926,24 +2110,30 @@ async function confirmPaymentFromSdk(
     // 서버는 min(1) 을 요구한다. 빈 문자열이면 "Required" 가 아니라 길이 오류가
     // 나서 원인이 또 흐려지므로, 없을 때는 paymentKey 를 주문번호로 대신 쓴다.
     // paymentKey 는 우리가 intent 를 만들 때 발급한 값이라 대사에 문제가 없다.
-    orderId: r.orderId || known?.orderId || paymentKey,
+    orderId: known?.orderId || r.orderId || paymentKey,
     amount,
-    // 이 단말기는 requestPayment 에서 CASH 를 제외하고 카드만 받는다.
-    paymentMethod: r.paymentMethod || "CARD",
-    approvalNumber: r.approvalNumber ?? r.card?.approveNo ?? "복구",
-    // 승인 시각을 모를 때 지금 시각을 쓴다. 복구 경로에서만 발생하며 몇 분
-    // 어긋날 수 있다. 그래도 원장에 아예 안 들어가는 것보다 낫고, 위 경고
-    // 로그가 "이 건은 시각이 추정치" 라는 사실을 남긴다.
-    approvedTimestamp: r.approvedAt || new Date().toISOString(),
-    van: r.van ?? null,
-    tid: r.tid ?? null,
-    vanTransactionKey: r.vanTransactionKey ?? null,
-    maskedCardNumber: r.card?.number ?? null,
-    issuerName: r.card?.issuerName ?? null,
-    acquirerName: r.card?.acquirerName ?? null,
-    cardType: r.card?.cardType ?? null,
-    installment: r.card?.installmentMonths ?? 0,
-    rawResponse: r.raw,
+    paymentMethod: approval.paymentMethod,
+    // ⚠️ 아래 두 값은 **원거래 조회 키**다. 추측해서 채우면 취소가 영구히 불가능해진다.
+    //    모를 때는 표식을 보낸다 — 서버가 이 표식을 보고 카드취소를 거절하고,
+    //    원장에게 "사장님 앱에서 취소하고 장부만 반영하라" 고 안내한다.
+    //    (장부 기록 자체는 막지 않는다. 카드에서 나간 돈은 반드시 기록되어야 한다.)
+    approvalNumber: approval.approvalNumber ?? UNKNOWN_APPROVAL_NUMBER,
+    // 단말기가 준 epoch 밀리초를 **문자열 그대로** 보낸다 (컬럼이 text 인 이유이자
+    // 정밀도를 잃지 않는 방법이다). 모르면 "UNKNOWN" — 서버가 걸러 낸다.
+    approvedTimestamp:
+      approval.timestamp !== null ? String(approval.timestamp) : UNKNOWN_APPROVAL_NUMBER,
+    van: approval.van,
+    tid: approval.tid,
+    vanTransactionKey: approval.vanTransactionKey,
+    maskedCardNumber: approval.maskedCardNumber,
+    issuerName: approval.issuerName,
+    acquirerName: approval.acquirerName,
+    cardType: approval.cardType,
+    installment: approval.installment,
+    // 감사용. 허용목록을 통과한 필드만 담긴다 (카드번호는 목록에 없다).
+    // 지금까지 r.raw 를 보냈는데 그건 존재하지 않는 필드라 늘 null 이었다 —
+    // 그래서 사고 후에 되짚어 볼 원본이 한 건도 남아 있지 않았다.
+    rawResponse: safeRawSummary({ type: "SUCCESS", response: r }) ?? undefined,
   };
 
   // ⚠️ 순서가 전부다. 적고 나서 보낸다.

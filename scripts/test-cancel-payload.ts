@@ -20,7 +20,7 @@
  */
 
 import assert from "node:assert/strict";
-import { toEpochMillis } from "../plugins/toss-front/src/cancelPayload";
+import { cancelTidField, toEpochMillis } from "../plugins/toss-front/src/cancelPayload";
 
 let passed = 0;
 let failed = 0;
@@ -87,6 +87,37 @@ test("1990년 이전 / 2100년 이후는 거부한다", () => {
 test("경계값은 받아들인다", () => {
   assert.equal(toEpochMillis(631_152_000_000), 631_152_000_000);
   assert.equal(toEpochMillis(4_102_444_800_000), 4_102_444_800_000);
+});
+
+console.log("\n─── 4. ★ tid: '없음' 과 '빈 값' 은 다르다 ───");
+//
+// 문서에서 tid 는 선택 값이다. 없으면 키를 빼야 한다. 빈 문자열을 실어 보내면
+// 단말기에게 "tid 가 '' 인 거래를 찾아라" 라고 말하는 셈이고, 그런 거래는
+// 없으므로 결과는 "원거래 없음" 이다. 0.3.18 까지 우리가 하던 일이다.
+
+test("값이 있으면 그대로 싣는다 (지금까지 정상 동작하던 경우를 바꾸지 않는다)", () => {
+  assert.deepEqual(cancelTidField("A1234567"), { tid: "A1234567" });
+});
+
+test("★ 빈 문자열이면 키 자체가 빠진다 (빈 값으로 조회하지 않는다)", () => {
+  assert.deepEqual(cancelTidField(""), {});
+  assert.deepEqual(cancelTidField("   "), {});
+  assert.equal("tid" in cancelTidField(""), false, "★ 키가 남아 있으면 안 된다");
+});
+
+test("★ null·undefined 도 키를 빼는 쪽이다 (승인 응답에 tid 가 없었던 결제)", () => {
+  assert.deepEqual(cancelTidField(null), {});
+  assert.deepEqual(cancelTidField(undefined), {});
+});
+
+test("문자열이 아닌 값은 싣지 않는다 (숫자 tid 를 흉내 내지 않는다)", () => {
+  for (const v of [0, 12345, {}, [], true]) {
+    assert.deepEqual(cancelTidField(v as any), {}, `${String(v)} 를 통과시켰다`);
+  }
+});
+
+test("앞뒤 공백은 떼고 싣는다", () => {
+  assert.deepEqual(cancelTidField("  A1234567 "), { tid: "A1234567" });
 });
 
 console.log(`\n${failed === 0 ? "✅" : "❌"} ${passed} passed, ${failed} failed`);

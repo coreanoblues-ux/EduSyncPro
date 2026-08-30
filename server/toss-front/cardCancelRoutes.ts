@@ -498,6 +498,12 @@ export async function pendingCancelForDevice(tenantId: string, deviceId: string)
       installment: tossPaymentTransactions.installment,
       tid: tossPaymentTransactions.tid,
       vanTransactionKey: tossPaymentTransactions.vanTransactionKey,
+      // ── SDK 에 넘기지 않는다. 단말기의 [CANCEL-DIAG] 진단 줄에만 쓴다. ──
+      //    "원거래 없음" 이 나면 우리가 볼 것은 값이 아니라 **값의 출처**다.
+      //    승인이 어느 VAN 에서 났는지, 우리가 그 승인을 언제 받아 적었는지가
+      //    같이 있어야 "받아 적기가 틀렸다" 를 사진 한 장으로 알 수 있다.
+      van: tossPaymentTransactions.van,
+      originalCreatedAt: tossPaymentTransactions.createdAt,
       // 문서: "원거래와 동일한 tax, supplyValue, taxExemptValue 를 전달해요"
       tax: paymentIntents.tax,
       supplyValue: paymentIntents.supplyValue,

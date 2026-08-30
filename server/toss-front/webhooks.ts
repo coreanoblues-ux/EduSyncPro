@@ -46,6 +46,7 @@ import {
   payments,
 } from "@shared/schema";
 import { webhookCancelAmount } from "./refund";
+import { getOrCreateSystemUserId } from "./ledgerUser";
 
 const router = Router();
 
@@ -308,9 +309,15 @@ async function reconcile(eventType: string, body: any) {
       const cancelAmount = webhookCancelAmount(ledger?.paidIn ?? 0, ledger?.refunded ?? 0);
       const cancelledAtIso = payment?.cancelledAt ?? new Date().toISOString();
 
-      const email = `system+toss-front@${intent.tenant_id}.local`;
-      const userRows = await tx.execute(sql`SELECT id FROM users WHERE email = ${email} LIMIT 1`);
-      const systemUserId = (userRows.rows as any[])[0]?.id;
+      // ⚠️ 예전에는 여기서 users 를 SELECT 만 하고, 없으면 조용히 넘어갔다.
+      //    (조건이 `if (systemUserId && cancelAmount > 0)` 였고 else 는 금액이
+      //    0 일 때만 로그를 남겼다.) 그래서 시스템 사용자가 아직 없는 테넌트에
+      //    진짜 취소 웹훅이 오면 환불이 흔적도 없이 사라졌다. 돈이 빠져나갔는데
+      //    장부에도 로그에도 없는, 가장 찾기 어려운 종류의 구멍이다.
+      //
+      //    승인 경로는 없으면 만들어 쓰고 있었다. 같은 헬퍼를 여기서도 쓴다.
+      const systemUserId =
+        cancelAmount > 0 ? await getOrCreateSystemUserId(tx, intent.tenant_id) : null;
       if (systemUserId && cancelAmount > 0) {
         await tx.insert(payments).values({
           tenantId: intent.tenant_id,

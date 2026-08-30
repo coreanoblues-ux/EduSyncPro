@@ -28,6 +28,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { canSubmitCancel, requiresAmountTyping } from "@shared/cancelGuard";
 
 interface Device {
   id: string;
@@ -257,6 +258,9 @@ export default function TossFront() {
   // 못 박았다. 전액 아니면 불가다. 그래서 금액은 서버가 정하고 화면은 보여만 준다.
   const [cancelTarget, setCancelTarget] = useState<Refundable | null>(null);
   const [cancelReason, setCancelReason] = useState("");
+  // 큰 금액일 때 원장이 직접 쳐 넣는 금액. 취소는 되돌릴 수 없어서, 줄을
+  // 잘못 짚었는지 누르기 전에 스스로 알아차리게 하는 장치다 (shared/cancelGuard.ts).
+  const [cancelAmountTyped, setCancelAmountTyped] = useState("");
 
   // 진행 중인 건이 있을 때는 자주 본다. 원장이 단말기 앞에 서 있는 시간이기 때문이다.
   const { data: cardCancels = [] } = useQuery<CardCancel[]>({
@@ -284,6 +288,7 @@ export default function TossFront() {
     onSuccess: (data: any) => {
       setCancelTarget(null);
       setCancelReason("");
+      setCancelAmountTyped("");
       qc.invalidateQueries({ queryKey: ["/api/toss-front/admin/card-cancels"] });
       qc.invalidateQueries({ queryKey: ["/api/toss-front/admin/refundable"] });
       qc.invalidateQueries({ queryKey: ["/api/toss-front/admin/intents"] });
@@ -1056,6 +1061,7 @@ export default function TossFront() {
                               onClick={() => {
                                 setCancelTarget(r);
                                 setCancelReason("");
+                                setCancelAmountTyped("");
                               }}
                               data-testid={`card-cancel-button-${r.paymentKey}`}
                             >
@@ -1165,7 +1171,15 @@ export default function TossFront() {
       </Dialog>
 
       {/* 카드 취소 확인 */}
-      <Dialog open={!!cancelTarget} onOpenChange={(o) => !o && setCancelTarget(null)}>
+      <Dialog
+        open={!!cancelTarget}
+        onOpenChange={(o) => {
+          if (!o) {
+            setCancelTarget(null);
+            setCancelAmountTyped(""); // 다음에 열 때 입력이 남아 있으면 잠금이 무의미해진다
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>카드 취소 — 실제로 돈이 돌아갑니다</DialogTitle>
@@ -1210,6 +1224,31 @@ export default function TossFront() {
                 </ul>
               </div>
 
+              {/*
+                큰 금액에만 나오는 잠금. 확인 버튼은 손이 기억해서 누르지만,
+                금액을 쳐 넣으려면 숫자를 읽어야 한다. 목록에서 줄을 잘못 짚은
+                것을 알아차릴 수 있는 마지막 지점이다.
+              */}
+              {requiresAmountTyping(cancelTarget.refundable) && (
+                <div className="space-y-1 rounded-md border border-amber-400 bg-amber-50 p-3">
+                  <label className="text-sm font-medium text-amber-900">
+                    큰 금액입니다. 확인을 위해{" "}
+                    <b>{cancelTarget.refundable.toLocaleString()}</b> 을(를) 직접 입력하세요.
+                  </label>
+                  <Input
+                    value={cancelAmountTyped}
+                    onChange={(e) => setCancelAmountTyped(e.target.value)}
+                    placeholder={`${cancelTarget.refundable}`}
+                    inputMode="numeric"
+                    autoComplete="off"
+                    data-testid="card-cancel-amount-confirm-input"
+                  />
+                  <div className="text-xs text-amber-900">
+                    학생과 금액이 맞는지 다시 한 번 확인해 주세요. 취소는 되돌릴 수 없습니다.
+                  </div>
+                </div>
+              )}
+
               <div className="space-y-1">
                 <label className="text-sm font-medium">사유 (선택)</label>
                 <Input
@@ -1228,9 +1267,14 @@ export default function TossFront() {
             </Button>
             <Button
               variant="destructive"
-              disabled={cardCancelMutation.isPending}
+              disabled={
+                cardCancelMutation.isPending ||
+                !cancelTarget ||
+                !canSubmitCancel(cancelTarget.refundable, cancelAmountTyped)
+              }
               onClick={() =>
                 cancelTarget &&
+                canSubmitCancel(cancelTarget.refundable, cancelAmountTyped) &&
                 cardCancelMutation.mutate({
                   paymentKey: cancelTarget.paymentKey,
                   reason: cancelReason.trim(),

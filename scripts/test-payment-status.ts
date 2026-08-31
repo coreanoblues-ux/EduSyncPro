@@ -16,8 +16,11 @@
 import assert from "node:assert/strict";
 import {
   computeMonthStatus,
+  computePrepayMonths,
   PARTIAL_PAYMENT_SINCE,
+  PREPAY_MONTHS_AHEAD,
   isOutstanding,
+  shiftMonth,
   totalOutstanding,
   withPrepaidMonths,
 } from "../shared/paymentStatus";
@@ -314,6 +317,197 @@ test("★ 9월을 완납했으면 완납으로 뜬다 (선납 완납도 보여�
     computeMonthStatus(m, 300000, net.get(m) || 0, PARTIAL_PAYMENT_SINCE)
   );
   assert.equal(months.find(m => m.month === "2026-09")!.status, "완납");
+});
+
+console.log("\n─── shiftMonth: 달 산술이 연말에서 어긋나지 않는다 ───");
+
+test("★ 2026-12 의 다음 달은 2027-01 이다 (연말 넘김)", () => {
+  assert.equal(shiftMonth("2026-12", 1), "2027-01");
+});
+
+test("★ 2026-12 의 두 달 뒤는 2027-02 이다", () => {
+  assert.equal(shiftMonth("2026-12", 2), "2027-02");
+});
+
+test("2026-11 의 두 달 뒤는 2027-01 이다 (한 달만 넘어가는 경우)", () => {
+  assert.equal(shiftMonth("2026-11", 2), "2027-01");
+});
+
+test("평범한 달은 그냥 더한다", () => {
+  assert.equal(shiftMonth("2026-08", 1), "2026-09");
+  assert.equal(shiftMonth("2026-08", 2), "2026-10");
+});
+
+test("한 자리 달도 0 을 채워 돌려준다 — 문자열 정렬이 깨지면 안 된다", () => {
+  assert.equal(shiftMonth("2026-12", 1), "2027-01");
+  assert.equal(shiftMonth("2026-01", 1), "2026-02");
+});
+
+test("음수 delta 도 연초에서 정확하다 (0-based 산술이라 나머지가 어긋나지 않는다)", () => {
+  assert.equal(shiftMonth("2027-01", -1), "2026-12");
+  assert.equal(shiftMonth("2027-01", -2), "2026-11");
+});
+
+test("delta 0 은 자기 자신", () => {
+  assert.equal(shiftMonth("2026-08", 0), "2026-08");
+});
+
+test("이상한 문자열은 그대로 돌려준다 — 화면이 NaN-NaN 을 그리면 안 된다", () => {
+  assert.equal(shiftMonth("", 1), "");
+  assert.equal(shiftMonth("몰라", 1), "몰라");
+});
+
+console.log("\n─── computePrepayMonths: 미래 2개월을 미납과 분리해서 보여 준다 ───");
+
+const PREPAY_TUITION = 300000;
+
+test("★ 아무 일도 없으면 다음 2개월이 '예정'(미납 아님)으로 나온다", () => {
+  const rows = computePrepayMonths({
+    currentMonth: "2026-08",
+    tuition: PREPAY_TUITION,
+    netByMonth: new Map(),
+  });
+  assert.deepEqual(rows.map(r => r.month), ["2026-09", "2026-10"]);
+  assert.ok(rows.every(r => !r.hasActivity), "돈이 안 오갔는데 활동이 있다고 나온다");
+  assert.equal(rows[0].remaining, PREPAY_TUITION);
+});
+
+test("★ 김지유 건 — 9월을 계좌이체로 선납하면 9월이 완납으로 나온다", () => {
+  const rows = computePrepayMonths({
+    currentMonth: "2026-08",
+    tuition: PREPAY_TUITION,
+    netByMonth: new Map([["2026-09", 300000]]),
+  });
+  const sep = rows.find(r => r.month === "2026-09");
+  assert.ok(sep, "선납한 9월이 목록에 없다 — 원장이 신고한 바로 그 증상");
+  assert.equal(sep!.status, "완납");
+  assert.equal(sep!.remaining, 0);
+  assert.equal(sep!.hasActivity, true);
+});
+
+test("★ 두 달 뒤(+2)를 선납해도 보인다 — 연말이 아니어도 범위가 2개월이다", () => {
+  const rows = computePrepayMonths({
+    currentMonth: "2026-08",
+    tuition: PREPAY_TUITION,
+    netByMonth: new Map([["2026-10", 300000]]),
+  });
+  assert.equal(rows.find(r => r.month === "2026-10")!.status, "완납");
+});
+
+test("★ 연말에도 다음 2개월이 열린다 (2026-12 → 2027-01, 2027-02)", () => {
+  const rows = computePrepayMonths({
+    currentMonth: "2026-12",
+    tuition: PREPAY_TUITION,
+    netByMonth: new Map(),
+  });
+  assert.deepEqual(rows.map(r => r.month), ["2027-01", "2027-02"]);
+});
+
+test("★ 선납했다가 전액 취소된 미래 달도 사라지지 않는다 (withPrepaidMonths 는 버린다)", () => {
+  // 30만 냈다가 30만 취소 → 순액 0. withPrepaidMonths 는 net<=0 이라 이 달을 버린다.
+  const rows = computePrepayMonths({
+    currentMonth: "2026-08",
+    tuition: PREPAY_TUITION,
+    netByMonth: new Map([["2026-09", 0]]),
+    refundedByMonth: new Map([["2026-09", 300000]]),
+  });
+  const sep = rows.find(r => r.month === "2026-09");
+  assert.ok(sep, "취소된 미래 달이 화면에서 통째로 사라졌다");
+  assert.equal(sep!.hasActivity, true, "'한 번도 안 낸 달' 과 구분되지 않는다");
+  assert.equal(sep!.refunded, 300000);
+  assert.equal(sep!.remaining, PREPAY_TUITION, "취소됐으니 다시 받아야 할 돈이다");
+});
+
+test("★ 부분 취소도 금액이 남는다 — 취소 흔적과 잔액이 따로 보인다", () => {
+  const rows = computePrepayMonths({
+    currentMonth: "2026-08",
+    tuition: PREPAY_TUITION,
+    netByMonth: new Map([["2026-09", 180000]]),
+    refundedByMonth: new Map([["2026-09", 120000]]),
+  });
+  const sep = rows.find(r => r.month === "2026-09")!;
+  assert.equal(sep.status, "부분납");
+  assert.equal(sep.paid, 180000);
+  assert.equal(sep.remaining, 120000);
+  assert.equal(sep.refunded, 120000);
+});
+
+test("★ exclude 한 달은 두 번 그리지 않는다 — 미납 칩과 선납 줄이 겹치면 안 된다", () => {
+  const rows = computePrepayMonths({
+    currentMonth: "2026-08",
+    tuition: PREPAY_TUITION,
+    netByMonth: new Map([["2026-09", 1000]]),
+    exclude: ["2026-09"],
+  });
+  assert.ok(!rows.some(r => r.month === "2026-09"), "9월이 두 줄로 나온다");
+  assert.deepEqual(rows.map(r => r.month), ["2026-10"]);
+});
+
+test("★ 선납 줄은 총미납액에 절대 들어가지 않는다 (전교생 미납 부풀리기 방지)", () => {
+  // 미납 계산에 쓰이는 목록은 여전히 과거·현재뿐이다.
+  const outstandingMonths = [
+    computeMonthStatus("2026-08", PREPAY_TUITION, 0),
+  ];
+  const before = totalOutstanding(outstandingMonths);
+  const prepay = computePrepayMonths({
+    currentMonth: "2026-08",
+    tuition: PREPAY_TUITION,
+    netByMonth: new Map(),
+  });
+  assert.equal(prepay.length, 2, "선납 줄이 안 만들어졌다면 이 테스트는 의미가 없다");
+  // 화면은 prepay 를 outstandingMonths 에 합치지 않는다. 합쳤다면 90만원이 됐을 것.
+  assert.equal(before, PREPAY_TUITION);
+  assert.notEqual(before + totalOutstanding(prepay), before,
+    "선납 줄에도 remaining 이 있다 — 그래서 절대 합치면 안 된다는 것을 명시한다");
+});
+
+test("과거·현재 달은 선납 줄에 넣지 않는다", () => {
+  const rows = computePrepayMonths({
+    currentMonth: "2026-08",
+    tuition: PREPAY_TUITION,
+    netByMonth: new Map([["2026-07", 300000], ["2026-08", 300000]]),
+  });
+  assert.ok(rows.every(r => r.month > "2026-08"), "지난 달이 선납 줄에 끼어 있다");
+});
+
+test("2개월보다 더 뒤라도 돈이 오갔으면 보여 준다 (태블릿은 6개월까지 열린다)", () => {
+  const rows = computePrepayMonths({
+    currentMonth: "2026-08",
+    tuition: PREPAY_TUITION,
+    netByMonth: new Map([["2026-12", 300000]]),
+  });
+  assert.deepEqual(rows.map(r => r.month), ["2026-09", "2026-10", "2026-12"]);
+});
+
+test("2개월보다 더 뒤인데 아무 일도 없는 달은 만들지 않는다 — 소음", () => {
+  const rows = computePrepayMonths({
+    currentMonth: "2026-08",
+    tuition: PREPAY_TUITION,
+    netByMonth: new Map(),
+  });
+  assert.ok(!rows.some(r => r.month === "2026-11"));
+});
+
+test("결과는 항상 시간 순이다", () => {
+  const rows = computePrepayMonths({
+    currentMonth: "2026-11",
+    tuition: PREPAY_TUITION,
+    netByMonth: new Map([["2027-03", 300000], ["2026-12", 300000]]),
+  });
+  assert.deepEqual(rows.map(r => r.month), ["2026-12", "2027-01", "2027-03"]);
+});
+
+test("수강료 미설정(0원) 반은 선납 줄도 완납으로 조용히 흘려보낸다", () => {
+  const rows = computePrepayMonths({
+    currentMonth: "2026-08",
+    tuition: 0,
+    netByMonth: new Map(),
+  });
+  assert.ok(rows.every(r => r.status === "완납" && r.remaining === 0));
+});
+
+test("PREPAY_MONTHS_AHEAD 는 2다 — 원장이 요청한 '다음 2개월'", () => {
+  assert.equal(PREPAY_MONTHS_AHEAD, 2);
 });
 
 console.log(`\n${failed === 0 ? "✅" : "❌"} 통과 ${passed} · 실패 ${failed}`);

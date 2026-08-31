@@ -17,6 +17,7 @@
     "test:refund": "tsx scripts/test-refund.ts",
     "test:reconcile": "tsx scripts/test-reconcile.ts",
     "test:payment-status": "tsx scripts/test-payment-status.ts",
+    "test:installment": "tsx scripts/test-installment.ts",
     "test:recovery": "tsx scripts/test-recovery.ts",
     "test:outbox": "tsx scripts/test-confirm-outbox.ts",
     "test:webhook-sig": "tsx scripts/test-webhook-signature.ts",

@@ -144,6 +144,24 @@ export interface TossFrontSdk {
       supplyValue: number;
       taxExemptValue: number;
       tip: number;
+      /**
+       * 할부 개월. **선택 값이고 기본값은 0(일시불)** 이다.
+       *
+       * 출처: docs.tossplace.com/reference/plugin-sdk/front/payment.html
+       *       (파라미터 표 `installment | number | 선택 | 기본값 0 | 할부 개월`)
+       *
+       * ⚠️ 0.3.20 까지 이 줄이 없었다. requestPaymentCancel 쪽에는 진작
+       *    선언돼 있었는데(188행) 결제 쪽에만 빠져 있어서, 할부를 보내려면
+       *    SDK 를 고쳐야 하는 줄 알기 쉬운 상태였다. 실제로는 **SDK 는 처음부터
+       *    지원했고 우리 타입 선언에만 구멍이 있었다** — timestamp 가 string 으로
+       *    잘못 적혀 있어 "원거래 없음" 을 받던 0.3.17 사고와 정확히 같은 종류다.
+       *    타입 선언은 사실이 아니라 주장이다. 문서와 대조해야 사실이 된다.
+       *
+       * 허용 개월수 목록은 문서에 없다. 카드사·VAN 이 정하기 때문이다. 그래서
+       * 요청한 개월수와 **승인된 개월수**(응답 card.installment)를 반드시 따로
+       * 기록한다. 취소는 승인된 값으로 걸어야 원거래를 찾는다.
+       */
+      installment?: number;
       timeoutMs?: number;
       localeCode?: string;
       excludePaymentTypes?: Array<"CASH" | "CARD" | "BARCODE">;

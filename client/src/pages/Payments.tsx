@@ -12,11 +12,13 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Payment, Enrollment, Student, Class, Teacher } from "@shared/schema";
 import {
   computeMonthStatus,
+  computePrepayMonths,
   PARTIAL_PAYMENT_SINCE,
   isOutstanding,
   totalOutstanding as sumOutstanding,
   withPrepaidMonths,
   type MonthPayment,
+  type PrepayMonth,
 } from "@shared/paymentStatus";
 
 interface PaymentsProps {
@@ -41,6 +43,13 @@ interface StudentWithPaymentStatus {
   months: MonthPayment[];
   /** 이 학생에게 아직 받아야 할 총액. 개월수×수강료가 아니라 실제 잔액의 합. */
   outstanding: number;
+  /**
+   * 다음 2개월 선납 줄. months 와 겹치지 않고, outstanding 에도 절대 들어가지 않는다.
+   * 아직 청구할 때가 아닌 달을 미납으로 세면 총미납액이 부풀기 때문이다.
+   */
+  prepay: PrepayMonth[];
+  /** 달별 환불·취소 합계(양수). 카드취소가 장부에 적혔는지 눈으로 확인하는 용도. */
+  refundedByMonth: Map<string, number>;
 }
 
 interface ClassWithStudents {
@@ -204,9 +213,19 @@ export default function Payments({ userRole }: PaymentsProps) {
           // 달마다 순액을 낸다. 환불(음수)이 그대로 상계되므로
           // "350,000 수납 + 350,000 환불 = 0원"은 자연히 미납으로 돌아온다.
           const netByMonth = new Map<string, number>();
+          // 환불(음수)만 따로 한 번 더 센다. 순액만 보면 "한 번도 안 낸 달" 과
+          // "냈다가 카드취소된 달" 이 똑같이 0원이라 화면에서 구분되지 않는다.
+          // 원장에게 이 둘은 완전히 다른 사건이고, 실제로 김지유 학생 건에서
+          // 단말기에는 취소 기록이 있는데 수납 장부에서는 흔적을 찾을 수 없었다.
+          // 순액 계산에는 손대지 않는다 — 여기서 세는 건 표시용 곁가지다.
+          const refundedByMonth = new Map<string, number>();
           for (const p of enrollmentPayments) {
             if (!p.paymentMonth) continue;
-            netByMonth.set(p.paymentMonth, (netByMonth.get(p.paymentMonth) || 0) + (p.amount || 0));
+            const amt = p.amount || 0;
+            netByMonth.set(p.paymentMonth, (netByMonth.get(p.paymentMonth) || 0) + amt);
+            if (amt < 0) {
+              refundedByMonth.set(p.paymentMonth, (refundedByMonth.get(p.paymentMonth) || 0) + -amt);
+            }
           }
 
           // 기본은 "등록일 ~ 오늘". 여기에 미리 낸 미래 달을 얹는다.
@@ -236,6 +255,23 @@ export default function Payments({ userRole }: PaymentsProps) {
             computeMonthStatus(m, tuition, netByMonth.get(m) || 0, PARTIAL_PAYMENT_SINCE)
           );
 
+          // 다음 2개월 선납 줄.
+          //
+          // ⚠️ months 와 outstanding 은 위에서 이미 끝났고 여기서 건드리지 않는다.
+          //    미래 달을 기본 목록에 끼워 넣으면 전교생이 두 달치 미납으로 뜨고
+          //    총미납액이 부풀어 원장이 화면을 못 믿게 된다 (withPrepaidMonths 주석
+          //    참고 — 6개월판 사고가 규모만 줄어 재현된다). 그래서 완전히 별도 줄이다.
+          //
+          //    exclude: 미래 달이 부분납이면 지금도 미납 칩으로 나온다. 그 동작은
+          //    원장이 확인한 것이라 그대로 두고, 같은 달을 선납 줄에 또 그리지 않는다.
+          const prepay = computePrepayMonths({
+            currentMonth: currentMonthStr,
+            tuition,
+            netByMonth,
+            refundedByMonth,
+            exclude: months.filter(isOutstanding).map(m => m.month),
+          });
+
           const paidMonths = months.filter(m => m.status === "완납").map(m => m.month);
           // 부분납은 아직 받을 돈이 남은 달이므로 미납 쪽에 선다.
           // 그래야 "납부하기" 버튼이 붙고 총액에도 잡힌다.
@@ -261,6 +297,8 @@ export default function Payments({ userRole }: PaymentsProps) {
             paidMonths,
             months,
             outstanding: sumOutstanding(months),
+            prepay,
+            refundedByMonth,
           };
         }).filter(s => s.id);
         
@@ -572,6 +610,7 @@ export default function Payments({ userRole }: PaymentsProps) {
                                         const isCurrentMonth = m.month === currentMonthStr;
                                         const canPay = userRole === 'owner' || userRole === 'teacher';
                                         const isPartial = m.status === "부분납";
+                                        const refundedThisMonth = student.refundedByMonth.get(m.month) ?? 0;
 
                                         return (
                                           <div
@@ -608,6 +647,28 @@ export default function Payments({ userRole }: PaymentsProps) {
                                               )
                                             )}
 
+                                            {/*
+                                              카드취소·환불 흔적.
+
+                                              왜 필요한가 (김지유 학생 건): 단말기에서 카드취소가
+                                              성공하면 서버가 장부에 음수 행을 자동으로 적는다
+                                              (server/toss-front/cardCancelRoutes.ts). 그래서 그 달은
+                                              순액이 0 이 되어 정상적으로 "미납" 으로 돌아온다 —
+                                              계산은 처음부터 맞았다. 문제는 화면이다. 돌아온 미납은
+                                              "한 번도 안 낸 달" 과 글자 하나 다르지 않아서, 원장은
+                                              취소가 장부에 반영된 건지 아예 누락된 건지 알 수 없었다.
+                                              금액을 적어 두면 그 자리에서 대조가 된다.
+                                            */}
+                                            {refundedThisMonth > 0 && (
+                                              <Badge
+                                                variant="outline"
+                                                className="text-xs px-1.5 py-0 border-violet-500 text-violet-700 dark:text-violet-400"
+                                                data-testid={`month-refunded-${student.id}-${m.month}`}
+                                              >
+                                                취소·환불 {formatAmount(refundedThisMonth)}
+                                              </Badge>
+                                            )}
+
                                             {canPay && (
                                               <Button
                                                 size="sm"
@@ -622,6 +683,88 @@ export default function Payments({ userRole }: PaymentsProps) {
                                           </div>
                                         );
                                       })}
+                                    </div>
+                                  )}
+
+                                  {/*
+                                    선납 줄 — 다음 2개월.
+
+                                    ── 왜 위 미납 칩과 따로 그리나 ──
+                                    위 줄은 "받아야 할 돈"이고 이 줄은 "미리 받아 둔 돈"이다.
+                                    미래 달을 위 목록에 합치면 전교생이 두 달치 미납으로 뜨고
+                                    총미납액이 부풀어 원장이 화면 전체를 못 믿게 된다. 그래서
+                                    outstanding 계산에는 이 줄의 값이 한 푼도 들어가지 않는다.
+
+                                    ── 왜 선납이 안 보였나 (원장 신고) ──
+                                    김지유 학생은 2026.09 를 계좌이체로 이미 냈는데 화면에
+                                    2026.08 까지만 보였다. 계산은 맞았다 — withPrepaidMonths 가
+                                    9월을 목록에 넣어 줬다. 다만 위 줄이 `filter(isOutstanding)`
+                                    이라 잔액 0 인 선납은 그릴 자리가 아예 없었다. 돈은 들어왔는데
+                                    원장이 확인할 방법이 없던 것이다. 이 줄이 그 자리다.
+                                  */}
+                                  {student.prepay.length > 0 && (
+                                    <div className="mt-3 border-t border-dashed pt-3">
+                                      <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                                        <Calendar className="h-3.5 w-3.5" />
+                                        다가오는 달 (선납)
+                                      </div>
+                                      <div className="flex flex-wrap gap-2">
+                                        {student.prepay.map((p) => {
+                                          const canPay = userRole === 'owner' || userRole === 'teacher';
+                                          const settled = p.remaining <= 0;
+                                          return (
+                                            <div
+                                              key={p.month}
+                                              className="flex items-center gap-2 rounded-md border px-3 py-1.5 bg-muted/20"
+                                              data-testid={`prepay-chip-${student.id}-${p.month}`}
+                                            >
+                                              <span className="text-sm font-medium text-muted-foreground">
+                                                {formatMonthLabel(p.month)}
+                                              </span>
+
+                                              {settled ? (
+                                                <Badge
+                                                  variant="outline"
+                                                  className="text-xs px-1.5 py-0 border-green-600 text-green-700 dark:text-green-400"
+                                                >
+                                                  선납완료 {formatAmount(p.paid)}
+                                                </Badge>
+                                              ) : (
+                                                <span className="text-xs text-muted-foreground">
+                                                  {/* 아직 청구할 때가 아니므로 "미납" 이라는 말을 쓰지 않는다.
+                                                      이 달은 안 낸 게 아니라 낼 때가 안 된 것이다. */}
+                                                  {formatAmount(p.remaining)} 예정
+                                                </span>
+                                              )}
+
+                                              {/* 냈다가 취소된 미래 달. 순액이 0 이라 예전에는
+                                                  withPrepaidMonths 가 아예 걸러 내서 화면에서
+                                                  통째로 사라졌다 (net <= 0 이면 제외). 이제 남는다. */}
+                                              {p.refunded > 0 && (
+                                                <Badge
+                                                  variant="outline"
+                                                  className="text-xs px-1.5 py-0 border-violet-500 text-violet-700 dark:text-violet-400"
+                                                  data-testid={`prepay-refunded-${student.id}-${p.month}`}
+                                                >
+                                                  취소·환불 {formatAmount(p.refunded)}
+                                                </Badge>
+                                              )}
+
+                                              {canPay && !settled && (
+                                                <Button
+                                                  size="sm"
+                                                  variant="outline"
+                                                  onClick={() => handlePaymentClick(student, p.month, p.remaining)}
+                                                  data-testid={`prepay-button-${student.id}-${p.month}`}
+                                                >
+                                                  <CreditCard className="h-3.5 w-3.5 mr-1" />
+                                                  선납 등록
+                                                </Button>
+                                              )}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
                                     </div>
                                   )}
                                 </div>
@@ -715,6 +858,22 @@ export default function Payments({ userRole }: PaymentsProps) {
                   {paymentDialog.paymentMonth ? formatMonthLabel(paymentDialog.paymentMonth) : ''}
                 </Badge>
               </div>
+              {/*
+                납부일과 납부대상월은 다른 값이다. 8월 31일에 9월분을 받으면
+                납입 일자는 8월이지만 이 돈은 9월 칸에 들어가야 한다. 아래
+                "납입 일자" 와 이 배지를 헷갈려 8월분을 두 번 받는 사고를 막으려고
+                미래 달일 때만 한 줄 덧붙인다.
+              */}
+              {paymentDialog.paymentMonth &&
+                paymentDialog.paymentMonth > new Date().toISOString().slice(0, 7) && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    선납입니다. 아래 납입 일자가 오늘이어도 이 금액은{" "}
+                    <span className="font-medium text-foreground">
+                      {formatMonthLabel(paymentDialog.paymentMonth)}
+                    </span>{" "}
+                    수강료로 기록됩니다.
+                  </p>
+                )}
             </div>
             <div>
               <Label htmlFor="amount">수납 금액</Label>

@@ -401,6 +401,24 @@ export const paymentIntents = pgTable("payment_intents", {
   tax: integer("tax").default(0).notNull(),
   supplyValue: integer("supply_value").default(0).notNull(),
   taxExemptValue: integer("tax_exempt_value").default(0).notNull(),
+  /**
+   * 태블릿에서 학부모가 **고른** 할부 개월 (0 = 일시불).
+   *
+   * ── 왜 승인된 값과 따로 두는가 ──
+   *   여기 적힌 건 "요청" 이다. 실제로 몇 개월로 승인됐는지는 카드사와 VAN 이
+   *   정한다 — 카드사마다 받아 주는 개월이 다르고, 6개월을 요청해도 3개월로
+   *   내려오거나 아예 거절될 수 있다. 승인된 값은 단말기가 돌려준
+   *   toss_payment_transactions.installment 에 따로 저장한다.
+   *
+   *   이 둘을 한 칸에 몰아 쓰면 나중에 취소할 때 근거가 사라진다. 취소는
+   *   **승인된 개월수**로 걸어야 하고(요청값이 아니다), 그 값은 승인 응답에만
+   *   있다. 두 칸으로 나눠 두면 장부가 스스로 어긋남을 드러낸다.
+   *
+   * nullable 인 이유: 이 컬럼이 생기기 전에 만들어진 intent 가 이미 있다.
+   * 그것들을 0 으로 덮어쓰지 않는다 — "일시불이었다" 와 "모른다" 는 다른 사실이다.
+   * 읽는 쪽은 null 을 0(일시불)으로 취급한다.
+   */
+  requestedInstallment: integer("requested_installment"),
   status: paymentIntentStatusEnum("status").default("CREATED").notNull(),
   expiresAt: timestamp("expires_at").notNull(),
   approvedAt: timestamp("approved_at"),

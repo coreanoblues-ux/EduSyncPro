@@ -44,6 +44,7 @@ import {
   startCancelExpirySweeper,
 } from "./toss-front/cardCancelRoutes";
 import { ensureCardCancelSchema } from "./toss-front/cardCancelSchema";
+import { ensureInstallmentSchema } from "./toss-front/installmentSchema";
 import tossPluginLogRouter from "./toss-front/pluginLogs";
 import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
@@ -1830,6 +1831,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // 결제 경로와 파일을 분리한 이유는 cardCancelRoutes.ts 헤더 주석 참고.
   app.use("/api/toss-front", cardCancelAdminRouter);  // authGuard + owner
   app.use("/api/toss-front", cardCancelDeviceRouter); // deviceGuard: Front 단말기
+  // 할부 요청 칸을 먼저 확보한다. 이 컬럼이 없으면 dispatch.ts 의 INSERT 가 통째로
+  // 실패해서 **카드결제 자체가 안 된다**. 다른 스키마 준비와 달리 "없으면 새 기능만
+  // 못 씀" 이 아니라 "멀쩡하던 수납이 멈춤" 이라, 요청을 받기 전에 끝내야 한다.
+  await ensureInstallmentSchema();
   // 만료(3분 초과)된 dispatch를 30초 주기로 TIMEOUT으로 정리.
   startDispatchExpirySweeper();
   // 카드취소 테이블을 서버가 직접 만든다. 운영 DB 는 Railway 안에 있어서 개발 PC 의

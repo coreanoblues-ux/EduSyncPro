@@ -177,6 +177,16 @@ export interface PendingDispatch {
   supplyValue: number;
   taxExemptValue: number;
   tip: number;
+  /**
+   * 할부 개월 (0 = 일시불). 태블릿에서 학부모가 고른 값을 서버가 정규화해 내려준다.
+   *
+   * optional 인 이유: 서버가 이 필드를 내려주기 전 버전일 수 있다. 단말기가
+   * 서버보다 먼저 배포되는 순서를 배제할 수 없고, 그때 undefined 를 그대로
+   * SDK 에 넘기면 안 된다. 호출부에서 `?? 0` 으로 일시불로 떨어뜨린다 —
+   * 모르면 일시불이 항상 안전한 쪽이다 (할부는 되돌리기 번거롭지만 일시불은
+   * 아무 손해가 없다).
+   */
+  installment?: number;
   status: "PENDING";
   deviceId: string;
   createdAt: string;

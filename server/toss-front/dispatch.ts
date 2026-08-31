@@ -38,6 +38,7 @@ import {
   secondsUntilFree,
 } from "./lifecycle";
 import { verifyVirtualInvoice } from "./virtualInvoice";
+import { normalizeInstallment } from "@shared/installment";
 import { publish, subscribe } from "./dispatchBus";
 import { selectRecoveryKeys, type RecoveryCandidate } from "./recovery";
 import { pendingCancelForDevice } from "./cardCancelRoutes";
@@ -102,6 +103,12 @@ const dispatchBodySchema = z.object({
   //   - 없으면 청구서 금액(=발급 시점 잔액) 전액으로 진행 (기존 동작)
   //   - 있으면 서버가 DB 를 다시 봐서 실제 잔액을 계산하고 0 < 요청금액 ≤ 실제잔액 인 경우만 승인
   requestedAmount: z.number().int().positive().optional(),
+  // 카드 할부 개월 (0 = 일시불). 없으면 일시불 — 기존 태블릿이 이 필드를 안 보내도
+  // 동작이 한 톨도 바뀌지 않는다. 값 검증은 여기서 형식만 보고, 실제 정책
+  // (5만원 이상, 허용 개월수)은 아래 트랜잭션에서 확정 금액으로 다시 판정한다.
+  // 지금 판정하면 안 되는 이유: 이 시점의 requestedAmount 는 아직 상한 검사를
+  // 통과하지 않은 희망사항이고, 최종 금액은 DB 잔액을 본 뒤에야 정해진다.
+  installment: z.number().int().min(0).max(12).optional(),
 });
 
 /**
@@ -285,6 +292,13 @@ kioskDispatchRouter.post("/dispatch", kioskGuard, async (req: Request, res: Resp
 
       // (D) intent + dispatch 생성
       const finalAmount = requestedAmount;
+
+      // 할부는 **확정된 금액**으로 판정한다. 태블릿이 27만원을 보고 3개월을 골랐어도
+      // 실제 승인 금액이 4만원으로 깎였다면 그건 일시불이어야 한다 (카드업계 관행상
+      // 5만원 미만은 할부가 안 된다). 화면에서 이미 막지만 여기서 다시 부르는 이유는,
+      // 태블릿이 보낸 값을 그대로 단말기까지 흘려보내면 학부모가 카드를 댄 채로
+      // 영문 모를 거절을 보게 되기 때문이다. 정책 판정은 shared/installment.ts 한 벌만 쓴다.
+      const installment = normalizeInstallment(parsed.data.installment, finalAmount);
       const orderName = `${invoice.studentName} · ${invoice.className} · ${invoice.paymentMonth}${
         finalAmount < actualRemaining ? " (부분결제)" : ""
       }`;
@@ -302,6 +316,9 @@ kioskDispatchRouter.post("/dispatch", kioskGuard, async (req: Request, res: Resp
           tax: 0,
           supplyValue: finalAmount,
           taxExemptValue: 0,
+          // 요청값이다. 승인된 개월수는 단말기 응답에서 따로 받아
+          // toss_payment_transactions.installment 에 저장한다 (예전부터 그랬다).
+          requestedInstallment: installment,
           status: "CREATED",
           expiresAt,
         })
@@ -323,7 +340,7 @@ kioskDispatchRouter.post("/dispatch", kioskGuard, async (req: Request, res: Resp
         })
         .returning();
 
-      return { intent, disp, orderName, finalAmount };
+      return { intent, disp, orderName, finalAmount, installment };
     });
 
     const pushPayload = {
@@ -346,6 +363,10 @@ kioskDispatchRouter.post("/dispatch", kioskGuard, async (req: Request, res: Resp
       paymentKey,
       orderId,
       amount: built.finalAmount,
+      // 태블릿이 "3개월 할부로 요청됨" 을 화면에 다시 보여 줄 수 있도록 돌려준다.
+      // 서버가 정규화한 뒤의 값이라, 태블릿이 보낸 것과 다를 수 있다 (예: 금액이
+      // 5만원 미만으로 깎여 일시불로 내려간 경우). 화면은 이 값을 믿어야 한다.
+      installment: built.installment,
       expiresAt,
       tossDeviceId,
     });
@@ -585,6 +606,7 @@ frontDispatchRouter.get("/dispatch/pending", deviceGuard, async (req: Request, r
       tax: paymentIntents.tax,
       supplyValue: paymentIntents.supplyValue,
       taxExemptValue: paymentIntents.taxExemptValue,
+      requestedInstallment: paymentIntents.requestedInstallment,
     })
     .from(paymentDispatches)
     .innerJoin(paymentIntents, eq(paymentDispatches.intentId, paymentIntents.id))
@@ -614,6 +636,14 @@ frontDispatchRouter.get("/dispatch/pending", deviceGuard, async (req: Request, r
       taxExemptValue: row.taxExemptValue,
       // tip 은 아직 학원 결제 흐름에 없다. 항상 0 을 명시적으로 내려 준다 (SDK 필수 필드).
       tip: 0,
+      // 할부 개월 (0 = 일시불).
+      //
+      // ⚠️ NULL 을 0 으로 바꿔서 내려 주는 것이 중요하다. 이 컬럼이 생기기 전에
+      //    만들어진 intent 는 전부 NULL 인데, 그대로 내려보내면 구형 플러그인이든
+      //    신형이든 undefined 를 SDK 에 넘기게 된다. DB 에서는 "모른다"(NULL)와
+      //    "일시불"(0)을 구분해 두지만, 단말기에 보낼 때는 0 하나로 확정한다 —
+      //    카드에 실제로 거는 값에 "모름" 같은 건 있으면 안 된다.
+      installment: row.requestedInstallment ?? 0,
       status: row.status,
       deviceId: row.deviceId,
       createdAt: row.createdAt,

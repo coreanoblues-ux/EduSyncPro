@@ -930,13 +930,23 @@ async function handleDispatch(d: PendingDispatch) {
 
   let result: PaymentResult;
   try {
-    log.info("requestPayment 호출", `금액=${d.amount} 공급가=${d.supplyValue} 세액=${d.tax}`);
+    // 할부 개월. 서버가 정규화해 내려준 값을 그대로 쓴다 — 단말기는 판정하지 않는다.
+    //
+    // `?? 0` 이 필요한 이유: 이 필드를 안 내려주는 구버전 서버에 붙을 수 있다.
+    // undefined 를 그대로 넘기면 SDK 기본값(0)으로 처리되긴 하지만, 아래 로그에
+    // "undefined" 가 찍혀 나중에 현장 로그를 읽는 사람이 헷갈린다. 여기서 확정한다.
+    const installment = d.installment ?? 0;
+    log.info(
+      "requestPayment 호출",
+      `금액=${d.amount} 공급가=${d.supplyValue} 세액=${d.tax} 할부=${installment === 0 ? "일시불" : installment + "개월"}`
+    );
     result = await sdk.payment.requestPayment({
       paymentKey: d.paymentKey,
       tax: d.tax,
       supplyValue: d.supplyValue,
       taxExemptValue: d.taxExemptValue,
       tip: d.tip,
+      installment,
       timeoutMs: PAYMENT_TIMEOUT_MS,
       localeCode: "ko",
       excludePaymentTypes: ["CASH"],

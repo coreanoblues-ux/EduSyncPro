@@ -19,6 +19,13 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useLocation } from "wouter";
 import { KIOSK_KEY_STORAGE } from "./StudentKioskSetup";
+import {
+  INSTALLMENT_MIN_AMOUNT,
+  INSTALLMENT_OPTIONS,
+  LUMP_SUM,
+  canChooseInstallment,
+  installmentLabel,
+} from "@shared/installment";
 
 type Stage = "phone" | "students" | "invoices" | "amount" | "paying" | "done" | "error";
 
@@ -97,6 +104,8 @@ export default function StudentKiosk() {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [payingAmount, setPayingAmount] = useState<number>(0);
+  /** 서버가 확정한 할부 개월 (0 = 일시불). 결제 진행 화면에 그대로 보여 준다. */
+  const [payingInstallment, setPayingInstallment] = useState<number>(LUMP_SUM);
   const [dispatchId, setDispatchId] = useState<string | null>(null);
   const [payingMessage, setPayingMessage] = useState<string>("결제 단말기에서 카드를 넣어주세요.");
   const [error, setError] = useState<string | null>(null);
@@ -122,6 +131,10 @@ export default function StudentKiosk() {
     setInvoices([]);
     setSelectedInvoice(null);
     setPayingAmount(0);
+    // 다음 결제는 반드시 일시불에서 시작한다. 분할결제로 카드 두 장을 받을 때
+    // 앞 카드의 3개월이 뒤 카드에 그대로 따라붙으면, 원장도 학부모도 그걸
+    // 눈치채지 못한 채 승인이 난다. 할부는 카드 한 장마다 새로 고르는 것이다.
+    setPayingInstallment(LUMP_SUM);
     setDispatchId(null);
     setError(null);
     setStage("phone");
@@ -175,7 +188,7 @@ export default function StudentKiosk() {
     setStage("amount");
   };
 
-  const startPayment = async (inv: Invoice, requestedAmount: number) => {
+  const startPayment = async (inv: Invoice, requestedAmount: number, installment: number) => {
     setError(null);
     // 완납 건은 서버가 토큰을 발급하지 않는다. 토큰 없이 요청하면 서버가 400 을
     // 돌려주지만, 그 전에 여기서 막아 사용자에게 정확한 말을 해 준다.
@@ -194,12 +207,17 @@ export default function StudentKiosk() {
         body: JSON.stringify({
           invoiceToken: inv.token,
           requestedAmount,
+          installment,
         }),
       });
       const body = await r.json();
       if (!r.ok) throw new Error(body.error || "결제 요청 실패");
       setDispatchId(body.dispatchId);
       setPayingAmount(body.amount ?? requestedAmount);
+      // 서버가 정규화한 값을 쓴다. 화면에서 고른 값이 아니다 — 금액이 깎이면
+      // 서버가 일시불로 되돌릴 수 있고, 그때 화면만 "3개월" 이라고 떠 있으면
+      // 학부모가 카드 명세서를 보고 학원을 의심하게 된다.
+      setPayingInstallment(body.installment ?? LUMP_SUM);
       setPayingMessage("결제 단말기에서 카드를 넣거나 태그해주세요.");
       setStage("paying");
       // 1.5초 폴링. 결제 완료까지 최대 3분.
@@ -298,8 +316,15 @@ export default function StudentKiosk() {
           )}
           {stage === "amount" && selectedInvoice && (
             <AmountPickStage
+              /*
+                key 로 청구서를 못 박아 둔다. 이 화면은 stage 가 바뀌면 어차피
+                unmount 되지만, 나중에 누군가 "뒤로 없이 청구서만 갈아끼우는"
+                흐름을 추가하면 앞 청구서에서 고른 할부가 그대로 남는다. 그건
+                아무도 못 알아채는 종류의 버그라 여기서 미리 막는다.
+              */
+              key={`${selectedInvoice.enrollmentId}-${selectedInvoice.paymentMonth}`}
               invoice={selectedInvoice}
-              onConfirm={(amt) => startPayment(selectedInvoice, amt)}
+              onConfirm={(amt, inst) => startPayment(selectedInvoice, amt, inst)}
               onBack={() => {
                 setSelectedInvoice(null);
                 setError(null);
@@ -311,6 +336,7 @@ export default function StudentKiosk() {
           {stage === "paying" && (
             <PayingStage
               amount={payingAmount}
+              installment={payingInstallment}
               message={payingMessage}
               onCancel={cancelPayment}
             />
@@ -504,12 +530,15 @@ function InvoicePickStage(props: {
  */
 function AmountPickStage(props: {
   invoice: Invoice;
-  onConfirm: (amount: number) => void;
+  onConfirm: (amount: number, installment: number) => void;
   onBack: () => void;
   error: string | null;
 }) {
   const [mode, setMode] = useState<"full" | "partial">("full");
   const [partialText, setPartialText] = useState<string>("");
+  // 기본은 언제나 일시불이다. 할부를 기본으로 두면 아무 생각 없이 넘긴 학부모가
+  // 이자를 물게 된다. 고른 사람만 할부가 되어야 한다.
+  const [installment, setInstallment] = useState<number>(LUMP_SUM);
 
   const partialAmount = (() => {
     const digitsOnly = partialText.replace(/[^0-9]/g, "");
@@ -520,6 +549,15 @@ function AmountPickStage(props: {
   const finalAmount = mode === "full" ? props.invoice.amountDue : partialAmount;
   const overCap = finalAmount > props.invoice.amountDue;
   const invalid = finalAmount <= 0 || overCap;
+
+  // 할부 가능 여부는 **지금 화면에 떠 있는 금액**으로 판단한다. 일부 결제로
+  // 금액을 5만원 아래로 내리면 선택지가 그 자리에서 사라져야 한다. 안 그러면
+  // 3개월을 골라 둔 채 금액만 3만원으로 바꾸고 결제 버튼을 누르게 된다.
+  const installmentAvailable = canChooseInstallment(finalAmount);
+  // 고른 뒤에 금액이 내려간 경우, 화면에 남아 있는 선택은 무효다. 서버도 같은
+  // 판정을 다시 하지만(shared/installment.ts), 사용자에게 보이는 숫자와 실제로
+  // 보내는 값이 다르면 안 되므로 여기서도 확정한다.
+  const effectiveInstallment = installmentAvailable ? installment : LUMP_SUM;
 
   return (
     <div className="space-y-8" data-testid="stage-amount">
@@ -597,6 +635,58 @@ function AmountPickStage(props: {
         </button>
       </div>
 
+      {/*
+        할부 선택.
+
+        ── 언제 보이나 ──
+        결제 금액이 5만원 이상일 때만. 이건 토스 SDK 제약이 아니라 국내 카드사
+        관행이다(shared/installment.ts 주석 참고). 5만원 미만에서 할부를 고르게
+        두면 카드사가 거절하고, 학부모는 카드를 단말기에 댄 채로 이유를 알 수 없는
+        실패를 본다. 아예 안 보여 주는 편이 친절하다.
+
+        ── "무이자" 라고 쓰지 않는 이유 ──
+        무이자 여부는 카드사 프로모션이고 우리는 알 방법이 없다. 화면에 그렇게
+        적었다가 실제로 이자가 붙으면 학원이 거짓말을 한 것이 된다. 개월수만 적는다.
+      */}
+      {installmentAvailable && (
+        <div className="max-w-xl mx-auto" data-testid="installment-picker">
+          <div className="text-sm text-slate-400 mb-2">할부 개월 선택</div>
+          <div className="grid grid-cols-4 gap-2">
+            {[LUMP_SUM, ...INSTALLMENT_OPTIONS].map((n) => {
+              const active = effectiveInstallment === n;
+              return (
+                <button
+                  key={n}
+                  onClick={() => setInstallment(n)}
+                  className={`py-3 rounded-lg text-base font-semibold border-2 transition-colors ${
+                    active
+                      ? "bg-slate-800 border-orange-500 text-orange-300"
+                      : "bg-slate-900 border-slate-700 hover:bg-slate-800 text-slate-300"
+                  }`}
+                  data-testid={`installment-${n}`}
+                >
+                  {n === LUMP_SUM ? "일시불" : `${n}개월`}
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-xs text-slate-500 mt-2">
+            할부 이자와 수수료는 카드사 정책에 따릅니다. 카드사에 따라 선택하신 개월수가
+            승인되지 않을 수 있습니다.
+          </p>
+        </div>
+      )}
+      {/*
+        5만원 미만이라 선택지를 감췄을 때, 아무 설명도 없으면 원장에게 "할부 버튼이
+        사라졌다" 는 문의가 온다. 조건을 한 줄로 적어 둔다.
+      */}
+      {!installmentAvailable && finalAmount > 0 && (
+        <p className="max-w-xl mx-auto text-xs text-slate-500 text-center">
+          할부는 {INSTALLMENT_MIN_AMOUNT.toLocaleString()}원 이상부터 선택할 수 있습니다. 이
+          결제는 일시불로 진행됩니다.
+        </p>
+      )}
+
       {props.error && <div className="text-red-400 text-center">{props.error}</div>}
 
       <div className="flex gap-3 justify-center max-w-xl mx-auto">
@@ -608,7 +698,7 @@ function AmountPickStage(props: {
           뒤로
         </button>
         <button
-          onClick={() => props.onConfirm(finalAmount)}
+          onClick={() => props.onConfirm(finalAmount, effectiveInstallment)}
           disabled={invalid}
           className={`flex-[2] py-4 rounded-lg text-lg font-bold ${
             invalid
@@ -617,18 +707,35 @@ function AmountPickStage(props: {
           }`}
           data-testid="button-amount-confirm"
         >
-          {finalAmount > 0 ? `${finalAmount.toLocaleString()}원 결제` : "금액 입력"}
+          {finalAmount > 0
+            ? `${finalAmount.toLocaleString()}원 ${
+                effectiveInstallment >= 2 ? `${effectiveInstallment}개월 할부 ` : ""
+              }결제`
+            : "금액 입력"}
         </button>
       </div>
     </div>
   );
 }
 
-function PayingStage(props: { amount: number; message: string; onCancel: () => void }) {
+function PayingStage(props: {
+  amount: number;
+  installment: number;
+  message: string;
+  onCancel: () => void;
+}) {
   return (
     <div className="text-center space-y-8" data-testid="stage-paying">
       <div className="text-slate-400">결제 진행 중</div>
       <div className="text-6xl font-black text-orange-400">{props.amount.toLocaleString()}원</div>
+      {/*
+        카드를 대기 **직전**에 할부 개월을 한 번 더 보여 준다. 승인이 난 뒤에
+        "3개월로 하려던 건데요" 를 듣는 것보다, 대기 화면에서 학부모가 스스로
+        확인하고 취소를 누르는 편이 훨씬 낫다. 여기 값은 서버가 확정한 값이다.
+      */}
+      <div className="text-lg text-slate-300" data-testid="paying-installment">
+        {installmentLabel(props.installment)}
+      </div>
       <div className="text-xl">{props.message}</div>
       <div className="animate-pulse text-sm text-slate-500">결제 단말기와 통신하고 있습니다...</div>
       <button

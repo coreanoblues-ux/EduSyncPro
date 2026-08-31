@@ -158,6 +158,129 @@ export function isOutstanding(m: MonthPayment): boolean {
   return m.remaining > 0;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// 선납(미래 달) 표시
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * 수납 화면에서 미리 열어 둘 미래 개월 수.
+ *
+ * 왜 2인가: 태블릿(invoicesHelper)은 6개월을 연다. 학부모가 "낼 수 있는 달"을
+ * 고르는 화면이라 넉넉해도 손해가 없기 때문이다. 원장 수납 화면은 성격이 다르다.
+ * 전교생 × 6줄이 한 화면에 깔리면 정작 봐야 할 미납이 묻힌다. 원장이 실제로
+ * 요청한 것도 "다음 2개월" 이다. 값을 상수로 빼 둔 건 나중에 조절할 여지를
+ * 두기 위함이지 지금 여러 값을 넣기 위함이 아니다.
+ */
+export const PREPAY_MONTHS_AHEAD = 2;
+
+/**
+ * YYYY-MM 을 delta 개월만큼 민다. 연말 넘김(2026-12 → 2027-01)을 여기서 한 번만 처리한다.
+ *
+ * Date 를 쓰지 않는 이유: `new Date(2026, 11, 1)` 계열은 브라우저 타임존에 따라
+ * 하루가 밀려 달이 바뀌는 사고가 난다. 이 화면은 "달" 만 다루므로 숫자 산술이
+ * 더 정확하고 테스트하기도 쉽다.
+ */
+export function shiftMonth(month: string, delta: number): string {
+  const [y, m] = month.split("-").map(Number);
+  if (!Number.isFinite(y) || !Number.isFinite(m)) return month;
+  // 0-based 로 옮겨 계산해야 음수 delta 에서도 나머지 연산이 어긋나지 않는다.
+  const zero = y * 12 + (m - 1) + delta;
+  const ny = Math.floor(zero / 12);
+  const nm = zero - ny * 12 + 1;
+  return `${ny}-${String(nm).padStart(2, "0")}`;
+}
+
+/** 미래 한 달의 선납 상태. MonthPayment 에 "취소 흔적" 두 가지를 더한 것. */
+export interface PrepayMonth extends MonthPayment {
+  /**
+   * 이 달에 결제 기록이 하나라도 있었는가.
+   *
+   * remaining/paid 만으로는 "한 번도 안 낸 달" 과 "냈다가 전액 취소된 달" 이
+   * 똑같이 0원으로 보인다. 원장에게 이 둘은 완전히 다른 사건이다.
+   */
+  hasActivity: boolean;
+  /** 이 달에 적힌 환불·취소 금액의 합 (양수로 표기). 없으면 0. */
+  refunded: number;
+}
+
+/**
+ * 수납 화면 아래에 붙일 "선납" 줄을 만든다.
+ *
+ * ── 왜 기본 달 목록(getMonthsBetween)을 늘리지 않고 따로 만드나 ──
+ *   기본 목록은 "받아야 할 돈" 을 세는 목록이다. 거기에 다음 2개월을 그냥 끼워
+ *   넣으면 전교생이 앞으로 두 달치 미납으로 뜨고 총미납액이 실제의 몇 배로
+ *   부풀어 오른다 (withPrepaidMonths 주석의 그 사고가 규모만 줄어서 재현된다).
+ *   아직 청구할 때가 오지도 않은 달을 체납으로 세면 원장이 화면을 못 믿는다.
+ *
+ *   그래서 미래 달은 **미납 계산과 완전히 분리된 별도 줄**로 그린다. 여기서
+ *   나온 값은 outstanding 합계에 절대 들어가지 않는다. 기존 미납 로직은 한 줄도
+ *   바뀌지 않는다.
+ *
+ * ── 왜 선납한 달이 안 보였나 (원장이 신고한 김지유 건) ──
+ *   withPrepaidMonths 가 선납 달을 목록에 넣어 주긴 한다. 그런데 수납 화면은
+ *   `months.filter(isOutstanding)` 로 **잔액이 남은 달만** 칩으로 그린다.
+ *   선납은 정의상 완납이라 잔액이 0 이고, 따라서 계산은 맞는데 화면에는
+ *   아무 픽셀도 나오지 않았다. 돈은 들어왔는데 원장이 볼 방법이 없었다.
+ *   이 함수가 그 달들에 자리를 만들어 준다.
+ *
+ * @param exclude 이미 미납 칩으로 그려지고 있는 달. 같은 달을 두 줄로 보여 주면
+ *   원장이 두 번 받은 걸로 오해한다. 미래 달이 부분납이면 지금도 미납 칩으로
+ *   나오고 있고, 그 동작은 원장이 확인한 것이라 그대로 둔다.
+ */
+export function computePrepayMonths(input: {
+  /** 오늘이 속한 달 (YYYY-MM) */
+  currentMonth: string;
+  tuition: number;
+  /** 달별 순액 (원비 - 환불) */
+  netByMonth: Map<string, number>;
+  /** 달별 환불·취소 합계 (양수). 없으면 취소 흔적을 표시하지 않는다. */
+  refundedByMonth?: Map<string, number>;
+  monthsAhead?: number;
+  exclude?: Iterable<string>;
+}): PrepayMonth[] {
+  const ahead = input.monthsAhead ?? PREPAY_MONTHS_AHEAD;
+  const skip = new Set<string>(input.exclude ?? []);
+
+  // 보여 줄 달: 다음 N개월 + 그보다 더 뒤인데 이미 돈이 오간 달.
+  //
+  // 뒤쪽을 함께 넣는 이유: 원장이 3개월 뒤를 미리 받아 두는 일이 없지는 않다
+  // (태블릿은 6개월까지 열려 있다). 그 돈이 화면에서 사라지면 안 된다.
+  // 반대로 "아직 아무 일도 없는 3개월 뒤" 는 넣지 않는다 — 그건 소음이다.
+  const wanted = new Set<string>();
+  for (let i = 1; i <= ahead; i++) wanted.add(shiftMonth(input.currentMonth, i));
+
+  const seen = (month: string) => {
+    // net 이 0 이어도(전액 취소) Map 에 키가 있으면 "돈이 오간 적 있는 달" 이다.
+    return input.netByMonth.has(month) || (input.refundedByMonth?.has(month) ?? false);
+  };
+  input.netByMonth.forEach((_net, month) => {
+    if (month > input.currentMonth) wanted.add(month);
+  });
+  input.refundedByMonth?.forEach((_amt, month) => {
+    if (month > input.currentMonth) wanted.add(month);
+  });
+
+  const out: PrepayMonth[] = [];
+  wanted.forEach((month) => {
+    if (month <= input.currentMonth) return; // 미래 달만 다룬다
+    if (skip.has(month)) return;
+
+    const paid = input.netByMonth.get(month) ?? 0;
+    // 판정은 computeMonthStatus 한 곳에서만 한다. 여기서 따로 세면 미납 화면과
+    // 선납 줄이 서로 다른 말을 하게 된다. 경계(partialSince)는 넘기지 않는다 —
+    // 미래 달은 정의상 경계 이후이고, 그 달의 청구액은 지금 수강료가 맞다.
+    const base = computeMonthStatus(month, input.tuition, paid);
+    out.push({
+      ...base,
+      hasActivity: seen(month),
+      refunded: input.refundedByMonth?.get(month) ?? 0,
+    });
+  });
+
+  out.sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
+  return out;
+}
+
 /**
  * 남은 금액의 합계.
  *

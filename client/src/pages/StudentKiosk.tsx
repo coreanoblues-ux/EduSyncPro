@@ -27,7 +27,17 @@ import {
   installmentLabel,
 } from "@shared/installment";
 
-type Stage = "phone" | "students" | "invoices" | "amount" | "paying" | "done" | "error";
+import {
+  CUSTOM_LABEL_MAX,
+  CUSTOM_MAX_AMOUNT,
+  isValidCustomAmount,
+  parseAmountText,
+  sanitizeCustomLabel,
+} from "@shared/customPayment";
+
+// "custom" = 기타 결제(학생과 연결되지 않은 결제) 금액 입력 화면.
+// 기존 흐름(phone→students→invoices→amount)에는 손대지 않고 옆으로 하나 붙인다.
+type Stage = "phone" | "students" | "invoices" | "amount" | "custom" | "paying" | "done" | "error";
 
 interface StudentHit {
   id: string;
@@ -227,6 +237,39 @@ export default function StudentKiosk() {
     }
   };
 
+  /**
+   * 기타 결제 요청. 학생 결제(startPayment)와 부르는 곳만 다르고, 요청을 보낸
+   * 뒤의 흐름(폴링·완료·취소)은 완전히 같은 코드를 탄다.
+   *
+   * 청구서 토큰이 없다. 이 결제에는 근거가 될 등록이 아예 없기 때문이다.
+   * 대신 금액 상한 판정을 공용 규칙(@shared/customPayment)으로 하고, 서버가
+   * 같은 규칙으로 다시 판정한다.
+   */
+  const startCustomPayment = async (amount: number, label: string, installment: number) => {
+    setError(null);
+    if (!isValidCustomAmount(amount)) {
+      setError(`결제 금액은 1원 이상, ${CUSTOM_MAX_AMOUNT.toLocaleString()}원 이하여야 합니다.`);
+      return;
+    }
+    try {
+      const r = await authedFetch("/api/toss-kiosk/dispatch/custom", {
+        method: "POST",
+        body: JSON.stringify({ amount, label, installment }),
+      });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error || "결제 요청 실패");
+      setDispatchId(body.dispatchId);
+      setPayingAmount(body.amount ?? amount);
+      // 학생 결제와 같은 이유로 서버가 정규화한 값을 쓴다 (startPayment 주석 참고).
+      setPayingInstallment(body.installment ?? LUMP_SUM);
+      setPayingMessage("결제 단말기에서 카드를 넣거나 태그해주세요.");
+      setStage("paying");
+      startDispatchPolling(body.dispatchId);
+    } catch (e: any) {
+      setError(e.message || "결제 요청 실패");
+    }
+  };
+
   const startDispatchPolling = (id: string) => {
     if (pollTimer.current) window.clearInterval(pollTimer.current);
     pollTimer.current = window.setInterval(async () => {
@@ -300,6 +343,10 @@ export default function StudentKiosk() {
               value={phoneSuffix}
               onChange={setPhoneSuffix}
               onSubmit={searchStudents}
+              onCustom={() => {
+                setError(null);
+                setStage("custom");
+              }}
               error={error}
             />
           )}
@@ -333,6 +380,13 @@ export default function StudentKiosk() {
               error={error}
             />
           )}
+          {stage === "custom" && (
+            <CustomPayStage
+              onConfirm={startCustomPayment}
+              onBack={reset}
+              error={error}
+            />
+          )}
           {stage === "paying" && (
             <PayingStage
               amount={payingAmount}
@@ -358,6 +412,7 @@ function PhoneStage(props: {
   value: string;
   onChange: (v: string) => void;
   onSubmit: () => void;
+  onCustom: () => void;
   error: string | null;
 }) {
   const keypad = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "지움", "0", "확인"];
@@ -404,6 +459,214 @@ function PhoneStage(props: {
             {k}
           </button>
         ))}
+      </div>
+      {/*
+        기타 결제 입구.
+
+        ── 왜 눈에 덜 띄게 두나 ──
+        이 화면은 학부모·학생이 직접 만지는 화면이고, 정상 흐름은 어디까지나
+        전화번호 4자리다. 기타 결제는 원장이 옆에서 금액을 불러 주며 쓰는 예외
+        경로라, 크게 두면 학생이 호기심에 눌러 엉뚱한 금액이 단말기에 뜬다.
+        (눌러도 카드를 대야 승인이 나므로 사고가 되진 않지만, 그 사이 진짜 결제는
+        단말기가 막혀서 못 한다. 그게 실제 피해다.)
+      */}
+      <div className="text-center">
+        <button
+          onClick={props.onCustom}
+          className="text-sm text-slate-500 hover:text-slate-300 underline underline-offset-4"
+          data-testid="button-custom-payment"
+        >
+          등록되지 않은 결제 (미등록 학생·교재 등)
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 기타 결제 화면 — 학생과 연결되지 않은 결제.
+ *
+ * ── 무엇을 위한 화면인가 ──
+ *   원장 요청 그대로다. "급하게 아직 등록 안 한 학생" 도, "학생과 무관한 자료 판매"도
+ *   금액을 직접 입력해서 결제 요청을 걸 수 있어야 한다. 토스 단말기에는 금액을
+ *   손으로 넣는 길이 마땅치 않아 태블릿에서 시작한다.
+ *
+ * ── 이 화면이 하지 않는 것 ──
+ *   학생을 만들지 않는다. 등록(enrollment)도 만들지 않는다. 청구서도 만들지 않는다.
+ *   그런 걸 여기서 만들면 나중에 원장이 정식 등록을 했을 때 유령 학생이 하나 더
+ *   남는다. 여기서 남는 것은 "돈이 이만큼 들어왔다" 는 장부 한 줄뿐이고,
+ *   그게 이 기능이 필요한 이유의 전부다.
+ *
+ * ── 확인 단계를 왜 두나 ──
+ *   금액을 손으로 찍는 유일한 화면이다. 0 하나가 더 붙어도 화면은 아무 말이
+ *   없고, 카드는 단말기 앞에서 즉시 긁힌다. 그래서 누르기 전에 한 번,
+ *   큰 글씨로 금액을 다시 보여 준다.
+ */
+function CustomPayStage(props: {
+  onConfirm: (amount: number, label: string, installment: number) => void;
+  onBack: () => void;
+  error: string | null;
+}) {
+  const [amountText, setAmountText] = useState("");
+  const [label, setLabel] = useState("");
+  const [installment, setInstallment] = useState<number>(LUMP_SUM);
+  const [confirming, setConfirming] = useState(false);
+
+  const amount = parseAmountText(amountText);
+  const overCap = amount > CUSTOM_MAX_AMOUNT;
+  const valid = isValidCustomAmount(amount);
+
+  // 할부 규칙은 학생 결제와 한 벌을 쓴다 (shared/installment.ts).
+  const installmentAvailable = canChooseInstallment(amount);
+  const effectiveInstallment = installmentAvailable ? installment : LUMP_SUM;
+
+  // 저장될 내용을 미리 확정해 확인 화면에 그대로 보여 준다. 서버도 같은 함수로
+  // 다듬으므로, 여기 보이는 문구가 장부에 남는 문구와 같다.
+  const finalLabel = sanitizeCustomLabel(label);
+
+  if (confirming) {
+    return (
+      <div className="space-y-8 text-center" data-testid="stage-custom-confirm">
+        <h1 className="text-2xl font-bold">이 금액으로 결제할까요?</h1>
+        <div className="text-6xl font-black text-orange-400">{amount.toLocaleString()}원</div>
+        <div className="text-lg text-slate-300">{finalLabel}</div>
+        <div className="text-slate-400">{installmentLabel(effectiveInstallment)}</div>
+        <p className="text-sm text-slate-500">
+          확인을 누르면 결제 단말기에 이 금액이 뜹니다.
+        </p>
+        <div className="flex gap-3 justify-center max-w-xl mx-auto">
+          <button
+            onClick={() => setConfirming(false)}
+            className="flex-1 py-4 rounded-lg bg-slate-800 hover:bg-slate-700 text-lg"
+            data-testid="button-custom-edit"
+          >
+            수정
+          </button>
+          <button
+            onClick={() => props.onConfirm(amount, finalLabel, effectiveInstallment)}
+            className="flex-[2] py-4 rounded-lg text-lg font-bold bg-orange-500 hover:bg-orange-400 text-white"
+            data-testid="button-custom-confirm"
+          >
+            확인 · 결제 요청
+          </button>
+        </div>
+        {props.error && <div className="text-red-400">{props.error}</div>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-8" data-testid="stage-custom">
+      <div className="text-center">
+        <h1 className="text-2xl font-bold">등록되지 않은 결제</h1>
+        <p className="text-slate-400 mt-2">
+          아직 등록되지 않은 학생이거나 교재·자료 판매처럼 수강 등록과 연결되지 않는 결제입니다.
+        </p>
+        <p className="text-slate-500 text-sm mt-1">
+          이 결제는 수강료 미납 내역에 반영되지 않고, 장부에는 <b>기타</b>로 기록됩니다.
+        </p>
+      </div>
+
+      <div className="max-w-xl mx-auto space-y-5">
+        <div>
+          <label className="block text-sm text-slate-400 mb-2">금액</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="tel"
+              inputMode="numeric"
+              autoFocus
+              value={amountText}
+              onChange={(e) => setAmountText(e.target.value)}
+              placeholder="예: 150000"
+              className="flex-1 px-4 py-4 rounded-md bg-slate-950 border border-slate-700 text-3xl font-mono text-right"
+              data-testid="custom-amount-input"
+            />
+            <span className="text-xl text-slate-400">원</span>
+          </div>
+          {/* 자릿수 실수를 즉시 눈으로 확인시킨다. 숫자판만 보면 0 개수를 못 센다. */}
+          {amount > 0 && !overCap && (
+            <div className="text-right text-orange-400 mt-2 text-lg" data-testid="custom-amount-echo">
+              {amount.toLocaleString()}원
+            </div>
+          )}
+          {overCap && (
+            <div className="text-red-400 text-sm mt-2">
+              한 건에 {CUSTOM_MAX_AMOUNT.toLocaleString()}원을 넘을 수 없습니다. 나누어 결제해 주세요.
+            </div>
+          )}
+        </div>
+
+        <div>
+          <label className="block text-sm text-slate-400 mb-2">
+            내용 (선택) — 장부에 그대로 남습니다
+          </label>
+          <input
+            type="text"
+            value={label}
+            maxLength={CUSTOM_LABEL_MAX}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="예: 김민준 3월 수강료(등록 전) / 교재 3권"
+            className="w-full px-4 py-3 rounded-md bg-slate-950 border border-slate-700 text-lg"
+            data-testid="custom-label-input"
+          />
+        </div>
+
+        {installmentAvailable && (
+          <div data-testid="custom-installment-picker">
+            <div className="text-sm text-slate-400 mb-2">할부 개월 선택</div>
+            <div className="grid grid-cols-4 gap-2">
+              {[LUMP_SUM, ...INSTALLMENT_OPTIONS].map((n) => {
+                const active = effectiveInstallment === n;
+                return (
+                  <button
+                    key={n}
+                    onClick={() => setInstallment(n)}
+                    className={`py-3 rounded-lg text-base font-semibold border-2 transition-colors ${
+                      active
+                        ? "bg-slate-800 border-orange-500 text-orange-300"
+                        : "bg-slate-900 border-slate-700 hover:bg-slate-800 text-slate-300"
+                    }`}
+                    data-testid={`custom-installment-${n}`}
+                  >
+                    {n === LUMP_SUM ? "일시불" : `${n}개월`}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-slate-500 mt-2">
+              할부 이자와 수수료는 카드사 정책에 따릅니다. 카드사에 따라 선택하신 개월수가
+              승인되지 않을 수 있습니다.
+            </p>
+          </div>
+        )}
+        {!installmentAvailable && amount > 0 && !overCap && (
+          <p className="text-xs text-slate-500 text-center">
+            할부는 {INSTALLMENT_MIN_AMOUNT.toLocaleString()}원 이상부터 선택할 수 있습니다. 이
+            결제는 일시불로 진행됩니다.
+          </p>
+        )}
+      </div>
+
+      {props.error && <div className="text-red-400 text-center">{props.error}</div>}
+
+      <div className="flex gap-3 justify-center max-w-xl mx-auto">
+        <button
+          onClick={props.onBack}
+          className="flex-1 py-4 rounded-lg bg-slate-800 hover:bg-slate-700 text-lg"
+          data-testid="button-custom-back"
+        >
+          뒤로
+        </button>
+        <button
+          onClick={() => setConfirming(true)}
+          disabled={!valid}
+          className={`flex-[2] py-4 rounded-lg text-lg font-bold ${
+            valid ? "bg-orange-500 hover:bg-orange-400 text-white" : "bg-slate-800 text-slate-600"
+          }`}
+          data-testid="button-custom-next"
+        >
+          {valid ? `${amount.toLocaleString()}원 확인` : "금액 입력"}
+        </button>
       </div>
     </div>
   );

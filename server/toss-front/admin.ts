@@ -132,6 +132,8 @@ router.get(
         studentId: paymentIntents.studentId,
         studentName: students.name,
         className: classes.name,
+        // 기타 결제(학생 없음)를 목록에서 식별할 수 있게 함께 내려 준다. 추가만 한다.
+        customLabel: paymentIntents.customLabel,
         paymentMonth: paymentIntents.paymentMonth,
         amount: paymentIntents.amount,
         status: paymentIntents.status,
@@ -253,6 +255,10 @@ router.get(
         paymentKey: paymentIntents.paymentKey,
         studentName: students.name,
         className: classes.name,
+        // 기타 결제는 학생·반이 없어 두 칸이 모두 NULL 이다. 그 상태로 목록에 뜨면
+        // 원장이 "이게 무슨 건이지" 를 알 수 없고, 취소해야 할 건을 못 찾는다.
+        // 필드를 **추가만** 하므로 이 값을 모르는 기존 화면은 그냥 무시하고 지나간다.
+        customLabel: paymentIntents.customLabel,
         paymentMonth: paymentIntents.paymentMonth,
         amount: paymentIntents.amount,
         status: paymentIntents.status,
@@ -482,6 +488,8 @@ router.post(
             amount: paymentIntents.amount,
             enrollmentId: paymentIntents.enrollmentId,
             paymentMonth: paymentIntents.paymentMonth,
+            // 기타 결제를 수기 대사할 때 "무슨 돈이었는지"를 장부에 적기 위해 함께 읽는다.
+            customLabel: paymentIntents.customLabel,
           })
           .from(paymentIntents)
           .where(
@@ -540,7 +548,9 @@ router.post(
           enrollmentId: intent.enrollmentId,
           // ⚠️ 금액은 언제나 intent.amount. 사람이 못 고친다.
           amount: intent.amount,
-          type: "원비",
+          // confirm·웹훅 경로와 같은 판정을 쓴다. 어느 길로 장부에 들어오든 같은
+          // 결제는 같은 항목으로 적혀야 한다 (등록이 없으면 "기타").
+          type: intent.enrollmentId ? "원비" : "기타",
           method: "카드",
           paymentMonth: intent.paymentMonth,
           paidDate,
@@ -548,6 +558,7 @@ router.post(
           notes:
             `Toss Front 수기 대사 · 승인번호 ${approvalNumber}` +
             ` · 단말기 승인은 됐으나 서버 기록이 누락되어 원장이 확인 후 반영` +
+            (intent.enrollmentId ? "" : ` · 기타 결제(${intent.customLabel ?? "내용 없음"})`) +
             (note ? ` · ${note}` : "") +
             (actor.substituted ? ` · 실행자 ${actor.actorLabel}` : ""),
           externalProvider: "TOSSPLACE",

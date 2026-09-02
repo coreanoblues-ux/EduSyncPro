@@ -132,6 +132,9 @@ cardCancelAdminRouter.get(
         expiresAt: paymentCancelDispatches.expiresAt,
         studentName: students.name,
         className: classes.name,
+        // 기타 결제는 학생·반이 NULL 이다. 취소 진행 목록에서 어떤 건인지
+        // 알아볼 수 있도록 내용을 함께 내려 준다 (필드 추가만 — 기존 화면은 무시한다).
+        customLabel: paymentIntents.customLabel,
         paymentMonth: paymentIntents.paymentMonth,
       })
       .from(paymentCancelDispatches)

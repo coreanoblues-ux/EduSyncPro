@@ -278,20 +278,32 @@ router.post(
         //    → 아래에서 별도로 처리한다.
         const systemUserId = await getOrCreateSystemUserId(tx, tenantId);
 
+        // 등록이 연결되지 않은 결제(기타 결제)인가. 기존 학생 결제 intent 는 전부
+        // enrollment_id 가 채워져 있으므로 아래 두 삼항식은 지금까지의 모든 행에 대해
+        // 예전과 똑같은 값("원비", 기존 notes)을 만든다. 새로 생기는 기타 결제만
+        // 다른 가지로 간다 — 이 분기가 기존 수납 기록에 미치는 영향은 없다.
+        const isCustom = !intent.enrollment_id;
+        const customLabel: string | null = intent.custom_label ?? null;
+
         await tx.insert(payments).values({
           tenantId,
           enrollmentId: intent.enrollment_id,
           amount: intent.amount,
-          type: "원비",
+          // payments.type enum 에 "기타" 가 원래부터 있다 (학원 운영 지출용으로 쓰던 값).
+          // 등록이 없는 돈을 "원비" 로 적으면 미납·정산 화면이 근거 없는 원비를 보게 된다.
+          type: isCustom ? "기타" : "원비",
           method: body.paymentMethod === "CARD" ? "카드" : "현금",
           paymentMonth: intent.payment_month,
           paidDate: new Date(),
           createdBy: systemUserId,
           // 지각 승인이면 비고에 남긴다. 회계 화면에서 원장이 "이 건은 왜 늦게 들어왔지"를
           // 되짚을 수 있는 유일한 단서다.
+          // 기타 결제는 태블릿에서 입력한 이름을 함께 남긴다 — 등록이 없으니 이 한 줄이
+          // 나중에 "이 돈이 무엇이었는지" 를 알 수 있는 유일한 단서가 된다.
           notes:
             `Toss Front · ${body.approvalNumber}` +
-            (lateWhy ? ` · 지각 승인 복구(${lateWhy})` : ""),
+            (lateWhy ? ` · 지각 승인 복구(${lateWhy})` : "") +
+            (isCustom ? ` · 기타 결제(${customLabel ?? "내용 없음"})` : ""),
           externalProvider: "TOSSPLACE",
           externalPaymentKey: body.paymentKey,
           externalTransactionId: txRow.id,

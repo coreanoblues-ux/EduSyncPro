@@ -39,6 +39,8 @@ import {
 } from "./lifecycle";
 import { verifyVirtualInvoice } from "./virtualInvoice";
 import { normalizeInstallment } from "@shared/installment";
+import { todayKst } from "@shared/day";
+import { CUSTOM_MAX_AMOUNT, sanitizeCustomLabel } from "@shared/customPayment";
 import { publish, subscribe } from "./dispatchBus";
 import { selectRecoveryKeys, type RecoveryCandidate } from "./recovery";
 import { pendingCancelForDevice } from "./cardCancelRoutes";
@@ -376,6 +378,186 @@ kioskDispatchRouter.post("/dispatch", kioskGuard, async (req: Request, res: Resp
     }
     if (err?.code === "23505") {
       return res.status(409).json({ error: "결제 요청이 중복되었습니다." });
+    }
+    throw err;
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// 기타 결제 (학생과 연결되지 않은 결제) — 태블릿에서 금액을 직접 입력한다
+// ─────────────────────────────────────────────────────────────────────────
+
+const customDispatchBodySchema = z.object({
+  // 청구서 토큰이 없다. 이 결제에는 근거가 될 등록이 아예 없기 때문이다.
+  // 대신 금액은 태블릿이 보낸 값을 그대로 쓴다 — 여기서만 예외인 이유는 아래 헤더 참고.
+  amount: z.number().int().positive().max(CUSTOM_MAX_AMOUNT),
+  label: z.string().max(60).optional(),
+  installment: z.number().int().min(0).max(12).optional(),
+});
+
+/**
+ * POST /api/toss-kiosk/dispatch/custom
+ * 학원 웹앱에 학생으로 등록되지 않은 건(아직 등록 전인 학생, 교재·자료 판매 등)을
+ * 태블릿에서 금액을 입력해 바로 결제 요청한다.
+ *
+ * ── 왜 기존 /dispatch 를 고치지 않고 새로 만드나 ──
+ *   기존 핸들러가 하는 일의 대부분이 "등록(enrollment)이 있다" 는 전제 위에 서 있다.
+ *     · (0) enrollmentId 로 어드바이저리 잠금
+ *     · (A) 반 수강료 조회 — 없으면 거절
+ *     · (B) 같은 (등록, 수강월) 미마감 intent 있으면 거절
+ *     · (C) 잔액 재계산 — 초과분 거절, 완납이면 거절
+ *   기타 결제에는 넷 다 걸 근거가 없다. 특히 (B)(C)는 **틀린 이유로 거절한다** —
+ *   같은 달에 자료를 두 번 팔면 두 번째가 막히고, 잔액이랄 게 없으니 늘 완납이다.
+ *   그래서 조건문을 덧대는 대신 흐름을 따로 둔다. 잘 돌고 있는 학생 결제 경로는
+ *   이 파일에서 한 줄도 바뀌지 않는다.
+ *
+ * ── 금액을 왜 믿나 (학생 결제에서는 절대 안 믿는 그 값을) ──
+ *   학생 결제의 금액은 "청구서에 적힌 잔액" 이라는 서버가 아는 사실이 있어서,
+ *   태블릿이 보낸 값은 검증 대상이다. 기타 결제에는 대조할 사실이 서버에 없다.
+ *   금액을 정하는 주체가 사람(태블릿 앞의 원장)이므로 서버가 할 수 있는 건
+ *   형식 검사(양의 정수)와 상한뿐이다. 태블릿은 kioskGuard 로 인증된 학원 소유
+ *   기기이고, 결제 자체는 카드 단말기 앞에서 사람이 다시 확인한다.
+ *
+ * ── 장부 ──
+ *   승인되면 payments 에 type="기타" 로 적힌다 (payments.ts confirm). 등록이 없으니
+ *   미납 판정·잔액 계산에는 애초에 들어가지 않는다. 환불은 기존 경로 그대로 된다.
+ */
+kioskDispatchRouter.post("/dispatch/custom", kioskGuard, async (req: Request, res: Response) => {
+  const parsed = customDispatchBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "요청 형식이 올바르지 않습니다." });
+  }
+
+  const kiosk = req.kiosk!;
+  const amount = parsed.data.amount;
+  const label = sanitizeCustomLabel(parsed.data.label);
+
+  // 라우팅 대상 프론트 결정 — 학생 결제와 완전히 같은 규칙이다.
+  let tossDeviceId = kiosk.pairedFrontDeviceId;
+  if (!tossDeviceId) {
+    const [anyDevice] = await db
+      .select({ id: tossFrontDevices.id })
+      .from(tossFrontDevices)
+      .where(and(eq(tossFrontDevices.tenantId, kiosk.tenantId), eq(tossFrontDevices.isActive, true)))
+      .orderBy(desc(tossFrontDevices.lastSeenAt))
+      .limit(1);
+    if (!anyDevice) {
+      return res.status(409).json({ error: "활성 프론트 단말기가 없습니다. 원장에게 문의하세요." });
+    }
+    tossDeviceId = anyDevice.id;
+  }
+
+  // 단말기 동시 결제 잠금. 시간까지 함께 보는 이유는 위 /dispatch 주석과 같다 —
+  // 죽은 요청이 다음 결제를 영원히 막는 사고가 실제로 있었다.
+  const [newestOpen] = await db
+    .select({
+      id: paymentDispatches.id,
+      status: paymentDispatches.status,
+      expiresAt: paymentDispatches.expiresAt,
+    })
+    .from(paymentDispatches)
+    .where(
+      and(
+        eq(paymentDispatches.tossDeviceId, tossDeviceId),
+        inArray(paymentDispatches.status, OPEN_DISPATCH_STATES)
+      )
+    )
+    .orderBy(desc(paymentDispatches.expiresAt))
+    .limit(1);
+  if (newestOpen && isBlocking(newestOpen.status, newestOpen.expiresAt)) {
+    const waitSec = secondsUntilFree(newestOpen.expiresAt);
+    return res.status(409).json({
+      error: `이 결제 단말기가 다른 결제를 처리 중입니다. ${waitSec}초 후 다시 시도해 주세요.`,
+      retryAfterSeconds: waitSec,
+    });
+  }
+
+  const paymentKey = generatePaymentKey();
+  const orderId = generateOrderId();
+  const expiresAt = new Date(Date.now() + DISPATCH_TTL_MS);
+  // 수강월이 아니라 "이 돈이 들어온 달". payment_month 는 NOT NULL 이고, 장부·정산
+  // 화면이 전부 이 값으로 묶여 있어서 비워 둘 수 없다. 기타 결제에 수강월이라는
+  // 개념은 없으므로 한국 시각 기준 현재 달을 적는다.
+  const paymentMonth = todayKst().slice(0, 7);
+  const installment = normalizeInstallment(parsed.data.installment, amount);
+  const orderName = `${label} (기타)`;
+
+  try {
+    const built = await db.transaction(async (tx) => {
+      const [intent] = await tx
+        .insert(paymentIntents)
+        .values({
+          tenantId: kiosk.tenantId,
+          paymentKey,
+          // 이 둘이 NULL 인 것이 이 기능의 전부다. "학생을 못 찾았다" 가 아니라
+          // "연결할 학생이 없는 결제다" 라는 사실을 그대로 적는다.
+          studentId: null,
+          enrollmentId: null,
+          customLabel: label,
+          paymentMonth,
+          deviceId: tossDeviceId,
+          amount,
+          tax: 0,
+          supplyValue: amount,
+          taxExemptValue: 0,
+          requestedInstallment: installment,
+          status: "CREATED",
+          expiresAt,
+        })
+        .returning();
+
+      const [disp] = await tx
+        .insert(paymentDispatches)
+        .values({
+          tenantId: kiosk.tenantId,
+          paymentKey,
+          intentId: intent.id,
+          kioskDeviceId: kiosk.id,
+          tossDeviceId: tossDeviceId!,
+          amount,
+          orderId,
+          orderName,
+          status: "PENDING",
+          expiresAt,
+        })
+        .returning();
+
+      return { intent, disp };
+    });
+
+    // 단말기로 가는 통로는 학생 결제와 똑같다. 폴링 응답(/dispatch/pending)은
+    // dispatch·intent 행만 보고 만들어지므로 플러그인은 고칠 것이 없다.
+    publish(tossDeviceId, "payment.dispatch", {
+      dispatchId: built.disp.id,
+      paymentKey,
+      orderId,
+      orderName,
+      amount,
+      paymentMonth,
+      expiresAt,
+    });
+
+    return res.status(201).json({
+      dispatchId: built.disp.id,
+      paymentKey,
+      orderId,
+      amount,
+      installment,
+      label,
+      expiresAt,
+      tossDeviceId,
+    });
+  } catch (err: any) {
+    if (err?.code === "23505") {
+      return res.status(409).json({ error: "결제 요청이 중복되었습니다." });
+    }
+    // 23502 = NOT NULL 위반. 부팅 때 도는 ensureCustomPaymentSchema 가 실패한
+    // 서버라면 여기로 온다. 원인을 정확히 말해 주는 게 "알 수 없는 오류" 보다 낫다.
+    if (err?.code === "23502") {
+      console.error("기타 결제 INSERT 가 NOT NULL 제약에 걸렸습니다 (스키마 준비 실패 가능성):", err);
+      return res.status(500).json({
+        error: "기타 결제 준비가 아직 끝나지 않았습니다. 서버를 다시 시작한 뒤 시도해 주세요.",
+      });
     }
     throw err;
   }

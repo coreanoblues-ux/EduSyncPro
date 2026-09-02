@@ -1314,6 +1314,28 @@ async function handleCancelDispatch(c: PendingCancel) {
         "카드사에 따라 실제 입금까지 2~5영업일이 걸릴 수 있습니다.",
       actions: [],
     });
+
+    // ── 취소 영수증 (서버 보고까지 끝난 뒤에만 진입) ──
+    //
+    // 순서를 결제 흐름과 똑같이 맞춘다: 카드 → 서버 보고 → 영수증. 영수증을
+    // 먼저 뽑으면, 종이는 나왔는데 장부에는 없는 상태가 생길 수 있다.
+    //
+    // 여기서 어떤 예외가 나도 취소는 이미 확정이다. 프린터 실패가 위로 전파돼
+    // 취소를 FAILED 로 뒤집는 일은 절대 없어야 한다 — 카드는 실제로 취소됐는데
+    // 서버가 실패로 알면 원장이 같은 건을 또 취소하려 든다.
+    await sleep(2500); // 취소 완료 문구를 읽을 시간
+    try {
+      // ★ 원거래의 paymentKey 다. 취소 거래에는 별도의 paymentKey 가 없고,
+      //   문서상 printReceipt 가 받는 것도 "결제된 건의 paymentKey" 뿐이다.
+      await promptReceiptPrintAfterApproval(c.paymentKey, "cancel");
+    } catch (err) {
+      log.error(
+        "취소 영수증 흐름 예외 (무시)",
+        err,
+        "카드 취소와 장부 반영은 이미 완료되었습니다. 영수증 흐름 오류는 취소 결과를 바꾸지 않습니다."
+      );
+    }
+    return; // 결제 흐름과 동일하게, 영수증 뒤에는 곧바로 유휴로 돌아간다
   } else if (type === "TIMEOUT") {
     showFatal(
       "취소 결과를 확인하지 못했습니다",
@@ -1598,7 +1620,17 @@ async function recoverInterruptedCancel() {
 // ─── 영수증 출력 (승인 이후 부가 단계) ───────────────────────────────
 
 /**
- * 승인 완료 후 영수증 선택 화면을 띄우고, 결정에 따라 프린터를 호출한다.
+ * 영수증 흐름의 종류. 문구만 다르고 절차는 완전히 같다.
+ *
+ * ── 왜 굳이 구분하나 ──
+ *   프린터 실패 안내에 "결제는 정상적으로 완료되었습니다" 라고 적어 두었는데,
+ *   취소 흐름에서 그 문장이 그대로 나오면 원장·학부모가 정반대로 읽는다.
+ *   돈을 돌려준 자리에서 "결제 완료" 를 보여 주면 안 된다.
+ */
+type ReceiptFlow = "approval" | "cancel";
+
+/**
+ * 승인 또는 취소 완료 후 영수증 선택 화면을 띄우고, 결정에 따라 프린터를 호출한다.
  *
  * 사양 요약:
  *   - 8초 카운트다운을 표시한다.
@@ -1613,8 +1645,34 @@ async function recoverInterruptedCancel() {
  *
  * 이 함수는 예외를 밖으로 던지지 않는다. 프린터가 없거나 실패해도 결제 상태는
  * 이미 확정이므로 로그만 남기고 조용히 종료. resolve 는 항상 발생한다.
+ *
+ * ── 취소 영수증에 대해 (0.3.22) ──
+ *   공식 문서(docs.tossplace.com/reference/plugin-sdk/front/printer.html)에 프린터
+ *   메서드는 printReceipt 하나뿐이다. **취소 전용 메서드도, "취소본으로 뽑아라"
+ *   같은 파라미터도 없다.** 파라미터는 paymentKey · count · orderInfo · additionalText
+ *   네 개가 전부다.
+ *
+ *   그래서 취소도 같은 메서드를 같은 paymentKey 로 부른다. 단말기가 그 결제건의
+ *   현재 상태(취소됨)를 보고 취소 전표를 뽑아 주기를 기대하는 것이다. 다만 그건
+ *   **문서에 적혀 있지 않고 우리가 확인한 사실도 아니다.** 확인 못 한 것을 확인한
+ *   것처럼 다루지 않기 위해 additionalText 로 취소 사실을 한 줄 박아 둔다.
+ *
+ *   이 한 줄이 하는 일:
+ *     · 단말기가 취소 전표를 뽑아 주면 → 같은 말이 한 번 더 적힐 뿐, 해가 없다.
+ *     · 단말기가 원승인 전표를 그대로 뽑으면 → 그 종이가 "결제 영수증" 으로
+ *       읽히는 최악을 막는다. 환불해 준 자리에서 승인 전표를 건네면 나중에
+ *       "결제한 적 없다" 와 "영수증 있다" 가 정면으로 부딪힌다.
+ *   실물 확인 전까지는 이 문구가 유일한 안전장치다.
  */
-async function promptReceiptPrintAfterApproval(paymentKey: string): Promise<void> {
+async function promptReceiptPrintAfterApproval(
+  paymentKey: string,
+  flow: ReceiptFlow = "approval"
+): Promise<void> {
+  const isCancel = flow === "cancel";
+  // 프린터를 못 쓸 때 보여 줄 문장. 흐름에 따라 사실이 정반대라 반드시 갈라야 한다.
+  const doneSentence = isCancel
+    ? "결제취소는 정상적으로 접수되었습니다."
+    : "결제는 정상적으로 완료되었습니다.";
   // 최종 방어선: 같은 paymentKey 에 대해 이번 흐름에서 printReceipt 는 최대 1회.
   let printCalledForThisPayment = false;
 
@@ -1627,31 +1685,42 @@ async function promptReceiptPrintAfterApproval(paymentKey: string): Promise<void
         return;
       }
       printCalledForThisPayment = true;
-      log.info("영수증 출력 요청", `paymentKey=${paymentKey} trigger=${trigger}`);
+      log.info(
+        isCancel ? "취소 영수증 출력 요청" : "영수증 출력 요청",
+        `paymentKey=${paymentKey} trigger=${trigger}`
+      );
 
       if (!sdk?.printer || typeof sdk.printer.printReceipt !== "function") {
-        // 프린터 미도착·구형 펌웨어 등. 결제 성공에는 영향 없음.
+        // 프린터 미도착·구형 펌웨어 등. 결제·취소 성공에는 영향 없음.
         log.warn(
           "printer.printReceipt 미지원",
           "SDK 에 printer 모듈이 없습니다. 실제 프린터가 연결된 뒤에 재검증합니다."
         );
-        showReceiptResult("fail", "결제는 정상적으로 완료되었습니다. 프린터를 사용할 수 없습니다.");
+        showReceiptResult("fail", `${doneSentence} 프린터를 사용할 수 없습니다.`);
         resolve();
         return;
       }
 
       try {
-        await sdk.printer.printReceipt({ paymentKey, count: 1 });
-        log.info("영수증 출력 완료", `paymentKey=${paymentKey}`);
+        await sdk.printer.printReceipt({
+          paymentKey,
+          count: 1,
+          // 승인 흐름은 지금까지처럼 아무것도 덧붙이지 않는다 (현장에서 검증된 출력물이다).
+          // 취소일 때만 한 줄 붙인다 — 이유는 함수 헤더 참고.
+          ...(isCancel ? { additionalText: "※ 결제취소 건입니다." } : {}),
+        });
+        log.info(isCancel ? "취소 영수증 출력 완료" : "영수증 출력 완료", `paymentKey=${paymentKey}`);
         // 성공 시 별도 안내 화면을 오래 띄우지 않는다. 유휴 복귀가 자연스럽다.
       } catch (err) {
-        // 종이 없음 / 프린터 오프라인 / 권한 거부 등. 결제 상태와 완전히 분리.
+        // 종이 없음 / 프린터 오프라인 / 권한 거부 등. 결제·취소 상태와 완전히 분리.
         log.error(
-          "영수증 출력 실패",
+          isCancel ? "취소 영수증 출력 실패" : "영수증 출력 실패",
           err,
-          "카드 승인·원장 반영은 이미 완료된 상태이며 이 오류는 결제에 영향을 주지 않습니다."
+          isCancel
+            ? "카드 취소와 장부 반영은 이미 끝난 상태이며 이 오류는 취소 결과를 되돌리지 않습니다."
+            : "카드 승인·원장 반영은 이미 완료된 상태이며 이 오류는 결제에 영향을 주지 않습니다."
         );
-        showReceiptResult("fail", "결제는 정상적으로 완료되었습니다. 영수증 출력에 실패했습니다.");
+        showReceiptResult("fail", `${doneSentence} 영수증 출력에 실패했습니다.`);
       }
       resolve();
     };
@@ -1664,12 +1733,18 @@ async function promptReceiptPrintAfterApproval(paymentKey: string): Promise<void
       }
       // 사용자 명시 생략 — printCalledForThisPayment 는 켜지 않는다 (프린터를 안 부름).
       // 이후 timeout 콜백이 뒤늦게 들어와도 screen 내부 decided guard 가 이미 잠갔다.
-      log.info("영수증 생략", `paymentKey=${paymentKey} 사용자가 생략을 선택`);
+      log.info(
+        isCancel ? "취소 영수증 생략" : "영수증 생략",
+        `paymentKey=${paymentKey} 사용자가 생략을 선택`
+      );
       resolve();
     };
 
     showReceiptChoice({
       autoPrintMs: 8_000,
+      // 취소한 자리에서 "결제가 완료되었습니다" 가 뜨면 사실과 정반대다.
+      // 승인 흐름은 undefined 를 넘겨 현장에서 검증된 기존 문구를 그대로 쓴다.
+      title: isCancel ? "결제가 취소되었습니다" : undefined,
       onPrint: () => {
         void doPrint("user");
       },

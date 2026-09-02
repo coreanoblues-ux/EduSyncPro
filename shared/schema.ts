@@ -389,10 +389,32 @@ export const paymentIntents = pgTable("payment_intents", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
   paymentKey: text("payment_key").notNull().unique(),
-  studentId: varchar("student_id").references(() => students.id, { onDelete: "cascade" }).notNull(),
+  /**
+   * 누구의 결제인가.
+   *
+   * ⚠️ 0.3.21 까지 NOT NULL 이었다. 0.3.22 에서 **기타 결제**(학생으로 등록되지
+   * 않은 건 — 아직 등록 안 한 학생, 교재·자료 판매 등)를 받으려고 NULL 을 허용했다.
+   * payments.enrollment_id 가 "학원 운영 지출은 연결할 등록이 없으므로 nullable"
+   * 인 것과 정확히 같은 이유다. 장부에는 이미 그런 행이 들어갈 수 있었는데
+   * 결제 요청만 학생을 강제하고 있었다.
+   *
+   * NULL = 학생과 연결되지 않은 결제. 실수로 빠뜨린 게 아니라 **연결할 학생이
+   * 없다는 사실**이다. 읽는 쪽은 반드시 두 경우를 구분해서 다뤄야 한다.
+   */
+  studentId: varchar("student_id").references(() => students.id, { onDelete: "cascade" }),
   // 어떤 수강 등록에 대한 결제인가. invoice 테이블이 없어서 enrollment + paymentMonth로 대체.
-  enrollmentId: varchar("enrollment_id").references(() => enrollments.id, { onDelete: "cascade" }).notNull(),
+  // 기타 결제는 NULL — 위 studentId 주석 참고. 이 값이 NULL 이면 미납 상계 대상이
+  // 아니고, 확정 시 payments.type 도 "원비" 가 아니라 "기타" 로 적힌다.
+  enrollmentId: varchar("enrollment_id").references(() => enrollments.id, { onDelete: "cascade" }),
+  /**
+   * 기타 결제일 때 무엇을 받은 돈인지 (예: "교재비", "3월 모의고사"). 학생 결제는 NULL.
+   *
+   * 이게 없으면 장부에 "Toss Front · 12345678" 만 남아 원장이 몇 달 뒤에 그 돈이
+   * 무엇이었는지 알 방법이 전혀 없다. 금액만 있고 이유가 없는 행은 장부가 아니다.
+   */
+  customLabel: text("custom_label"),
   // 청구월 (YYYY-MM). enrollment + 이 값이 논리적 청구 건을 특정한다.
+  // 기타 결제도 이 값은 채운다 — "돈이 들어온 달" 은 언제나 있기 때문이다.
   paymentMonth: text("payment_month").notNull(),
   deviceId: varchar("device_id").references(() => tossFrontDevices.id, { onDelete: "set null" }),
   // 금액 필드는 확정 시점의 값을 그대로 저장한다. 프론트가 조작한 금액을 신뢰하지 않기 위해

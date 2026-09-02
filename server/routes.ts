@@ -45,6 +45,7 @@ import {
 } from "./toss-front/cardCancelRoutes";
 import { ensureCardCancelSchema } from "./toss-front/cardCancelSchema";
 import { ensureInstallmentSchema } from "./toss-front/installmentSchema";
+import { ensureCustomPaymentSchema } from "./toss-front/customPaymentSchema";
 import tossPluginLogRouter from "./toss-front/pluginLogs";
 import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
@@ -1835,6 +1836,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // 실패해서 **카드결제 자체가 안 된다**. 다른 스키마 준비와 달리 "없으면 새 기능만
   // 못 씀" 이 아니라 "멀쩡하던 수납이 멈춤" 이라, 요청을 받기 전에 끝내야 한다.
   await ensureInstallmentSchema();
+  // 기타 결제(학생과 연결되지 않은 건)를 받기 위한 준비. 위 할부와 달리 이건 빠져도
+  // 기존 학생 결제는 그대로 돈다 — 기존 INSERT 는 student_id·enrollment_id 를 항상
+  // 채우므로 NOT NULL 이 남아 있어도 아무 문제가 없다. 못 하게 되는 건 기타 결제뿐이다.
+  await ensureCustomPaymentSchema();
   // 만료(3분 초과)된 dispatch를 30초 주기로 TIMEOUT으로 정리.
   startDispatchExpirySweeper();
   // 카드취소 테이블을 서버가 직접 만든다. 운영 DB 는 Railway 안에 있어서 개발 PC 의

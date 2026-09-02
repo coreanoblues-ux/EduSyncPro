@@ -301,12 +301,18 @@ async function reconcile(eventType: string, body: any) {
             tenantId: intent.tenant_id,
             enrollmentId: intent.enrollment_id,
             amount: intent.amount,
-            type: "원비",
+            // 등록이 연결되지 않은 결제(기타 결제)면 "기타". 기존 intent 는 전부
+            // enrollment_id 가 채워져 있어 지금까지의 모든 건은 예전과 똑같이 "원비" 다.
+            // confirm 경로(payments.ts)와 판정이 어긋나면, 같은 결제가 어느 길로
+            // 들어왔느냐에 따라 장부의 항목이 달라진다. 그래서 같은 규칙을 쓴다.
+            type: intent.enrollment_id ? "원비" : "기타",
             method: "카드",
             paymentMonth: intent.payment_month,
             paidDate: new Date(approvedAtIso),
             createdBy: systemUserId,
-            notes: `Toss Front (webhook v1) · ${paymentKey}`,
+            notes:
+              `Toss Front (webhook v1) · ${paymentKey}` +
+              (intent.enrollment_id ? "" : ` · 기타 결제(${intent.custom_label ?? "내용 없음"})`),
             externalProvider: "TOSSPLACE",
             externalPaymentKey: paymentKey,
             externalTransactionId: txRow.id,

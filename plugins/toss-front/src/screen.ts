@@ -1015,13 +1015,21 @@ export interface ReceiptChoiceOptions {
   onPrint: () => void;
   onSkip: () => void;
   onTimeout: () => void;
+  /**
+   * 상단 제목. 안 넘기면 지금까지와 똑같이 "결제가 완료되었습니다" 다.
+   *
+   * 0.3.22 에서 취소 영수증이 생기면서 필요해졌다. 취소해 준 자리에서 이 화면이
+   * "결제가 완료되었습니다" 를 띄우면 사실과 정반대다. 기본값을 그대로 둔 이유는
+   * 현장에서 검증된 결제 흐름의 문구를 한 글자도 바꾸지 않기 위해서다.
+   */
+  title?: string;
 }
 
 export function showReceiptChoice(opts: ReceiptChoiceOptions): void {
   if (typeof document === "undefined") return;
 
   currentTone = "idle";
-  currentTitle = "결제가 완료되었습니다";
+  currentTitle = opts.title ?? "결제가 완료되었습니다";
   currentSubtitle = "영수증을 출력하시겠습니까?";
   currentActions = [];
   showDiag = false;

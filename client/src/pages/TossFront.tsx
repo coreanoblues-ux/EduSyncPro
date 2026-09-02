@@ -59,9 +59,12 @@ interface Summary {
 interface Intent {
   id: string;
   paymentKey: string;
-  studentId: string;
+  /** 기타 결제는 연결된 학생이 없다 (null). */
+  studentId: string | null;
   studentName: string | null;
   className: string | null;
+  /** 기타 결제의 내용. 학생 결제는 null. 아래 표에서 학생·반 칸을 대신한다. */
+  customLabel?: string | null;
   paymentMonth: string;
   amount: number;
   status: string;
@@ -104,6 +107,13 @@ interface Refundable {
   paymentKey: string;
   studentName: string | null;
   className: string | null;
+  /**
+   * 기타 결제(학생과 연결되지 않은 결제)의 내용. 학생 결제는 null.
+   *
+   * 이 값이 없으면 기타 결제는 학생·반 칸이 모두 "—" 로만 뜬다. 금액과 시각만
+   * 남은 줄에서 원장이 취소할 건을 골라내는 건 사실상 불가능하다.
+   */
+  customLabel?: string | null;
   paymentMonth: string;
   amount: number;
   status: string;
@@ -132,6 +142,8 @@ interface CardCancel {
   respondedAt: string | null;
   studentName: string | null;
   className: string | null;
+  /** 기타 결제의 내용. 학생 결제는 null. 학생 칸을 대신한다. */
+  customLabel?: string | null;
   paymentMonth: string | null;
   needsHuman: boolean;
   hint: string | null;
@@ -723,8 +735,9 @@ export default function TossFront() {
                       <td className="py-2 whitespace-nowrap">
                         {new Date(it.createdAt).toLocaleString("ko-KR")}
                       </td>
-                      <td>{it.studentName ?? "—"}</td>
-                      <td>{it.className ?? "—"}</td>
+                      {/* 기타 결제는 학생·반이 없다. 입력해 둔 내용으로 대신 식별한다. */}
+                      <td>{it.studentName ?? (it.customLabel ? "기타 결제" : "—")}</td>
+                      <td>{it.className ?? (it.customLabel ?? "—")}</td>
                       <td>{it.paymentMonth}</td>
                       <td className="text-right">{it.amount.toLocaleString()}</td>
                       <td>{statusBadge(it.status)}</td>
@@ -879,7 +892,8 @@ export default function TossFront() {
                       <td className="py-2 whitespace-nowrap">
                         {new Date(c.createdAt).toLocaleString("ko-KR")}
                       </td>
-                      <td>{c.studentName ?? "—"}</td>
+                      {/* 기타 결제는 학생이 없다. 입력해 둔 내용으로 대신 식별한다. */}
+                      <td>{c.studentName ?? (c.customLabel ?? "—")}</td>
                       <td>{c.paymentMonth ?? "—"}</td>
                       <td className="text-right">{c.cancelAmount.toLocaleString()}</td>
                       <td>
@@ -1075,8 +1089,12 @@ export default function TossFront() {
                       <td className="py-2 whitespace-nowrap">
                         {r.approvedAt ? new Date(r.approvedAt).toLocaleString("ko-KR") : "—"}
                       </td>
-                      <td>{r.studentName ?? "—"}</td>
-                      <td>{r.className ?? "—"}</td>
+                      {/*
+                        학생이 없는 건(기타 결제)은 입력해 둔 내용을 대신 보여 준다.
+                        "—" 만 두 칸 뜨면 원장이 어떤 건인지 알 수 없다.
+                      */}
+                      <td>{r.studentName ?? (r.customLabel ? "기타 결제" : "—")}</td>
+                      <td>{r.className ?? (r.customLabel ?? "—")}</td>
                       <td>{r.paymentMonth}</td>
                       <td className="text-right">{r.amount.toLocaleString()}</td>
                       <td className="text-right text-amber-700">

@@ -14,6 +14,13 @@
  *   3. 401 을 받으면 자동 재세션 후 1회 재시도
  */
 
+import {
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  POLL_REQUEST_TIMEOUT_MS,
+  RequestTimeoutError,
+  fetchWithTimeout,
+} from "./net";
+
 export const SERVER_URL =
   (globalThis as any).TOSS_PLUGIN_SERVER_URL ||
   "https://edusyncpro-production-dcfe.up.railway.app";
@@ -54,11 +61,29 @@ function serverHost(): string {
  *   원인(허용 도메인 미등록 / CORS / 인터넷 끊김)이 전혀 구분되지 않는다. 그래서
  *   화면에는 "서버에 연결하지 못했습니다" 라는 말만 남았고, 서버 로그에는 아무 흔적도
  *   없어서 어디를 봐야 할지조차 알 수 없었다. 최소한 "무엇을 확인하라"는 남겨야 한다.
+ *
+ * ── 0.3.23: 시간 제한이 생겼다 ──
+ *   여기에 상한이 없던 것이 "하룻밤 지난 아침 첫 결제가 안 된다" 의 원인이었다.
+ *   fetch 는 스스로 포기하지 않으므로, 죽은 소켓에 요청을 보내면 몇 분이고
+ *   매달린다. 그 사이 폴링 루프 전체가 멈춘다 (net.ts 헤더에 전말을 적어 두었다).
+ *   이제 정해진 시간이 지나면 끊고, 끊긴 것도 "네트워크 실패" 로 번역한다 —
+ *   호출부 입장에서 할 일이 같기 때문이다: 잠시 뒤 다시 시도.
  */
-async function safeFetch(url: string, init: RequestInit): Promise<Response> {
+async function safeFetch(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS
+): Promise<Response> {
   try {
-    return await fetch(url, init);
+    return await fetchWithTimeout(url, init, timeoutMs);
   } catch (e: any) {
+    if (e instanceof RequestTimeoutError) {
+      throw new ApiError(
+        `서버가 제때 응답하지 않았습니다 (${serverHost()}, ${Math.round(e.timeoutMs / 1000)}초 초과). ` +
+          `연결이 끊겼거나 서버가 응답하지 못하는 상태입니다. 잠시 후 자동으로 다시 시도합니다.`,
+        "network"
+      );
+    }
     throw new ApiError(
       `서버에 닿지 못했습니다 (${serverHost()}). ` +
         `단말기가 인터넷에 연결됐는지, 그리고 토스 개발자센터의 허용 도메인(ACL)에 ` +
@@ -134,17 +159,42 @@ async function ensureAccessToken(): Promise<string> {
   return accessToken!;
 }
 
-async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+/**
+ * 들고 있던 accessToken 을 버린다. 다음 요청이 세션부터 새로 맺는다.
+ *
+ * 언제 쓰나 (0.3.23):
+ *   · 폴링이 오래 끊겼다 돌아왔을 때 — 밤새 방치된 연결 위에서 첫 결제를
+ *     시작하지 않기 위해서다.
+ *   · 폴링이 멈춰서 되살릴 때 — 멈춘 원인이 연결이었다면 같은 연결을 다시
+ *     쓰는 것은 같은 실패를 다시 밟는 일이다.
+ *
+ * deviceKey 는 건드리지 않는다. 지우면 페어링을 다시 해야 하는데, 지금 고치려는
+ * 것은 인증이 아니라 연결이다.
+ */
+export function resetSession() {
+  accessToken = null;
+  accessTokenExpiresAt = 0;
+}
+
+async function apiFetch<T>(
+  path: string,
+  init: RequestInit = {},
+  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS
+): Promise<T> {
   const token = await ensureAccessToken();
   const doFetch = async (t: string) =>
-    safeFetch(`${SERVER_URL}${path}`, {
-      ...init,
-      headers: {
-        ...(init.headers || {}),
-        "content-type": "application/json",
-        authorization: `Bearer ${t}`,
+    safeFetch(
+      `${SERVER_URL}${path}`,
+      {
+        ...init,
+        headers: {
+          ...(init.headers || {}),
+          "content-type": "application/json",
+          authorization: `Bearer ${t}`,
+        },
       },
-    });
+      timeoutMs
+    );
   let res = await doFetch(token);
   if (res.status === 401) {
     await refreshSession();
@@ -240,7 +290,8 @@ export function fetchPendingDispatch(): Promise<{
    */
   cancel?: PendingCancel | null;
 }> {
-  return apiFetch("/api/toss-front/dispatch/pending");
+  // 1초마다 도는 길이라 상한을 더 짧게 잡는다 (net.ts POLL_REQUEST_TIMEOUT_MS 주석).
+  return apiFetch("/api/toss-front/dispatch/pending", {}, POLL_REQUEST_TIMEOUT_MS);
 }
 
 /**

@@ -16,6 +16,8 @@
  * 전송 실패는 삼킨다 — 로그를 못 보내는 것 때문에 결제가 막히면 본말전도다.
  */
 
+import { LOG_REQUEST_TIMEOUT_MS, fetchWithTimeout } from "./net";
+
 export type LogLevel = "info" | "warn" | "error";
 
 interface QueuedEntry {
@@ -82,20 +84,26 @@ async function flush() {
   const batch = queue;
   queue = [];
   try {
-    await fetch(`${serverUrl}/api/toss-front/plugin-logs`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        deviceId: deviceIdHint,
-        pluginVersion: PLUGIN_VERSION,
-        entries: batch.map((e) => ({
-          level: e.level,
-          event: e.event,
-          message: e.message,
-          at: e.at,
-        })),
-      }),
-    });
+    // 시간 제한을 두는 이유(0.3.23): 로그 전송이 죽은 연결에 매달리면 소켓 하나를
+    // 몇 분씩 붙들고 있게 된다. 로그는 못 보내도 되지만 결제는 아니다.
+    await fetchWithTimeout(
+      `${serverUrl}/api/toss-front/plugin-logs`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          deviceId: deviceIdHint,
+          pluginVersion: PLUGIN_VERSION,
+          entries: batch.map((e) => ({
+            level: e.level,
+            event: e.event,
+            message: e.message,
+            at: e.at,
+          })),
+        }),
+      },
+      LOG_REQUEST_TIMEOUT_MS
+    );
   } catch {
     // 전송 실패한 배치는 버린다. 재시도 큐를 두면 서버 장애 시 큐가 계속 부풀고
     // 복구 시점에 한꺼번에 몰려 되레 해롭다. 화면·console 에는 이미 남아 있다.

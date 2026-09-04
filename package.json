@@ -20,6 +20,7 @@
     "test:installment": "tsx scripts/test-installment.ts",
     "test:custom-payment": "tsx scripts/test-custom-payment.ts",
     "test:recovery": "tsx scripts/test-recovery.ts",
+    "test:idle-recovery": "tsx scripts/test-idle-recovery.ts",
     "test:outbox": "tsx scripts/test-confirm-outbox.ts",
     "test:webhook-sig": "tsx scripts/test-webhook-signature.ts",
     "test:card-cancel": "tsx scripts/test-card-cancel.ts",

@@ -39,10 +39,13 @@ import {
   exchangePairing,
   ackCancel,
   reportCancelResultRaw,
+  resetSession,
+  ApiError,
   type PendingDispatch,
   type PendingCancel,
   type RecoveryRequest,
 } from "./api";
+import { isLongIdleGap, isPollStuck } from "./net";
 import {
   configureLogger,
   installGlobalErrorHandlers,
@@ -134,6 +137,11 @@ const PLUGIN_VERSION =
 
 const POLL_INTERVAL_MS = 1000;
 const PAYMENT_TIMEOUT_MS = 60_000;
+/**
+ * SDK 가 timeoutMs 를 넘기고도 답이 없을 때, 이만큼 더 기다렸다가 기록을 남긴다.
+ * 결제 앱이 느린 것과 아예 끊긴 것을 가르는 선이다. 기록만 하고 흐름은 안 바꾼다.
+ */
+const SDK_GRACE_MS = 20_000;
 const DEVICE_KEY_STORAGE = "deviceKey";
 
 let sdk: TossFrontSdk | null = null;
@@ -635,7 +643,9 @@ export async function bootstrap() {
   running = true;
   log.info("polling started", `간격=${POLL_INTERVAL_MS}ms`);
   log.info("waiting payment intent", "학생 태블릿의 결제 요청을 기다립니다.");
-  scheduleNextPoll();
+  // 감시부터 켜고 사슬을 시작한다. 첫 폴링이 곧바로 매달리는 경우까지 잡기 위해서다.
+  startPollWatchdog();
+  scheduleNextPoll(pollGeneration);
 }
 
 /**
@@ -793,18 +803,108 @@ function shouldLogRecoveryError(paymentKey: string, code: string, now: number): 
 
 // ─── 폴링 ──────────────────────────────────────────────────────────────
 
-function scheduleNextPoll() {
+/**
+ * 살아 있는 폴링 사슬의 세대 번호.
+ *
+ * ── 왜 필요한가 (0.3.23) ──
+ *   폴링은 `setTimeout(pollOnce)` 로 자기 자신을 이어 가는 사슬이다. 사슬이
+ *   한 번 끊기면 되살릴 방법이 없었다 — 그것이 "아침 첫 결제 실패" 의 실제
+ *   구조였다 (net.ts 헤더 참고).
+ *
+ *   아래 워치독이 멈춘 사슬을 버리고 새 사슬을 시작한다. 그때 옛 사슬이 뒤늦게
+ *   깨어나면 사슬이 둘이 되어 초당 두 번씩 폴링하게 되고, 그 둘이 같은 결제요청을
+ *   두고 경합한다. 세대 번호가 그걸 막는다: 번호가 다른 사슬은 스스로 조용히
+ *   끝난다. 되살리기보다 겹치지 않게 하는 것이 더 중요하다.
+ */
+let pollGeneration = 0;
+/** 지금 폴링 한 바퀴가 시작된 시각. 끝나면 null. 워치독이 이걸 본다. */
+let inFlightSince: number | null = null;
+/**
+ * 마지막으로 폴링이 살아 움직인 시각 (한 바퀴의 시작과 끝 양쪽에서 갱신).
+ *
+ * 끝에서도 갱신하는 이유: 60초짜리 결제가 막 끝난 직후를 "오래 쉬었다" 로 세면
+ * 안 된다. 결제 중에 폴링이 멈춰 있는 것은 정상이기 때문이다. 재려는 것은
+ * "한 바퀴가 끝나고 다음 바퀴가 시작되기까지" 이고, 그 정상값은 1초다.
+ */
+let lastPollAt: number | null = null;
+let pollWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+
+function scheduleNextPoll(gen: number) {
   if (!running) return;
-  setTimeout(pollOnce, POLL_INTERVAL_MS);
+  // 세대가 바뀌었으면 이 사슬은 여기서 끝난다.
+  if (gen !== pollGeneration) return;
+  setTimeout(() => void pollOnce(gen), POLL_INTERVAL_MS);
 }
 
-async function pollOnce() {
+/**
+ * 멈춘 폴링 사슬을 버리고 새로 시작한다.
+ *
+ * 이 함수가 하는 일은 "다시 시도" 가 아니라 "포기하고 새로 시작" 이다. 매달려
+ * 있는 요청·SDK 호출을 취소할 방법은 없으므로(그건 그대로 두고) 우리 쪽 사슬만
+ * 새로 건다. 옛 사슬은 세대 번호 때문에 스스로 끝난다.
+ */
+function restartPollChain(why: string) {
+  pollGeneration += 1;
+  inFlight = false;
+  inFlightSince = null;
+  // 새 사슬의 첫 바퀴가 "밤새 쉬었다" 로 오해받지 않게 시계를 여기서 맞춰 둔다.
+  // 세션은 바로 아래에서 어차피 새로 맺는다.
+  lastPollAt = Date.now();
+  // 멈춘 원인이 연결이었다면 같은 세션을 다시 쓰는 것은 같은 실패를 다시 밟는 일이다.
+  resetSession();
+  log.error(
+    "폴링 멈춤 감지 — 다시 시작합니다",
+    new Error(why),
+    "결제 요청을 못 받는 상태였습니다. 단말기를 껐다 켜지 않아도 여기서 복구됩니다.",
+  );
+  scheduleNextPoll(pollGeneration);
+}
+
+/**
+ * 폴링 사슬이 살아 있는지 감시한다.
+ *
+ * setTimeout 사슬과 **독립된** setInterval 이라는 점이 핵심이다. 사슬이 통째로
+ * 멈춰도 이 타이머는 계속 돈다. 마지막 방어선이므로 판단은 최대한 보수적으로
+ * 한다 — 결제창이 떠 있는 동안(busy)에는 무슨 일이 있어도 개입하지 않는다.
+ */
+const POLL_WATCHDOG_INTERVAL_MS = 5_000;
+
+function startPollWatchdog() {
+  if (pollWatchdogTimer != null) return;
+  pollWatchdogTimer = setInterval(() => {
+    if (!running) return;
+    if (!isPollStuck(inFlightSince, Date.now(), busy)) return;
+    const stuckFor = Math.round((Date.now() - (inFlightSince ?? Date.now())) / 1000);
+    restartPollChain(`폴링 한 바퀴가 ${stuckFor}초째 끝나지 않았습니다.`);
+  }, POLL_WATCHDOG_INTERVAL_MS);
+}
+
+async function pollOnce(gen: number) {
   if (!running) return;
+  if (gen !== pollGeneration) return;
   if (busy || inFlight) {
-    scheduleNextPoll();
+    scheduleNextPoll(gen);
     return;
   }
+
+  // ── 밤샘 유휴 감지 ──
+  //   화면이 꺼져 웹뷰가 멈춰 있었거나 네트워크가 끊겼다 돌아온 경우다. 그
+  //   상태에서 들고 있던 세션·연결은 살아 있다고 믿을 근거가 없다. 첫 결제가
+  //   그 위에서 시작되지 않도록 여기서 미리 새로 맺는다. 이 한 줄이 원장이
+  //   신고한 "아침 첫 결제" 를 정면으로 겨냥한다.
+  const now = Date.now();
+  if (isLongIdleGap(lastPollAt, now)) {
+    const idleFor = Math.round((now - (lastPollAt ?? now)) / 1000);
+    resetSession();
+    log.warn(
+      "장시간 유휴 후 첫 통신",
+      `폴링이 ${idleFor}초 만에 돌아왔습니다. 서버 세션을 새로 맺고 이어 갑니다.`,
+    );
+  }
+  lastPollAt = now;
+
   inFlight = true;
+  inFlightSince = now;
   try {
     const { pending, recover, cancel } = await fetchPendingDispatch();
 
@@ -901,8 +1001,16 @@ async function pollOnce() {
       );
     }
   } finally {
-    inFlight = false;
-    scheduleNextPoll();
+    // 세대가 바뀌었다면(워치독이 이미 새 사슬을 시작했다면) 여기서 조용히 끝난다.
+    // 깃발을 건드리지도, 다음 폴링을 예약하지도 않는다 — 새 사슬의 상태를
+    // 뒤늦게 깨어난 옛 사슬이 덮어쓰면 그게 더 나쁜 고장이다.
+    if (gen === pollGeneration) {
+      inFlight = false;
+      inFlightSince = null;
+      // 끝난 시각도 "살아 있었다" 로 친다 (lastPollAt 선언부 주석 참고).
+      lastPollAt = Date.now();
+      scheduleNextPoll(gen);
+    }
   }
 }
 
@@ -917,16 +1025,41 @@ async function handleDispatch(d: PendingDispatch) {
     return;
   }
 
+  // 화면을 먼저 잡는다 (0.3.23).
+  //
+  // 예전에는 ack 가 끝난 뒤에 이 줄이 있었다. 그래서 ack 가 느리거나 매달리면
+  // 단말기는 대기화면 그대로였고, 원장이 본 것이 정확히 그 장면이다 —
+  // "결제 화면까지는 갔는데 카드 넣으라는 화면이 안 뜬다". 서버 응답을 기다리는
+  // 중이라는 사실 자체를 사람이 볼 수 있어야 한다.
+  showBusy(d.orderName, d.amount);
+
   // ack 못 하면 다른 단말이 같은 dispatch 를 잡을 수도 있으니 실패 시 중단한다.
   try {
     await ackDispatch(d.dispatchId);
     log.info("dispatch ack", `dispatch=${d.dispatchId} DELIVERED 로 표시했습니다.`);
   } catch (err) {
-    log.error("dispatch ack 실패", err, `dispatch=${d.dispatchId} — 결제창을 띄우지 않습니다.`);
+    // ── 네트워크로 실패했으면 이 결제요청을 다시 집을 수 있게 풀어 준다 (0.3.23) ──
+    //   pollOnce 가 handledPaymentKeys 에 먼저 넣어 두기 때문에, 여기서 그냥
+    //   돌아가면 이 dispatch 는 **이 부팅 동안 두 번 다시 시도되지 않는다.**
+    //   태블릿은 3분 내내 "통신 중" 만 띄우다 시간초과로 끝난다.
+    //
+    //   다시 집어도 이중결제가 되지 않는 근거: ack 는 PENDING → DELIVERED 조건부
+    //   UPDATE 다(서버 dispatch.ts). 이미 누군가 집어갔으면 409 가 돌아오고,
+    //   /dispatch/pending 은 PENDING 인 건만 내려주므로 애초에 다시 오지도 않는다.
+    //   즉 "서버가 아직 아무에게도 안 준 요청" 일 때만 다시 시도된다.
+    //
+    //   HTTP 오류(409 등)는 서버가 내린 판단이므로 그대로 접는다. 여기서 되풀이하면
+    //   남이 집어간 결제를 우리가 가로채려 드는 꼴이 된다.
+    const retryable = err instanceof ApiError && err.kind === "network";
+    if (retryable) handledPaymentKeys.delete(d.paymentKey);
+    log.error(
+      "dispatch ack 실패",
+      err,
+      `dispatch=${d.dispatchId} — 결제창을 띄우지 않습니다.` +
+        (retryable ? " 통신 문제로 보여 다음 폴링에서 다시 시도합니다." : " 서버가 거절했으므로 접습니다."),
+    );
     return;
   }
-
-  showBusy(d.orderName, d.amount);
 
   let result: PaymentResult;
   try {
@@ -940,17 +1073,39 @@ async function handleDispatch(d: PendingDispatch) {
       "requestPayment 호출",
       `금액=${d.amount} 공급가=${d.supplyValue} 세액=${d.tax} 할부=${installment === 0 ? "일시불" : installment + "개월"}`
     );
-    result = await sdk.payment.requestPayment({
-      paymentKey: d.paymentKey,
-      tax: d.tax,
-      supplyValue: d.supplyValue,
-      taxExemptValue: d.taxExemptValue,
-      tip: d.tip,
-      installment,
-      timeoutMs: PAYMENT_TIMEOUT_MS,
-      localeCode: "ko",
-      excludePaymentTypes: ["CASH"],
-    });
+    // ── 응답 없는 SDK 를 기록만 해 둔다 (0.3.23) ──
+    //   requestPayment 는 timeoutMs 안에 스스로 끝나야 정상이다. 그 시간을 한참
+    //   넘겨도 아무 답이 없다면 단말기와 결제 앱 사이가 끊긴 것이다. 그 상태는
+    //   지금까지 아무 흔적도 남기지 않아서, 원장이 "카드 넣으라는 화면이 안 뜬다"
+    //   고 해도 우리가 확인할 방법이 없었다.
+    //
+    //   ⚠️ 기록만 하고 흐름은 건드리지 않는다. 여기서 우리가 먼저 포기하면,
+    //      뒤늦게 승인이 나 있을 때 "카드는 긁혔는데 실패로 보고된" 최악이 된다.
+    //      화면도 건드리지 않는다 — 결제창 위에 우리 판을 덮으면 진짜로 카드를
+    //      못 넣게 만든다.
+    const sdkWatchdog = setTimeout(() => {
+      log.error(
+        "requestPayment 무응답",
+        new Error(`${Math.round((PAYMENT_TIMEOUT_MS + SDK_GRACE_MS) / 1000)}초 경과`),
+        `dispatch=${d.dispatchId} — 결제 앱이 응답하지 않습니다. 계속 기다립니다. ` +
+          `이 줄이 보이면 단말기 재시작이 필요한 상태였다는 뜻입니다.`,
+      );
+    }, PAYMENT_TIMEOUT_MS + SDK_GRACE_MS);
+    try {
+      result = await sdk.payment.requestPayment({
+        paymentKey: d.paymentKey,
+        tax: d.tax,
+        supplyValue: d.supplyValue,
+        taxExemptValue: d.taxExemptValue,
+        tip: d.tip,
+        installment,
+        timeoutMs: PAYMENT_TIMEOUT_MS,
+        localeCode: "ko",
+        excludePaymentTypes: ["CASH"],
+      });
+    } finally {
+      clearTimeout(sdkWatchdog);
+    }
   } catch (err: any) {
     log.error("requestPayment 예외", err, `dispatch=${d.dispatchId}`);
     await reportDispatchResult(d.dispatchId, {

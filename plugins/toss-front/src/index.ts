@@ -56,6 +56,8 @@ import {
   findSdk,
   waitForSdk,
   renderIdle,
+  renderResult,
+  renderSelect,
   storage,
   type IdlePageParams,
   type PaymentResponseSuccess,
@@ -111,7 +113,6 @@ import {
 } from "./approval";
 import {
   showIdle,
-  showAdminMenu,
   showBusy,
   showCancelBusy,
   showFatal,
@@ -120,10 +121,7 @@ import {
   clearOwnScreen,
   confirmTemplateRendered,
   setScreenVersion,
-  showPairing,
-  showReceiptChoice,
-  showReceiptResult,
-  type ScreenAction,
+  showReceiptChoiceFallback,
 } from "./screen";
 
 // ─── 버전 ──────────────────────────────────────────────────────────────
@@ -195,6 +193,94 @@ let merchantName = "";
 let exitedToHome = false;
 
 /**
+ * 화면 세대 번호 (0.3.24 — 2026-09-09 검수 반려 대응으로 표준 화면을 늘리며 도입).
+ *
+ * 표준 결과 화면(renderResultPage)의 onTimeout 은 SDK 타이머가 부른다. 즉 우리
+ * 화면이 이미 다른 것으로 바뀐 **뒤에** 옛 화면의 타이머가 뒤늦게 깨어날 수 있다.
+ * 예: 취소완료 화면의 타이머가, 그 뒤에 뜬 영수증 선택 화면을 goIdle 로 덮으면
+ * 자동 출력이 통째로 사라진다. 그래서 화면을 새로 잡는 쪽(goIdle·관리자 메뉴·
+ * 결제 진행·영수증 선택·showResultScreen)이 이 번호를 올리고, 뒤늦게 깨어난
+ * 콜백은 번호가 다르면 아무것도 하지 않는다.
+ */
+let screenSeq = 0;
+
+/**
+ * 결과·안내 화면을 공식 renderResultPage 로 그리는 공용 입구 (0.3.24).
+ *
+ * 2026-09-09 검수 반려의 (1-b) 대응이다: 버튼이 필요한 상태·오류 화면은 전부
+ * 여기로 온다. 표준 화면이 실패하면 폴백은 **조작 요소 없는 안내 텍스트**뿐이다
+ * (showFatal / showStatus). 폴백에는 버튼이 못 나가는 대신 화면이 스스로
+ * 사라지지 않으므로, persist 가 아닌 화면은 타이머와 같은 시간 뒤에 기본 동작을
+ * setTimeout 으로 이어 준다.
+ *
+ * persist=true 는 "원장이 조치할 때까지 남아야 하는" 화면용이다 (등록 실패·
+ * 서버 연결 끊김 등). renderResultPage 는 timerMs(최대 10초) 뒤 반드시 onTimeout
+ * 을 부르므로, 상주하려면 onTimeout 에서 같은 화면을 다시 그리는 수밖에 없다.
+ * goIdle 등 다음 화면 주인이 screenSeq 를 올리면 이 반복은 저절로 멈춘다.
+ */
+function showResultScreen(opts: {
+  status: "success" | "error";
+  title: string;
+  description?: string;
+  /** 표준 화면에 얹을 버튼들. 폴백(텍스트 전용)에는 나타나지 않는다. */
+  buttons?: Array<{ label: string; onClick: () => void }>;
+  /** 3000~10000ms (renderResultPage 허용 범위). 생략하면 8000. */
+  timerMs?: number;
+  /** 타이머 만료 동작. 생략 시 "결제 중·나가 있는 중이 아니면 goIdle". persist 면 무시. */
+  onTimeout?: () => void;
+  /** true 면 타이머마다 같은 화면을 다시 그려 사실상 상주시킨다. */
+  persist?: boolean;
+}): void {
+  const seq = ++screenSeq;
+  const timerMs = Math.min(10_000, Math.max(3_000, opts.timerMs ?? 8_000));
+
+  const fireTimeout = () => {
+    if (seq !== screenSeq) return; // 이미 다른 화면이 주인이다 — 아무것도 하지 않는다
+    if (opts.persist) {
+      render();
+      return;
+    }
+    if (opts.onTimeout) {
+      opts.onTimeout();
+      return;
+    }
+    if (!busy && !exitedToHome) goIdle();
+  };
+
+  const render = () => {
+    if (seq !== screenSeq) return;
+    const ok = renderResult(
+      sdk,
+      () => {
+        if (opts.status === "error") showFatal(opts.title, opts.description ?? "");
+        else showStatus({ title: opts.title, detail: opts.description ?? "", tone: "idle" });
+        // 폴백에는 SDK 타이머가 없으니 기본 동작을 우리가 이어 준다.
+        // persist 화면의 폴백은 다시 그릴 필요가 없다 — 자체 DOM 은 스스로 안 사라진다.
+        if (!opts.persist) setTimeout(fireTimeout, timerMs);
+      },
+      {
+        type: "image",
+        status: opts.status,
+        title: opts.title,
+        description: opts.description,
+        buttons: opts.buttons?.map((b) => ({
+          label: b.label,
+          onClick: () => {
+            if (seq !== screenSeq) return; // 뒤늦게 도착한 옛 화면의 클릭은 무시
+            b.onClick();
+          },
+        })),
+        timerMs,
+        onTimeout: fireTimeout,
+      },
+    );
+    if (ok) confirmTemplateRendered();
+  };
+
+  render();
+}
+
+/**
  * 대기화면에 뭘 띄울지.
  *
  * ── 왜 oneButton 인가 (2026-08-29, 문서 확인 후 twoButton 에서 변경) ──
@@ -255,18 +341,43 @@ function idleParams(): IdlePageParams {
  * 이 화면은 학원 로비에 서 있고 학생도 만질 수 있는데, 이제 나가기까지
  * 두 번을 눌러야 하고 그 사이에 경고 문구를 읽게 된다.
  *
- * ── 0.3.11 에서 바뀐 것 ──
- *   0.3.10 은 이 메뉴를 공식 템플릿으로만 그렸고, 실패하면 토스트 한 줄을
- *   띄우고 끝냈다. 그런데 이 단말기의 renderIdlePage 는 React 오류를 던진다.
- *   즉 원장 앞의 실물 단말기에서는 관리자 메뉴가 아예 열리지 않았다.
- *   "안 나가고 이유를 알려 주는 편이 낫다" 고 적어 뒀지만, 나갈 길이 하나도
- *   없는 상태에서 그 말은 그냥 갇힌다는 뜻이다.
- *
- *   이제 템플릿이 실패하면 자체 DOM 메뉴를 그린다. 자체 DOM 이 단말기에서
- *   렌더된다는 건 원장이 보낸 사진으로 확인됐다.
+ * ── 0.3.24 에서 바뀐 것 (2026-09-09 검수 반려 대응) ──
+ *   0.3.11~0.3.23 은 템플릿이 실패하면 자체 DOM 메뉴(버튼 3개)를 그렸다.
+ *   심사 기준상 폴백에 조작 요소를 둘 수 없으므로 그 메뉴는 지웠다. 대신
+ *   표준 화면을 두 겹으로 시도한다:
+ *     1순위  renderSelectPage — 목록형 메뉴. 이 화면을 위해 만들어진 API 다.
+ *     2순위  renderIdlePage(twoButton) — 0.3.10 부터 검증된 기존 경로.
+ *   둘 다 실패하면 조작 요소 없는 안내 문구를 띄우고 잠시 뒤 대기화면으로
+ *   자동 복귀한다. 이 단말기(ensureTemplateContainer 적용 후)에서 표준 화면이
+ *   둘 다 실패하는 경우는 관찰된 적이 없다.
  */
 function openAdminMenu() {
   log.info("관리자 메뉴", "대기화면에서 관리자 버튼을 눌렀습니다.");
+  screenSeq++; // 이제 화면 주인은 관리자 메뉴다
+
+  const opened = renderSelect(sdk, {
+    title: merchantName || "관리자",
+    subtitle:
+      "[첫화면으로]를 누르면 학생이 이 단말기로 결제할 수 없습니다. " +
+      "결제 취소는 단말기가 아니라 토스플레이스 판매자센터(PC)에서 하세요.",
+    options: [
+      {
+        title: "단말기 상태",
+        subtitle: "서버 연결·플러그인 버전 확인 (읽기 전용)",
+        onClick: () => showTerminalStatus(),
+      },
+      {
+        title: "첫화면으로",
+        subtitle: "단말기 첫화면으로 나갑니다",
+        onClick: () => exitToTossHome(),
+      },
+    ],
+    onBack: () => goIdle(),
+  });
+  if (opened) {
+    confirmTemplateRendered();
+    return;
+  }
 
   const params: IdlePageParams = {
     type: "twoButton",
@@ -281,13 +392,21 @@ function openAdminMenu() {
 
   const rendered = renderIdle(
     sdk,
-    () =>
-      showAdminMenu({
-        title: merchantName || "관리자",
-        onStatus: () => showTerminalStatus(),
-        onExit: () => exitToTossHome(),
-        onClose: () => goIdle(),
-      }),
+    () => {
+      // 마지막 폴백: 조작 요소 없는 안내만. 6초 뒤 대기화면으로 자동 복귀 —
+      // 여기 갇히면 학생 결제까지 같이 멈추기 때문이다.
+      const seq = screenSeq;
+      showStatus({
+        title: "관리자 메뉴를 열 수 없습니다",
+        detail:
+          "이 단말기에서 표준 메뉴 화면을 그리지 못했습니다. 잠시 후 대기화면으로 돌아갑니다. " +
+          "단말기 관리는 태블릿의 원장 화면에서 할 수 있습니다.",
+        tone: "error",
+      });
+      setTimeout(() => {
+        if (seq === screenSeq && !busy && !exitedToHome) goIdle();
+      }, 6000);
+    },
     params
   );
   if (rendered) confirmTemplateRendered();
@@ -345,6 +464,9 @@ function exitToTossHome() {
 
   log.info("첫화면으로 이동", "원장 요청으로 sdk.app.setIdle() 을 호출합니다.");
 
+  // 화면을 토스에게 넘긴다. 우리 쪽 결과 화면의 타이머·persist 재렌더가
+  // 뒤늦게 깨어나 토스 첫화면을 덮지 못하게 세대를 올린다.
+  screenSeq++;
   // 덮개를 먼저 걷는다. 이게 0.3.12 수정의 핵심이다.
   clearOwnScreen();
   removeBootNode();
@@ -400,20 +522,23 @@ function reportExitFailed(reason: string) {
   exitedToHome = false;
   log.error("첫화면 이동 실패", reason, "대안 경로를 화면에 띄웁니다.");
 
-  const actions: ScreenAction[] = [];
+  const buttons: Array<{ label: string; onClick: () => void }> = [];
   if (sdk?.app?.openSetting) {
-    actions.push({ label: "토스 설정 열기", kind: "primary", onClick: () => openTossSetting() });
+    buttons.push({ label: "토스 설정 열기", onClick: () => openTossSetting() });
   }
-  actions.push({ label: "대기화면으로", kind: "secondary", onClick: () => goIdle() });
+  buttons.push({ label: "대기화면으로", onClick: () => goIdle() });
 
-  showStatus({
-    tone: "error",
+  // persist: 원장이 버튼을 누를 때까지 남는다. 예전 자체 화면도 그랬다.
+  showResultScreen({
+    status: "error",
     title: "첫화면으로 나가지 못했습니다",
-    detail:
+    description:
       "이 단말기 펌웨어가 플러그인 밖으로 나가는 것을 허용하지 않습니다. " +
       "결제 취소는 토스플레이스 판매자센터(PC 웹)에서 하세요. " +
-      "단말기 자체를 다루셔야 하면 아래 [토스 설정 열기]를 눌러 보세요.",
-    actions,
+      "단말기 자체를 다루셔야 하면 [토스 설정 열기]를 눌러 보세요.",
+    buttons,
+    timerMs: 10_000,
+    persist: true,
   });
 }
 
@@ -421,6 +546,8 @@ function reportExitFailed(reason: string) {
 function openTossSetting() {
   if (!sdk?.app?.openSetting) return;
   log.info("토스 설정 열기", "sdk.app.openSetting() 을 호출합니다.");
+  // 설정 화면도 남에게 넘긴 화면이다. 옛 화면 타이머가 덮지 못하게 세대를 올린다.
+  screenSeq++;
   clearOwnScreen();
   removeBootNode();
   // 설정 화면도 남에게 넘긴 화면이다. 폴링이 그 위를 덮지 않게 막는다.
@@ -429,13 +556,15 @@ function openTossSetting() {
   void sdk.app.openSetting().catch((err) => {
     exitedToHome = false;
     log.error("openSetting 실패", err, "대기화면으로 되돌립니다.");
-    showStatus({
-      tone: "error",
+    showResultScreen({
+      status: "error",
       title: "설정 화면도 열지 못했습니다",
-      detail:
-        "단말기에서 직접 설정으로 들어가셔야 합니다. 진입 방법은 아래 로그가 아니라 " +
+      description:
+        "단말기에서 직접 설정으로 들어가셔야 합니다. 진입 방법은 " +
         "태블릿 화면(단말기 모드 안내)에 적어 두었습니다.",
-      actions: [{ label: "대기화면으로", kind: "secondary", onClick: () => goIdle() }],
+      buttons: [{ label: "대기화면으로", onClick: () => goIdle() }],
+      timerMs: 10_000,
+      persist: true,
     });
   });
 }
@@ -468,16 +597,19 @@ function showTerminalStatus() {
 
   log.info("단말기 상태 확인", `${line} · v${PLUGIN_VERSION}`);
 
-  showStatus({
-    tone: connected ? "idle" : "error",
+  showResultScreen({
+    status: connected ? "success" : "error",
     title: connected ? "단말기 정상" : "서버와 연결이 끊겼습니다",
-    detail: [
+    description: [
       line,
       `플러그인 버전: v${PLUGIN_VERSION}`,
       `상점: ${merchantName || "(확인 안 됨)"}`,
       busy ? "지금 결제 진행 중입니다." : "결제 대기 중입니다.",
     ].join(" · "),
-    actions: [{ label: "대기화면으로", kind: "primary", onClick: () => goIdle() }],
+    buttons: [{ label: "대기화면으로", onClick: () => goIdle() }],
+    timerMs: 10_000,
+    // 타이머가 끝나면 기본 동작(goIdle)으로 돌아간다 — 읽기 전용 화면이라
+    // 여기 상주할 이유가 없고, 학생 결제 화면을 가리면 안 된다.
   });
 }
 
@@ -496,7 +628,9 @@ function showTerminalStatus() {
 function goIdle() {
   // 원장이 눌러서 돌아오는 길이다. 나간 상태를 여기서 푼다.
   exitedToHome = false;
-  const rendered = renderIdle(sdk, () => showIdle({ onAdmin: openAdminMenu }), idleParams());
+  // 이제 화면 주인은 대기화면이다. 옛 결과 화면의 타이머·persist 반복을 멈춘다.
+  screenSeq++;
+  const rendered = renderIdle(sdk, () => showIdle(), idleParams());
   if (rendered) confirmTemplateRendered();
 }
 
@@ -513,7 +647,7 @@ export async function bootstrap() {
 
   // 1) SDK 확보. 못 찾으면 결제는 불가능하지만, 화면과 로그는 계속 살려 둔다.
   //    (여기서 return 해 버리면 다시 "아무 단서 없는 화면"이 된다)
-  showIdle({ onAdmin: openAdminMenu });
+  showIdle();
   sdk = await waitForSdk(10_000);
   if (!sdk) {
     showFatal(
@@ -549,7 +683,14 @@ export async function bootstrap() {
       // 다시 받는 것이고, 다른 하나는 개발자센터 허용 도메인을 고치는 것이다. 실제로
       // 이 문장 때문에 원인을 찾는 데 하루가 걸렸다. 진단은 단말기 앞에 선 사람이
       // 읽을 수 있어야 한다.
-      showFatal("단말기 등록 실패", humanErr(err), { onAdmin: openAdminMenu });
+      showResultScreen({
+        status: "error",
+        title: "단말기 등록 실패",
+        description: humanErr(err),
+        buttons: [{ label: "관리자 메뉴", onClick: () => openAdminMenu() }],
+        timerMs: 10_000,
+        persist: true, // 등록이 안 된 단말기는 할 수 있는 일이 없다. 원장이 볼 때까지 남긴다.
+      });
       await log.flushNow();
       return;
     }
@@ -588,11 +729,16 @@ export async function bootstrap() {
     log.info("terminal authenticated", `device=${device.displayName}`);
     log.info("backend connection OK", `${SERVER_URL} 응답 정상`);
   } catch (err) {
-    showFatal(
-      "서버 연결 실패",
-      "EduSyncPro 서버에 연결하지 못했습니다. 단말기 인터넷 연결과 등록 코드를 확인해 주세요.",
-      { onAdmin: openAdminMenu }
-    );
+    showResultScreen({
+      status: "error",
+      title: "서버 연결 실패",
+      description:
+        "EduSyncPro 서버에 연결하지 못했습니다. 단말기 인터넷 연결과 등록 코드를 확인해 주세요. " +
+        "연결되면 자동으로 복구됩니다.",
+      buttons: [{ label: "관리자 메뉴", onClick: () => openAdminMenu() }],
+      timerMs: 10_000,
+      persist: true, // 네트워크가 돌아와 폴링이 복구되면 goIdle 이 이 화면을 걷는다.
+    });
     log.error("backend connection 실패", err, "세션 발급 단계에서 중단되었습니다.");
     await log.flushNow();
     // 연결이 끊겼어도 폴링은 계속 돌린다. 네트워크가 돌아오면 스스로 복구된다.
@@ -994,11 +1140,16 @@ async function pollOnce(gen: number) {
     // 나가 있는 동안에는 이 경고 화면도 띄우지 않는다. 원장이 결제 취소를
     // 하러 나간 판을 "서버 연결 끊김" 이 덮어 버리면 나가기가 무효가 된다.
     if (consecutivePollErrors === 5 && !exitedToHome) {
-      showFatal(
-        "서버 연결 끊김",
-        "EduSyncPro 서버와 통신하지 못하고 있습니다. 인터넷 연결을 확인해 주세요. 연결되면 자동으로 복구됩니다.",
-        { onAdmin: openAdminMenu }
-      );
+      showResultScreen({
+        status: "error",
+        title: "서버 연결 끊김",
+        description:
+          "EduSyncPro 서버와 통신하지 못하고 있습니다. 인터넷 연결을 확인해 주세요. " +
+          "연결되면 자동으로 복구됩니다.",
+        buttons: [{ label: "관리자 메뉴", onClick: () => openAdminMenu() }],
+        timerMs: 10_000,
+        persist: true, // 연결이 복구되면 위쪽의 goIdle 이 이 화면을 걷는다.
+      });
     }
   } finally {
     // 세대가 바뀌었다면(워치독이 이미 새 사슬을 시작했다면) 여기서 조용히 끝난다.
@@ -1031,6 +1182,7 @@ async function handleDispatch(d: PendingDispatch) {
   // 단말기는 대기화면 그대로였고, 원장이 본 것이 정확히 그 장면이다 —
   // "결제 화면까지는 갔는데 카드 넣으라는 화면이 안 뜬다". 서버 응답을 기다리는
   // 중이라는 사실 자체를 사람이 볼 수 있어야 한다.
+  screenSeq++; // 결제 진행 화면이 새 주인 — 남아 있던 결과 화면 타이머를 무효화한다
   showBusy(d.orderName, d.amount);
 
   // ack 못 하면 다른 단말이 같은 dispatch 를 잡을 수도 있으니 실패 시 중단한다.
@@ -1281,6 +1433,7 @@ async function handleCancelDispatch(c: PendingCancel) {
     return;
   }
 
+  screenSeq++; // 취소 진행 화면이 새 주인 — 남아 있던 결과 화면 타이머를 무효화한다
   showCancelBusy(c.amount);
 
   // ── (c) 진행중 표식. SDK 를 부르기 **전에** 남긴다. ──
@@ -1392,13 +1545,13 @@ async function handleCancelDispatch(c: PendingCancel) {
       await enqueueCancelReport(c, "FAILED", { reason: detail });
       // 무엇으로 찾았는지·단말기가 그 결제를 아는지는 (c-2) 에서 이미 로그에 남았다.
       // 여기서 다시 묻지 않는다 — 같은 사실을 두 번 적으면 로그만 흐려진다.
-      showStatus({
-        tone: "error",
+      showResultScreen({
+        status: "error",
         title: "원거래를 찾지 못했습니다",
-        detail:
-          "단말기가 이 결제의 원거래를 찾지 못해 취소가 시작되지 않았습니다.\n" +
+        description:
+          "단말기가 이 결제의 원거래를 찾지 못해 취소가 시작되지 않았습니다. " +
           "카드에서는 아무것도 빠져나가지 않았습니다. 원장 화면에서 다시 요청할 수 있습니다.",
-        actions: [],
+        timerMs: 6000,
       });
       await sleep(6000);
       return;
@@ -1412,12 +1565,14 @@ async function handleCancelDispatch(c: PendingCancel) {
         `자동 재시도를 막기 위해 TIMEOUT 으로 보고합니다. 사장님 앱에서 실물을 확인해 주세요.`,
     );
     await enqueueCancelReport(c, "TIMEOUT", { reason: detail });
-    showFatal(
-      "취소 결과를 확인하지 못했습니다",
-      "카드가 취소됐는지 알 수 없습니다. 토스 사장님 앱에서 취소 여부를 확인해 주세요. " +
+    showResultScreen({
+      status: "error",
+      title: "취소 결과를 확인하지 못했습니다",
+      description:
+        "카드가 취소됐는지 알 수 없습니다. 토스 사장님 앱에서 취소 여부를 확인해 주세요. " +
         "확인 전까지 같은 건을 다시 취소하지 마세요.",
-      { onAdmin: openAdminMenu },
-    );
+      timerMs: 6000,
+    });
     await sleep(6000);
     return;
   }
@@ -1462,12 +1617,15 @@ async function handleCancelDispatch(c: PendingCancel) {
   // 화면. cardWasCancelled 로 판단한다 — result.type === "CANCELED" 는
   // "취소 성공" 이 아니라 "사용자가 취소 진행을 물렀다" 이므로 헷갈리면 안 된다.
   if (cardWasCancelled(type)) {
-    showStatus({
+    showResultScreen({
+      status: "success",
       title: `${c.amount.toLocaleString()}원 결제취소 완료`,
-      detail:
-        "카드사로 취소 요청이 접수되었습니다. 수납 장부에도 환불로 반영됩니다.\n" +
+      description:
+        "카드사로 취소 요청이 접수되었습니다. 수납 장부에도 환불로 반영됩니다. " +
         "카드사에 따라 실제 입금까지 2~5영업일이 걸릴 수 있습니다.",
-      actions: [],
+      // 2.5초 뒤 영수증 선택 화면이 이 자리를 이어받는다 (아래 sleep). 그 화면이
+      // screenSeq 를 올리므로, 여기 타이머(최소 3초)가 뒤늦게 깨어나도 무해하다.
+      timerMs: 3000,
     });
 
     // ── 취소 영수증 (서버 보고까지 끝난 뒤에만 진입) ──
@@ -1492,20 +1650,22 @@ async function handleCancelDispatch(c: PendingCancel) {
     }
     return; // 결제 흐름과 동일하게, 영수증 뒤에는 곧바로 유휴로 돌아간다
   } else if (type === "TIMEOUT") {
-    showFatal(
-      "취소 결과를 확인하지 못했습니다",
-      "단말기가 시간 안에 응답하지 못했습니다. 카드가 취소됐는지 알 수 없으므로 " +
+    showResultScreen({
+      status: "error",
+      title: "취소 결과를 확인하지 못했습니다",
+      description:
+        "단말기가 시간 안에 응답하지 못했습니다. 카드가 취소됐는지 알 수 없으므로 " +
         "토스 사장님 앱에서 확인해 주세요. 확인 전까지 다시 취소하지 마세요.",
-      { onAdmin: openAdminMenu },
-    );
+      timerMs: 6000,
+    });
   } else {
-    showStatus({
-      tone: "error",
+    showResultScreen({
+      status: "error",
       title: "결제취소가 되지 않았습니다",
-      detail:
-        `카드는 취소되지 않았습니다. (사유: ${String(detail.reason ?? "-").slice(0, 80)})\n` +
+      description:
+        `카드는 취소되지 않았습니다. (사유: ${String(detail.reason ?? "-").slice(0, 80)}) ` +
         "원장 화면에서 다시 요청할 수 있습니다.",
-      actions: [],
+      timerMs: 6000,
     });
   }
   await sleep(6000);
@@ -1788,15 +1948,27 @@ type ReceiptFlow = "approval" | "cancel";
  * 승인 또는 취소 완료 후 영수증 선택 화면을 띄우고, 결정에 따라 프린터를 호출한다.
  *
  * 사양 요약:
- *   - 8초 카운트다운을 표시한다.
  *   - 사용자가 "영수증 출력" 을 누르면 즉시 printReceipt 1회.
  *   - "영수증 생략" 을 누르면 프린터를 호출하지 않고 종료.
  *   - 아무것도 안 누르고 8초가 지나면 자동으로 printReceipt 1회.
  *   - 위 세 진입점 중 최초 하나만 실제로 프린터를 호출한다 (중복 출력 방지).
  *
+ * ── 0.3.24: 화면을 sdk.template.renderResultPage 로 전환 (2026-09-09 검수 반려 1-a) ──
+ *   0.3.23 까지는 자체 DOM(버튼 2개 + 250ms setInterval 카운트다운)으로 그렸고,
+ *   그것이 반려의 첫 번째 사유였다. 이제:
+ *     · 1순위: renderResultPage — buttons: [영수증 출력, 영수증 생략],
+ *       timerMs: 8000, onTimeout: 자동 출력. 카운트다운 표시는 SDK 타이머가
+ *       대신한다 (setInterval 제거).
+ *     · 폴백(표준 화면 실패 시): 조작 요소 없는 안내 텍스트 + 8초 뒤 자동 출력
+ *       (showReceiptChoiceFallback). 버튼이 없으니 "생략" 은 못 하지만, 자동
+ *       출력이라는 기존 기본 동작은 그대로 산다.
+ *
  * 이중 안전 guard:
  *   1) 이 함수의 로컬 `printCalledForThisPayment` 플래그 — race 시 최종 방어선.
- *   2) screen.showReceiptChoice 내부의 `decided` 플래그 — UI 이벤트 자체를 잠근다.
+ *   2) 로컬 `decided` 플래그 — 출력/생략/타임아웃 세 진입점 중 최초 1개만 통과.
+ *      (0.3.23 까지 screen.ts 내부에 있던 guard 를 여기로 옮겼다. 화면이 SDK
+ *       소유가 되면서 버튼 disabled 처리를 우리가 못 하기 때문에, 진입점 잠금이
+ *       유일한 방어가 됐다.)
  *
  * 이 함수는 예외를 밖으로 던지지 않는다. 프린터가 없거나 실패해도 결제 상태는
  * 이미 확정이므로 로그만 남기고 조용히 종료. resolve 는 항상 발생한다.
@@ -1832,6 +2004,23 @@ async function promptReceiptPrintAfterApproval(
   let printCalledForThisPayment = false;
 
   return new Promise<void>((resolve) => {
+    // 영수증 선택 화면이 새 화면 주인이다. 직전 화면(취소완료 등)의 타이머가
+    // 뒤늦게 깨어나 이 화면을 goIdle 로 덮는 것을 막는다.
+    const seq = ++screenSeq;
+
+    // 출력/생략/타임아웃 세 진입점 중 최초 1개만 통과시키는 guard.
+    let decided = false;
+    const decide = (fire: () => void) => {
+      if (decided) return;
+      decided = true;
+      try {
+        fire();
+      } catch (err) {
+        log.error("영수증 선택 콜백 예외", err, "결제 상태에는 영향이 없습니다.");
+        resolve();
+      }
+    };
+
     const doPrint = async (trigger: "user" | "timeout") => {
       if (printCalledForThisPayment) {
         // race 로 두 경로가 거의 동시에 진입해도 여기서 컷.
@@ -1851,7 +2040,12 @@ async function promptReceiptPrintAfterApproval(
           "printer.printReceipt 미지원",
           "SDK 에 printer 모듈이 없습니다. 실제 프린터가 연결된 뒤에 재검증합니다."
         );
-        showReceiptResult("fail", `${doneSentence} 프린터를 사용할 수 없습니다.`);
+        showResultScreen({
+          status: "error",
+          title: "영수증 출력 실패",
+          description: `${doneSentence} 프린터를 사용할 수 없습니다.`,
+          timerMs: 5000,
+        });
         resolve();
         return;
       }
@@ -1875,7 +2069,12 @@ async function promptReceiptPrintAfterApproval(
             ? "카드 취소와 장부 반영은 이미 끝난 상태이며 이 오류는 취소 결과를 되돌리지 않습니다."
             : "카드 승인·원장 반영은 이미 완료된 상태이며 이 오류는 결제에 영향을 주지 않습니다."
         );
-        showReceiptResult("fail", `${doneSentence} 영수증 출력에 실패했습니다.`);
+        showResultScreen({
+          status: "error",
+          title: "영수증 출력 실패",
+          description: `${doneSentence} 영수증 출력에 실패했습니다.`,
+          timerMs: 5000,
+        });
       }
       resolve();
     };
@@ -1887,7 +2086,6 @@ async function promptReceiptPrintAfterApproval(
         return;
       }
       // 사용자 명시 생략 — printCalledForThisPayment 는 켜지 않는다 (프린터를 안 부름).
-      // 이후 timeout 콜백이 뒤늦게 들어와도 screen 내부 decided guard 가 이미 잠갔다.
       log.info(
         isCancel ? "취소 영수증 생략" : "영수증 생략",
         `paymentKey=${paymentKey} 사용자가 생략을 선택`
@@ -1895,21 +2093,49 @@ async function promptReceiptPrintAfterApproval(
       resolve();
     };
 
-    showReceiptChoice({
-      autoPrintMs: 8_000,
-      // 취소한 자리에서 "결제가 완료되었습니다" 가 뜨면 사실과 정반대다.
-      // 승인 흐름은 undefined 를 넘겨 현장에서 검증된 기존 문구를 그대로 쓴다.
-      title: isCancel ? "결제가 취소되었습니다" : undefined,
-      onPrint: () => {
-        void doPrint("user");
+    // 취소한 자리에서 "결제가 완료되었습니다" 가 뜨면 사실과 정반대다.
+    // 승인 흐름은 현장에서 검증된 기존 문구를 그대로 쓴다.
+    const title = isCancel ? "결제가 취소되었습니다" : "결제가 완료되었습니다";
+
+    const rendered = renderResult(
+      sdk,
+      () => {
+        // 폴백: 조작 요소 없는 안내 + 8초 뒤 자동 출력 (기존 기본 동작 유지).
+        showReceiptChoiceFallback({
+          title,
+          autoPrintMs: 8_000,
+          onTimeout: () => decide(() => void doPrint("timeout")),
+        });
       },
-      onSkip: () => {
-        doSkip();
+      {
+        type: "image",
+        status: "success",
+        title,
+        description: "영수증을 출력하시겠습니까? 8초 후 자동으로 출력됩니다.",
+        buttons: [
+          {
+            label: "영수증 출력",
+            onClick: () => {
+              if (seq !== screenSeq) return;
+              decide(() => void doPrint("user"));
+            },
+          },
+          {
+            label: "영수증 생략",
+            onClick: () => {
+              if (seq !== screenSeq) return;
+              decide(() => doSkip());
+            },
+          },
+        ],
+        timerMs: 8_000,
+        onTimeout: () => {
+          if (seq !== screenSeq) return;
+          decide(() => void doPrint("timeout"));
+        },
       },
-      onTimeout: () => {
-        void doPrint("timeout");
-      },
-    });
+    );
+    if (rendered) confirmTemplateRendered();
   });
 }
 
@@ -1971,104 +2197,68 @@ async function runPairingFlow(): Promise<string> {
     return null;
   };
 
-  // 공식 SDK 의 renderOnboardingPage 가 있으면 그걸 쓰고, 없으면 자체 화면으로 폴백.
+  // 등록 화면은 공식 sdk.template.renderOnboardingPage **만** 쓴다.
   //
-  // ── 0.3.5 에서 바뀐 것 ──
-  //   0.3.4 까지는 renderOnboardingPage 가 "존재하지만 던지는" 경우를 폴백으로 치지
-  //   않고 그대로 실패시켰다. 실제로 React #299 로 이 함수가 터졌고, 그 순간 단말기는
-  //   등록할 방법이 아예 없는 상태가 됐다. SDK 화면이 안 되면 우리 화면으로라도
-  //   등록은 되어야 한다. 화면 하나 때문에 단말기를 못 쓰는 건 과한 대가다.
-  const t = sdk?.template as any;
-  if (t && typeof t.renderOnboardingPage === "function") {
-    try {
-      // 우리 대기화면은 position:fixed 전체화면이라 그대로 두면 SDK 화면을 덮는다.
-      // 넘겨주기 전에 먼저 치운다.
-      clearOwnScreen();
-      return await new Promise<string>((resolve, reject) => {
-      try {
-        t.renderOnboardingPage({
-          title: "EduSyncPro 단말기 등록",
-          inputs: {
-            pairingCode: {
-              label: "매장 코드 (6자)",
-              type: "text",
-              placeholder: "예: A2K7ZM",
-            },
-            pin: {
-              label: "PIN (4자리)",
-              type: "password",
-              placeholder: "예: 4837",
-            },
-          },
-          onSubmit: async (values: any) => {
-            const msg = validate(values);
-            if (msg) throw new Error(msg);
-            const code = String(values.pairingCode).trim().toUpperCase();
-            const pin = String(values.pin).trim();
-            try {
-              const ok = await attempt(code, pin);
-              resolve(ok);
-            } catch (e) {
-              log.error("페어링 검증 실패", e, "다시 입력받습니다.");
-              throw e; // Toss template 은 이 예외를 폼에 표시해 준다.
-            }
-          },
-        });
-      } catch (err) {
-        reject(err);
-      }
-      });
-    } catch (err) {
-      // 취소는 사용자의 의사이므로 폴백하지 않고 그대로 올린다.
-      if (err instanceof Error && /취소/.test(err.message)) throw err;
-      log.warn(
-        "SDK 온보딩 화면 실패 — 자체 화면으로 대체합니다",
-        describeErr(err)
-      );
-      clearOwnScreen();
-    }
+  // ── 0.3.24 에서 자체 폴백 폼을 지운 이유 (2026-09-09 검수 반려 1-b) ──
+  //   0.3.5~0.3.23 은 표준 화면이 실패하면 자체 입력폼(매장코드·PIN input)으로
+  //   폴백했다. 심사 기준상 폴백에 허용되는 것은 조작 요소 없는 안내 텍스트까지다.
+  //   입력폼은 그 선을 넘고, 실제로 반려 사유에 "6개 입력 필드" 로 명시됐다.
+  //
+  //   표준 화면이 실패하면 이제 그냥 던진다. bootstrap 의 catch 가 원인을
+  //   "단말기 등록 실패" 화면(표준 renderResultPage, persist)에 띄운다. 등록은
+  //   첫 부팅에 한 번뿐인 흐름이고, ensureTemplateContainer 적용(0.3.7~) 이후
+  //   renderOnboardingPage 가 실패하는 단말기는 관찰된 적이 없다. 폼을 되살리면
+  //   다시 반려된다 — pack 스크립트 가드가 이를 빌드 단계에서 막는다.
+  const t = sdk?.template;
+  if (!t || typeof t.renderOnboardingPage !== "function") {
+    throw new Error(
+      "이 단말기 펌웨어에서 표준 등록 화면(renderOnboardingPage)을 열 수 없습니다. " +
+        "단말기를 재시작한 뒤에도 반복되면 플러그인을 다시 설치해 주세요."
+    );
   }
 
-  // Fallback: 자체 온보딩 폼.
+  // 우리 대기화면은 position:fixed 전체화면이라 그대로 두면 SDK 화면을 덮는다.
+  // 넘겨주기 전에 먼저 치운다.
+  clearOwnScreen();
   return await new Promise<string>((resolve, reject) => {
-    showPairing({
-      title: "단말기 등록",
-      subtitle:
-        "원장 화면 → Toss Front → 새 단말기 발급을 누르면 매장 코드와 PIN이 뜹니다. 두 값을 아래에 입력하세요.",
-      submitLabel: "등록",
-      inputs: [
-        {
-          name: "pairingCode",
-          label: "매장 코드 (6자)",
-          placeholder: "예: A2K7ZM",
-          type: "text",
-          uppercase: true,
-          maxLength: 6,
+    try {
+      t.renderOnboardingPage!({
+        title: "EduSyncPro 단말기 등록",
+        inputs: {
+          pairingCode: {
+            label: "매장 코드 (6자)",
+            type: "text",
+            placeholder: "예: A2K7ZM",
+          },
+          pin: {
+            label: "PIN (4자리)",
+            type: "password",
+            placeholder: "예: 4837",
+          },
         },
-        {
-          name: "pin",
-          label: "PIN (4자리 숫자)",
-          placeholder: "예: 4837",
-          type: "tel",
-          maxLength: 4,
+        onSubmit: async (values) => {
+          const msg = validate(values);
+          if (msg) throw new Error(msg);
+          const code = String(values.pairingCode).trim().toUpperCase();
+          const pin = String(values.pin).trim();
+          try {
+            const ok = await attempt(code, pin);
+            resolve(ok);
+          } catch (e) {
+            log.error("페어링 검증 실패", e, "다시 입력받습니다.");
+            throw e; // Toss template 은 이 예외를 폼에 표시해 준다.
+          }
         },
-      ],
-      onSubmit: async (values) => {
-        const msg = validate(values);
-        if (msg) return msg;
-        const code = String(values.pairingCode).trim().toUpperCase();
-        const pin = String(values.pin).trim();
-        try {
-          const ok = await attempt(code, pin);
-          resolve(ok);
-          return null;
-        } catch (e: any) {
-          log.error("페어링 검증 실패", e, "다시 입력받습니다.");
-          return e?.message ? String(e.message).slice(0, 200) : "등록 실패. 매장코드와 PIN을 확인해 주세요.";
-        }
-      },
-      onCancel: () => reject(new Error("사용자가 온보딩을 취소했습니다.")),
-    });
+      });
+    } catch (err) {
+      // renderOnboardingPage 가 그 자리에서 던졌다 (React #299 등).
+      // 자체 폼으로 대체하지 않는다 — bootstrap catch 가 표준 오류 화면을 띄운다.
+      reject(
+        err instanceof Error
+          ? err
+          : new Error("표준 등록 화면을 그리지 못했습니다: " + describeErr(err))
+      );
+    }
   });
 }
 
@@ -2400,11 +2590,13 @@ if (typeof window !== "undefined") {
     bootstrap().catch((err) => {
       configureLogger({ serverUrl: SERVER_URL, onScreen: (line) => pushDiagLine(line) });
       log.error("bootstrap 실패", err, "플러그인을 시작하지 못했습니다.");
-      showFatal(
-        "플러그인 시작 실패",
-        "관리자에게 문의해 주세요. 자세한 내용은 아래 로그를 확인하세요.",
-        { onAdmin: openAdminMenu }
-      );
+      showResultScreen({
+        status: "error",
+        title: "플러그인 시작 실패",
+        description: "관리자에게 문의해 주세요. 자세한 내용은 단말기 로그를 확인하세요.",
+        timerMs: 10_000,
+        persist: true, // 시작에 실패한 단말기는 돌아갈 화면이 없다. 원장이 볼 때까지 남긴다.
+      });
       void log.flushNow();
     });
   };

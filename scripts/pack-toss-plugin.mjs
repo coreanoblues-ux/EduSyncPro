@@ -51,6 +51,40 @@ if (!/<script[^>]+src=["']\.\/assets\//.test(indexHtml)) {
   fail("dist/index.html 에 번들 스크립트(<script src=\"./assets/...\">) 참조가 없습니다.");
 }
 
+// ─── 1-b. 조작 요소 DOM 금지 검사 (2026-09-09 라이브 검수 반려를 코드로 고정) ──
+//
+// v26(0.3.23) 이 반려된 사유: 번들에 createElement("button")·("input")·("form")
+// 이 남아 있었다. Toss 심사 기준상 플러그인 화면은 표준 화면 API(sdk.template.*)
+// 로만 그려야 하고, 자체 DOM 폴백에 허용되는 것은 "조작 요소 없는 안내 텍스트"
+// 까지다. 즉 버튼·입력칸을 만드는 코드는 폴백이라도 존재 자체가 반려 사유다.
+//
+// 누군가(미래의 나 포함) 폴백에 버튼을 "잠깐만" 되살리면, 이 검사가 ZIP 생성을
+// 거부해서 그 실수가 개발자센터까지 가지 못하게 막는다.
+{
+  const assetsDir = path.join(distDir, "assets");
+  const banned = [
+    'createElement("button")',
+    "createElement('button')",
+    'createElement("input")',
+    "createElement('input')",
+    'createElement("form")',
+    "createElement('form')",
+  ];
+  for (const f of fs.readdirSync(assetsDir)) {
+    if (!f.endsWith(".js")) continue;
+    const code = fs.readFileSync(path.join(assetsDir, f), "utf8");
+    for (const needle of banned) {
+      if (code.includes(needle)) {
+        fail(
+          `번들 ${f} 에 조작 요소 생성 코드(${needle})가 있습니다.\n` +
+            `   2026-09-09 검수 반려 사유와 동일합니다. 버튼·입력이 필요한 화면은\n` +
+            `   sdk.template.renderResultPage / renderSelectPage / renderOnboardingPage 로 그리세요.`
+        );
+      }
+    }
+  }
+}
+
 // ─── 2. manifest 검증 ───────────────────────────────────────────────────
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 if (manifest.entry !== "index.html") {

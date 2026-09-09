@@ -113,9 +113,75 @@ export type IdlePageParams =
       secondaryButton: { text: string; onClick: () => void };
     };
 
+/**
+ * renderResultPage 파라미터. **공식 문서(template.html) 기준.**
+ *
+ * ── 왜 생겼나 (2026-09-09, 라이브 검수 v26 반려) ──
+ *   반려 사유: "화면을 브라우저 DOM 으로 직접 그리는 코드가 남아 있습니다.
+ *   토스 프론트 플러그인은 화면을 표준 화면 API 로 그려야 합니다."
+ *   특히 영수증 선택 화면이 SDK 화면을 시도하지도 않고 자체 DOM 을 그렸다.
+ *   심사관이 직접 알려 준 대응이 이 renderResultPage 다 — 버튼 두 개와
+ *   자동 진행 타이머(timerMs + onTimeout)를 모두 지원한다.
+ *
+ * ⚠️ timerMs 는 3000~10000 범위에서만 동작한다 (문서 명시). onTimeout 은 필수다.
+ */
+export type ResultPageParams = {
+  type: "image";
+  status: "success" | "error";
+  title: string;
+  description?: string;
+  /** 필수. timerMs 가 다 지나면 호출된다. */
+  onTimeout: () => void;
+  buttons?: Array<{ label: string; onClick: () => void; closeOnClick?: boolean }>;
+  /** 3000~10000ms. 생략 시 5000. */
+  timerMs?: number;
+  localeCode?: "ko" | "en";
+};
+
+/** renderSelectPage 파라미터 (공식 문서). 관리자 메뉴가 이 화면을 쓴다. */
+export type SelectPageParams = {
+  title: string;
+  subtitle: string;
+  options: Array<{
+    title: string;
+    subtitle?: string;
+    description?: string;
+    iconUrl?: string;
+    onClick: () => void;
+  }>;
+  /** 좌상단 뒤로가기. 관리자 메뉴의 [닫기] 가 여기 대응된다. */
+  onBack?: () => void;
+};
+
+/** renderOnboardingPage 파라미터 (공식 문서). 단말기 등록 화면이 쓴다. */
+export type OnboardingPageParams = {
+  title: string;
+  inputs: Record<
+    string,
+    {
+      label: string;
+      type: "text" | "password";
+      mode?: "numeric";
+      placeholder?: string;
+      maxLength?: number;
+      onChange?: (value: string) => void;
+    }
+  >;
+  /** 예외를 던지면 폼이 그 메시지를 표시한다. */
+  onSubmit: (data: Record<string, string>) => Promise<void>;
+  logoUrl?: string;
+  onBack?: () => void;
+};
+
 export interface TossFrontSdk {
   template?: {
     renderIdlePage?(params?: IdlePageParams): void;
+    /** 결과·안내 화면. 검수 반려(v26) 이후 영수증 선택·상태·오류 화면이 전부 이걸 쓴다. */
+    renderResultPage?(params: ResultPageParams): void;
+    /** 단일 선택 목록. 관리자 메뉴가 쓴다. */
+    renderSelectPage?(params: SelectPageParams): void;
+    /** 로그인·등록 입력 화면. 페어링(매장코드+PIN)이 쓴다. */
+    renderOnboardingPage?(params: OnboardingPageParams): void;
     /** 짧은 안내 문구. 화면 전환 없이 뜬다. */
     openToast?(params: { message: string }): void;
   };
@@ -499,6 +565,72 @@ export function renderIdle(
     log.warn("renderIdlePage 없음", "SDK 유휴화면을 쓸 수 없어 자체 대기화면을 표시합니다.");
   }
   fallback();
+  return false;
+}
+
+/**
+ * 결과·안내 화면을 공식 renderResultPage 로 그린다. 실패하면 fallback 을 부른다.
+ *
+ * renderIdle 과 같은 관문 구조다: 마운트 지점(#root)이 없으면 부르지 않고,
+ * 던지면 잡아서 자체 안내 문구로 내려간다.
+ *
+ * 성공 로그를 남기지 않는 이유:
+ *   이 함수는 오류 화면의 "유지 재렌더"(10초마다 같은 화면을 다시 그림) 경로에서도
+ *   불린다. 매 렌더를 info 로 남기면 서버 연결이 끊긴 동안 로그 버퍼만 쌓인다.
+ *   실패만 남긴다 — 실패가 곧 "이 펌웨어에서 이 화면을 못 쓴다"는 새 사실이다.
+ *
+ * @returns 공식 API 로 실제 렌더가 성공했으면 true.
+ */
+export function renderResult(
+  sdk: TossFrontSdk | null,
+  fallback: () => void,
+  params: ResultPageParams
+): boolean {
+  if (sdk?.template && typeof sdk.template.renderResultPage === "function") {
+    if (!ensureTemplateContainer()) {
+      fallback();
+      return false;
+    }
+    try {
+      sdk.template.renderResultPage(params);
+      return true;
+    } catch (err) {
+      log.warn(
+        "renderResultPage 실패 — 자체 안내 문구로 대체",
+        `${describeError(err)} · title=${params.title}`
+      );
+    }
+  } else {
+    log.warn(
+      "renderResultPage 없음",
+      "이 펌웨어 template 에 결과 화면이 없습니다. 자체 안내 문구로 대체합니다."
+    );
+  }
+  fallback();
+  return false;
+}
+
+/**
+ * 선택 목록 화면(관리자 메뉴)을 공식 renderSelectPage 로 그린다.
+ *
+ * fallback 파라미터가 없는 이유:
+ *   관리자 메뉴는 실패 시 "다른 표준 화면"(renderIdlePage twoButton)으로 한 번 더
+ *   시도해야 해서, 다음 수를 호출부(index.ts openAdminMenu)가 직접 정한다.
+ *   여기서 false 를 돌려주면 호출부가 그 다음 표준 경로를 잇는다.
+ */
+export function renderSelect(sdk: TossFrontSdk | null, params: SelectPageParams): boolean {
+  if (sdk?.template && typeof sdk.template.renderSelectPage === "function") {
+    if (!ensureTemplateContainer()) return false;
+    try {
+      sdk.template.renderSelectPage(params);
+      log.info("renderSelectPage 호출 성공", `title=${params.title}`);
+      return true;
+    } catch (err) {
+      log.warn("renderSelectPage 실패", `${describeError(err)} · 다음 표준 화면으로 넘어갑니다.`);
+    }
+  } else {
+    log.warn("renderSelectPage 없음", "이 펌웨어 template 에 선택 화면이 없습니다.");
+  }
   return false;
 }
 

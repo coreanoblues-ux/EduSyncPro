@@ -112,16 +112,10 @@ import {
   type TerminalKnownView,
 } from "./approval";
 import {
-  showIdle,
-  showBusy,
-  showCancelBusy,
-  showFatal,
-  showStatus,
+  showStaticNotice,
+  hideStaticNotice,
   pushDiagLine,
-  clearOwnScreen,
-  confirmTemplateRendered,
   setScreenVersion,
-  showReceiptChoiceFallback,
 } from "./screen";
 
 // ─── 버전 ──────────────────────────────────────────────────────────────
@@ -180,11 +174,11 @@ let merchantName = "";
  * ── 이 플래그가 없으면 나가기는 여전히 안 된 것과 같다 ──
  *   폴링 루프는 우리 화면을 스스로 다시 그리는 자리가 두 곳 있다:
  *     · 연결이 끊겼다 복구되면  goIdle()
- *     · 연속 실패 5회가 되면     showFatal()
- *   둘 다 position:fixed·inset:0·z-index 2147483000 짜리 판을 다시 깐다.
- *   즉 원장이 토스 첫화면으로 잘 나갔더라도, 몇 초 뒤 와이파이가 한 번
- *   출렁이면 우리 화면이 그 위를 덮으며 도로 끌고 들어온다. 원장이 신고한
- *   "나갈 방법이 없다" 와 결과가 똑같다.
+ *     · 연속 실패 5회가 되면     showResultScreen(persist)
+ *   둘 다 #app 컨테이너에 화면을 새로 그린다 (0.3.26 부터는 표준 화면이지만,
+ *   토스 첫화면을 덮어쓰는 것은 마찬가지다). 즉 원장이 토스 첫화면으로 잘
+ *   나갔더라도, 몇 초 뒤 와이파이가 한 번 출렁이면 우리 화면이 그 위를 덮으며
+ *   도로 끌고 들어온다. 원장이 신고한 "나갈 방법이 없다" 와 결과가 똑같다.
  *
  *   그래서 나간 뒤에는 폴링이 화면을 건드리지 못하게 막는다. 예외는 하나,
  *   실제 결제요청이 도착했을 때다. 그건 학생이 카드를 대려고 태블릿에서
@@ -209,9 +203,9 @@ let screenSeq = 0;
  *
  * 2026-09-09 검수 반려의 (1-b) 대응이다: 버튼이 필요한 상태·오류 화면은 전부
  * 여기로 온다. 표준 화면이 실패하면 폴백은 **조작 요소 없는 안내 텍스트**뿐이다
- * (showFatal / showStatus). 폴백에는 버튼이 못 나가는 대신 화면이 스스로
- * 사라지지 않으므로, persist 가 아닌 화면은 타이머와 같은 시간 뒤에 기본 동작을
- * setTimeout 으로 이어 준다.
+ * (showStaticNotice — index.html 의 정적 노드 글자만 바꾼다). 폴백에는 버튼이
+ * 못 나가는 대신 화면이 스스로 사라지지 않으므로, persist 가 아닌 화면은
+ * 타이머와 같은 시간 뒤에 기본 동작을 setTimeout 으로 이어 준다.
  *
  * persist=true 는 "원장이 조치할 때까지 남아야 하는" 화면용이다 (등록 실패·
  * 서버 연결 끊김 등). renderResultPage 는 timerMs(최대 10초) 뒤 반드시 onTimeout
@@ -252,10 +246,15 @@ function showResultScreen(opts: {
     const ok = renderResult(
       sdk,
       () => {
-        if (opts.status === "error") showFatal(opts.title, opts.description ?? "");
-        else showStatus({ title: opts.title, detail: opts.description ?? "", tone: "idle" });
+        // 오류 화면은 원장이 원인을 읽는 자리다 — 진단 로그를 함께 보인다.
+        showStaticNotice({
+          title: opts.title,
+          detail: opts.description ?? "",
+          showDiag: opts.status === "error",
+        });
         // 폴백에는 SDK 타이머가 없으니 기본 동작을 우리가 이어 준다.
-        // persist 화면의 폴백은 다시 그릴 필요가 없다 — 자체 DOM 은 스스로 안 사라진다.
+        // persist 화면의 폴백은 다시 그릴 필요가 없다 — 정적 안내는 숨기기
+        // 전까지 스스로 사라지지 않는다.
         if (!opts.persist) setTimeout(fireTimeout, timerMs);
       },
       {
@@ -274,7 +273,7 @@ function showResultScreen(opts: {
         onTimeout: fireTimeout,
       },
     );
-    if (ok) confirmTemplateRendered();
+    if (ok) hideStaticNotice();
   };
 
   render();
@@ -375,7 +374,7 @@ function openAdminMenu() {
     onBack: () => goIdle(),
   });
   if (opened) {
-    confirmTemplateRendered();
+    hideStaticNotice();
     return;
   }
 
@@ -396,12 +395,12 @@ function openAdminMenu() {
       // 마지막 폴백: 조작 요소 없는 안내만. 6초 뒤 대기화면으로 자동 복귀 —
       // 여기 갇히면 학생 결제까지 같이 멈추기 때문이다.
       const seq = screenSeq;
-      showStatus({
+      showStaticNotice({
         title: "관리자 메뉴를 열 수 없습니다",
         detail:
           "이 단말기에서 표준 메뉴 화면을 그리지 못했습니다. 잠시 후 대기화면으로 돌아갑니다. " +
           "단말기 관리는 태블릿의 원장 화면에서 할 수 있습니다.",
-        tone: "error",
+        showDiag: true,
       });
       setTimeout(() => {
         if (seq === screenSeq && !busy && !exitedToHome) goIdle();
@@ -409,7 +408,7 @@ function openAdminMenu() {
     },
     params
   );
-  if (rendered) confirmTemplateRendered();
+  if (rendered) hideStaticNotice();
 }
 
 /**
@@ -467,9 +466,10 @@ function exitToTossHome() {
   // 화면을 토스에게 넘긴다. 우리 쪽 결과 화면의 타이머·persist 재렌더가
   // 뒤늦게 깨어나 토스 첫화면을 덮지 못하게 세대를 올린다.
   screenSeq++;
-  // 덮개를 먼저 걷는다. 이게 0.3.12 수정의 핵심이다.
-  clearOwnScreen();
-  removeBootNode();
+  // 덮개(정적 안내)를 먼저 걷는다. 이게 0.3.12 수정의 핵심이다 — #boot 은
+  // position:fixed·inset:0 이라, 남겨 두면 setIdle 이 성공해도 원장 눈에는
+  // "아무 일도 안 일어나는" 화면이 된다. 실패하면 reportExitFailed 가 되찾는다.
+  hideStaticNotice();
 
   let settled = false;
   const watchdog = setTimeout(() => {
@@ -505,17 +505,11 @@ function exitToTossHome() {
     });
 }
 
-/**
- * 부팅 문구를 지운다.
- *
- * confirmTemplateRendered 와 달리 "토스가 그렸다"는 증거 없이도 지운다.
- * 나가기는 화면을 통째로 넘겨주는 동작이라 덮개를 남길 수 없기 때문이다.
- * 실패하면 곧바로 reportExitFailed 가 자체 화면을 다시 그려서 메운다.
- */
-function removeBootNode() {
-  if (typeof document === "undefined") return;
-  document.getElementById("boot")?.remove();
-}
+// removeBootNode() 는 0.3.26 에서 지웠다.
+//   #boot 을 remove() 로 영구히 지우던 함수였다. 지우고 나면 그 뒤의 실패에서
+//   안전망이 없다 — clearOwnScreen(자체 화면 제거)과 함께 hideStaticNotice
+//   (hidden 토글, 재사용 가능) 하나로 통일했다. runPairingFlow 는 #boot 을
+//   남기고 confirmTemplateRendered 는 지우던 비일관도 이것으로 사라졌다.
 
 /** 나가기가 안 됐을 때. 빈 화면에 원장을 버려 두지 않는 것이 이 함수의 전부다. */
 function reportExitFailed(reason: string) {
@@ -549,8 +543,7 @@ function openTossSetting() {
   log.info("토스 설정 열기", "sdk.app.openSetting() 을 호출합니다.");
   // 설정 화면도 남에게 넘긴 화면이다. 옛 화면 타이머가 덮지 못하게 세대를 올린다.
   screenSeq++;
-  clearOwnScreen();
-  removeBootNode();
+  hideStaticNotice();
   // 설정 화면도 남에게 넘긴 화면이다. 폴링이 그 위를 덮지 않게 막는다.
   // 실패하면 아래 catch 에서 reportExitFailed 와 같은 이유로 도로 푼다.
   exitedToHome = true;
@@ -573,9 +566,9 @@ function openTossSetting() {
 // notify() 는 0.3.12 에서 지웠다.
 //   openToast 로 한 줄 띄우는 함수였는데, 이 펌웨어에서는 template.* 이 통째로
 //   실패해서 사실상 아무것도 안 보여 주는 함수였다. 남겨 두면 다음에 또
-//   "알렸다고 착각하는" 코드를 쓰게 된다. 알릴 일이 있으면 showStatus 로
-//   화면을 그린다 — 그린 것은 원장 사진으로 확인이 되지만, 안 뜬 토스트는
-//   확인할 방법이 없다.
+//   "알렸다고 착각하는" 코드를 쓰게 된다. 알릴 일이 있으면 showResultScreen
+//   (표준 화면, 폴백은 정적 안내)으로 그린다 — 그린 것은 원장 사진으로 확인이
+//   되지만, 안 뜬 토스트는 확인할 방법이 없다.
 
 /**
  * 관리자 메뉴의 [단말기 상태]. 결제에는 일절 관여하지 않는 읽기 전용 동작이다.
@@ -586,9 +579,10 @@ function openTossSetting() {
  *   아니어서, 원장이 [단말기 상태]를 눌러도 아무것도 안 뜨고 대기화면으로
  *   되돌아갈 뿐이었다. [첫화면으로] 와 똑같은 증상이고 원인도 같다.
  *
- *   이제 자체 화면(showStatus)으로 그린다. 이 화면은 로그를 함께 보여 준다.
- *   학생이 보는 대기화면에서 로그를 뺀 대신, 원장이 원인을 찾을 때 여는 곳은
- *   여기다 — 원장이 PC 로 172.30.1.91:9900 을 열 수 없는 상황도 있다.
+ *   이제 showResultScreen(표준 renderResultPage, 실패 시 정적 안내 폴백)으로
+ *   그린다. 폴백일 때는 진단 로그도 함께 보인다. 학생이 보는 대기화면에서 로그를
+ *   뺀 대신, 원장이 원인을 찾을 때 여는 곳은 여기다 — 원장이 PC 로
+ *   172.30.1.91:9900 을 열 수 없는 상황도 있다.
  */
 function showTerminalStatus() {
   const connected = consecutivePollErrors === 0;
@@ -615,24 +609,39 @@ function showTerminalStatus() {
 }
 
 /**
- * SDK 유휴화면이 있으면 그걸 쓰고, 없으면 자체 대기화면을 그린다.
+ * 대기화면. 표준 renderIdlePage **만** 그린다 (0.3.26 — 2026-09-10 검수 반려 대응).
  *
- * 0.3.8 까지는 `if (sdk?.template?.renderIdlePage) clearOwnScreen()` 이었다.
- * 함수의 "존재"만 확인하고 화면을 치운 것이다. Toss 문서는 플러그인 화면을
- * 반드시 Template API 로만 구성하라고 못 박고 있어서, 자체 DOM 은 단말기에서
- * 그려지지 않을 수 있다 — 그런데 우리는 그 사실을 확인도 안 하고 부팅 문구까지
- * 지웠다. 결과가 원장이 본 완전한 빈 화면이다.
+ * 0.3.25 까지는 renderIdlePage 가 실패하면 자체 브랜드 대기화면(showIdle:
+ * 로고·SVG 그래픽·애니메이션)을 그렸고, 그것이 "화면을 직접 구성하는 수준"
+ * 으로 반려됐다. 이제 실패 시 폴백은 조작 요소 없는 정적 안내 텍스트뿐이다.
+ * 안내가 떠 있어도 폴링과 결제 처리는 그대로 돈다 — 결제요청이 오면
+ * handleDispatch 가 안내를 걷고 SDK 결제 UI 에 화면을 넘긴다.
  *
- * 이제 renderIdle 이 true 를 준 경우에만 치운다. 렌더에 실패했으면 자체 화면과
- * 부팅 문구가 둘 다 남는다. 보기 좋지는 않아도 단말기 앞에서 원인을 읽을 수 있다.
+ * "성공했을 때만 안내를 걷는다" 는 0.3.9 원칙은 유지한다: renderIdle 이 true 를
+ * 준 경우에만 hideStaticNotice(). 실패했으면 안내가 남아 단말기 앞에서 원인을
+ * 읽을 수 있다 (0.3.8 까지는 함수의 "존재"만 확인하고 화면을 치워서, 렌더가
+ * 터지면 완전한 빈 화면이 됐다).
  */
 function goIdle() {
   // 원장이 눌러서 돌아오는 길이다. 나간 상태를 여기서 푼다.
   exitedToHome = false;
   // 이제 화면 주인은 대기화면이다. 옛 결과 화면의 타이머·persist 반복을 멈춘다.
   screenSeq++;
-  const rendered = renderIdle(sdk, () => showIdle(), idleParams());
-  if (rendered) confirmTemplateRendered();
+  const rendered = renderIdle(
+    sdk,
+    () => {
+      // 표준 대기화면 실패. 손님이 볼 수 있는 화면이므로 진단 로그는 끈다 —
+      // 원장은 [단말기 상태]·서버 로그로 원인을 본다.
+      showStaticNotice({
+        title: "대기화면을 표시하지 못했습니다",
+        detail:
+          "결제 기능은 정상 동작합니다. 학생 태블릿에서 결제 항목을 선택하면 " +
+          "이 단말기에서 바로 결제가 진행됩니다. 화면이 계속 이 상태면 단말기를 재시작해 주세요.",
+      });
+    },
+    idleParams()
+  );
+  if (rendered) hideStaticNotice();
 }
 
 // ─── 부팅 ──────────────────────────────────────────────────────────────
@@ -646,15 +655,26 @@ export async function bootstrap() {
 
   log.info("plugin entry started", `version=${PLUGIN_VERSION} server=${SERVER_URL}`);
 
-  // 1) SDK 확보. 못 찾으면 결제는 불가능하지만, 화면과 로그는 계속 살려 둔다.
-  //    (여기서 return 해 버리면 다시 "아무 단서 없는 화면"이 된다)
-  showIdle();
+  // 1) SDK 확보.
+  //
+  //    ── 0.3.26: 여기서 화면을 그리지 않는다 (2026-09-10 검수 반려 대응) ──
+  //      0.3.25 까지는 SDK 를 기다리기도 전에 자체 브랜드 대기화면(showIdle)을
+  //      먼저 그렸다 — 즉 자체 화면이 "부팅 정상 흐름"의 일부였고, 그게 반려
+  //      사유의 중심이었다. SDK 확보 전의 화면은 index.html 이 정적으로 선언한
+  //      부팅 안내("플러그인을 시작하는 중")가 이미 맡고 있다. 코드는 아무것도
+  //      안 그려도 검은 화면이 아니다.
+  //
+  //    못 찾으면 결제는 불가능하지만, 안내와 로그는 계속 살려 둔다.
+  //    (여기서 조용히 return 해 버리면 다시 "아무 단서 없는 화면"이 된다)
   sdk = await waitForSdk(10_000);
   if (!sdk) {
-    showFatal(
-      "결제 단말기 연결 실패",
-      "Toss Front SDK를 찾지 못했습니다. 단말기를 재시작하거나 플러그인을 다시 설치해 주세요."
-    );
+    // SDK 자체가 없으니 표준 화면은 시도할 수 없다. 정적 안내가 유일한 수단이다.
+    showStaticNotice({
+      title: "결제 단말기 연결 실패",
+      detail:
+        "Toss Front SDK를 찾지 못했습니다. 단말기를 재시작하거나 플러그인을 다시 설치해 주세요.",
+      showDiag: true,
+    });
     log.error("terminal auth started 이전 중단", new Error("SDK 없음"), "결제 기능을 비활성화합니다.");
     await log.flushNow();
     return;
@@ -1177,14 +1197,19 @@ async function handleDispatch(d: PendingDispatch) {
     return;
   }
 
-  // 화면을 먼저 잡는다 (0.3.23).
+  // 화면 세대를 먼저 잡는다.
   //
-  // 예전에는 ack 가 끝난 뒤에 이 줄이 있었다. 그래서 ack 가 느리거나 매달리면
-  // 단말기는 대기화면 그대로였고, 원장이 본 것이 정확히 그 장면이다 —
-  // "결제 화면까지는 갔는데 카드 넣으라는 화면이 안 뜬다". 서버 응답을 기다리는
-  // 중이라는 사실 자체를 사람이 볼 수 있어야 한다.
-  screenSeq++; // 결제 진행 화면이 새 주인 — 남아 있던 결과 화면 타이머를 무효화한다
-  showBusy(d.orderName, d.amount);
+  // ── 0.3.26: 자체 진행 화면(showBusy)은 지웠다 (2026-09-10 검수 반려 대응) ──
+  //   "금액 + 카드를 대주세요" 를 우리가 그리는 것은 SDK 결제 UI 의 역할을
+  //   흉내내는 것이고, 정확히 반려된 지점이다. 카드 삽입 안내는 아래
+  //   requestPayment 가 자기 UI 로 띄운다. 우리는 화면 주인 표식(screenSeq)만
+  //   올려서 남아 있던 결과 화면 타이머를 무효화하고, 정적 안내가 떠 있었다면
+  //   걷어서 SDK 결제 UI 를 덮지 않게 한다.
+  //   (0.3.23 에 "ack 전에 화면부터" 로 옮겼던 이유 — ack 가 매달리면 대기화면이
+  //    그대로라 진행 여부를 알 수 없다 — 는 SDK UI 시대에는 성립하지 않는다.
+  //    ack 는 보통 1초 안이고, 그 사이 화면은 표준 대기화면이 유지된다.)
+  screenSeq++;
+  hideStaticNotice();
 
   // ack 못 하면 다른 단말이 같은 dispatch 를 잡을 수도 있으니 실패 시 중단한다.
   try {
@@ -1434,8 +1459,12 @@ async function handleCancelDispatch(c: PendingCancel) {
     return;
   }
 
-  screenSeq++; // 취소 진행 화면이 새 주인 — 남아 있던 결과 화면 타이머를 무효화한다
-  showCancelBusy(c.amount);
+  // 취소 흐름이 새 화면 주인 — 남아 있던 결과 화면 타이머를 무효화하고,
+  // 정적 안내가 떠 있었다면 걷는다. 카드 안내 화면은 아래 requestPaymentCancel
+  // 이 자기 UI 로 띄운다 (0.3.26: 자체 진행 화면 showCancelBusy 제거 —
+  // handleDispatch 의 같은 자리 주석 참고).
+  screenSeq++;
+  hideStaticNotice();
 
   // ── (c) 진행중 표식. SDK 를 부르기 **전에** 남긴다. ──
   //        여기서 앱이 죽으면 카드 상태를 아무도 모른다. 표식이 있어야 다음
@@ -1960,9 +1989,18 @@ type ReceiptFlow = "approval" | "cancel";
  *     · 1순위: renderResultPage — buttons: [영수증 출력, 영수증 생략],
  *       timerMs: 8000, onTimeout: 자동 출력. 카운트다운 표시는 SDK 타이머가
  *       대신한다 (setInterval 제거).
- *     · 폴백(표준 화면 실패 시): 조작 요소 없는 안내 텍스트 + 8초 뒤 자동 출력
- *       (showReceiptChoiceFallback). 버튼이 없으니 "생략" 은 못 하지만, 자동
- *       출력이라는 기존 기본 동작은 그대로 산다.
+ *     · 폴백(표준 화면 실패 시): 조작 요소 없는 정적 안내 텍스트 + 8초 뒤 자동
+ *       출력 (showStaticNotice + 단발 setTimeout). 버튼이 없으니 "생략" 은 못
+ *       하지만, 자동 출력이라는 기존 기본 동작은 그대로 산다.
+ *
+ * ── 0.3.26: 출력 실패 안내를 **기다린다** (2026-09-10 검수 반려 대응 C) ──
+ *   0.3.25 까지 doPrint 는 실패 안내(showResultScreen, 5초)를 띄우자마자
+ *   resolve 했다. 그런데 이 함수의 호출부(handleDispatch / handleCancelDispatch)
+ *   는 resolve 직후 finally 에서 goIdle 을 부르므로, 5초짜리 안내가 뜨자마자
+ *   대기화면에 덮여 사람이 읽을 수 없었다. 이제 showReceiptFailureAndWait 가
+ *   "타이머 만료 또는 [확인] 버튼" 까지 기다린 뒤에 resolve 한다. 최종 goIdle
+ *   은 그대로 호출부 finally 한 곳이 책임진다 — 여기서는 부르지 않는다.
+ *   영수증 실패는 결제·취소 실패로 바뀌지 않는다 (예외를 밖으로 안 던진다).
  *
  * 이중 안전 guard:
  *   1) 이 함수의 로컬 `printCalledForThisPayment` 플래그 — race 시 최종 방어선.
@@ -1992,6 +2030,45 @@ type ReceiptFlow = "approval" | "cancel";
  *       "결제한 적 없다" 와 "영수증 있다" 가 정면으로 부딪힌다.
  *   실물 확인 전까지는 이 문구가 유일한 안전장치다.
  */
+/** 영수증 실패 안내를 사람이 읽을 최소 시간. renderResultPage 허용 범위(3~10초) 안. */
+const RECEIPT_FAIL_NOTICE_MS = 5_000;
+
+/**
+ * "영수증 출력 실패" 안내를 띄우고, 안내가 제 역할을 다할 때까지 **기다린다**.
+ *
+ * resolve 조건 (최초 1개만 유효 — finished 플래그로 중복 통과 차단):
+ *   1) renderResultPage 타이머 만료 (5초)
+ *   2) [확인] 버튼 — 다 읽었으면 기다릴 이유가 없다
+ *   3) 상한 setTimeout (5초+2초) — 다른 화면이 주인이 되어(screenSeq 변경)
+ *      1·2 의 콜백이 영원히 오지 않는 경우에도 promise 를 pending 으로
+ *      남겨 두지 않는다. 호출부의 finally(goIdle)가 멈추면 폴링 복귀까지
+ *      같이 멈추기 때문이다.
+ *
+ * goIdle 은 부르지 않는다. 유휴 복귀는 결제·취소 흐름의 finally 한 곳이
+ * 책임진다 (책임을 두 곳에 두면 이번에 고친 "안내를 덮는" 경쟁이 재발한다).
+ */
+function showReceiptFailureAndWait(description: string): Promise<void> {
+  return new Promise<void>((resolveWait) => {
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      resolveWait();
+    };
+    showResultScreen({
+      status: "error",
+      title: "영수증 출력 실패",
+      description,
+      buttons: [{ label: "확인", onClick: finish }],
+      timerMs: RECEIPT_FAIL_NOTICE_MS,
+      onTimeout: finish,
+    });
+    // 표준 화면 실패(정적 안내 폴백) 시에도 showResultScreen 이 같은 시간 뒤
+    // fireTimeout → onTimeout(finish) 을 이어 주므로 폴백 역시 유한하다.
+    setTimeout(finish, RECEIPT_FAIL_NOTICE_MS + 2_000);
+  });
+}
+
 async function promptReceiptPrintAfterApproval(
   paymentKey: string,
   flow: ReceiptFlow = "approval"
@@ -2041,12 +2118,9 @@ async function promptReceiptPrintAfterApproval(
           "printer.printReceipt 미지원",
           "SDK 에 printer 모듈이 없습니다. 실제 프린터가 연결된 뒤에 재검증합니다."
         );
-        showResultScreen({
-          status: "error",
-          title: "영수증 출력 실패",
-          description: `${doneSentence} 프린터를 사용할 수 없습니다.`,
-          timerMs: 5000,
-        });
+        // 안내가 사람에게 읽힐 때까지 기다린 뒤 resolve — 곧장 resolve 하면
+        // 호출부 finally 의 goIdle 이 이 안내를 즉시 덮는다 (0.3.26 수정 C).
+        await showReceiptFailureAndWait(`${doneSentence} 프린터를 사용할 수 없습니다.`);
         resolve();
         return;
       }
@@ -2070,12 +2144,8 @@ async function promptReceiptPrintAfterApproval(
             ? "카드 취소와 장부 반영은 이미 끝난 상태이며 이 오류는 취소 결과를 되돌리지 않습니다."
             : "카드 승인·원장 반영은 이미 완료된 상태이며 이 오류는 결제에 영향을 주지 않습니다."
         );
-        showResultScreen({
-          status: "error",
-          title: "영수증 출력 실패",
-          description: `${doneSentence} 영수증 출력에 실패했습니다.`,
-          timerMs: 5000,
-        });
+        // 위와 같은 이유로, 안내를 다 보여 준 뒤에야 resolve 로 넘어간다.
+        await showReceiptFailureAndWait(`${doneSentence} 영수증 출력에 실패했습니다.`);
       }
       resolve();
     };
@@ -2101,12 +2171,18 @@ async function promptReceiptPrintAfterApproval(
     const rendered = renderResult(
       sdk,
       () => {
-        // 폴백: 조작 요소 없는 안내 + 8초 뒤 자동 출력 (기존 기본 동작 유지).
-        showReceiptChoiceFallback({
+        // 폴백: 조작 요소 없는 정적 안내 + 8초 뒤 자동 출력 (기존 기본 동작 유지).
+        // 버튼이 없으니 "생략"은 못 하지만 자동 출력은 산다. 타이머는 seq 가드
+        // 아래에 있다 — 화면 주인이 바뀐 뒤 깨어난 옛 타이머가 프린터를 부르거나
+        // 화면을 덮는 일이 없게 한다 (남는 경우는 아래 상한이 접는다).
+        showStaticNotice({
           title,
-          autoPrintMs: 8_000,
-          onTimeout: () => decide(() => void doPrint("timeout")),
+          detail: "잠시 후 영수증이 자동으로 출력됩니다. (약 8초)",
         });
+        setTimeout(() => {
+          if (seq !== screenSeq) return;
+          decide(() => void doPrint("timeout"));
+        }, 8_000);
       },
       {
         type: "image",
@@ -2136,7 +2212,21 @@ async function promptReceiptPrintAfterApproval(
         },
       },
     );
-    if (rendered) confirmTemplateRendered();
+    if (rendered) hideStaticNotice();
+
+    // 상한 (0.3.26): 화면 주인이 바뀌어(seq 변경) 버튼·타이머 콜백이 전부
+    // 무시되는 경우, 이 promise 가 pending 으로 영원히 남으면 호출부 finally
+    // (busy 해제·goIdle)까지 같이 멈춘다. 그 경우 선택 단계만 조용히 접는다 —
+    // 프린터는 부르지 않는다 (자동 출력을 상한에서 하면 이중 출력 위험만 는다).
+    setTimeout(() => {
+      if (decided) return;
+      decided = true;
+      log.warn(
+        "영수증 선택 종료",
+        `paymentKey=${paymentKey} — 화면이 전환되어 선택 없이 종료합니다 (출력 안 함).`
+      );
+      resolve();
+    }, 12_000);
   });
 }
 
@@ -2218,9 +2308,12 @@ async function runPairingFlow(): Promise<string> {
     );
   }
 
-  // 우리 대기화면은 position:fixed 전체화면이라 그대로 두면 SDK 화면을 덮는다.
-  // 넘겨주기 전에 먼저 치운다.
-  clearOwnScreen();
+  // 정적 안내(#boot)는 position:fixed 전체화면이라 그대로 두면 SDK 등록 화면을
+  // 덮는다. 넘겨주기 전에 숨긴다 (0.3.26: 0.3.25 까지는 여기서 자체 화면만
+  // 치우고 #boot 은 남겨서, 부팅 안내가 등록 화면을 덮을 수 있었다 — 문제 D.
+  // renderOnboardingPage 가 실패하면 아래 catch → bootstrap 의 showResultScreen
+  // persist 폴백이 안내를 되살리므로 빈 화면으로 끝나지 않는다).
+  hideStaticNotice();
   return await new Promise<string>((resolve, reject) => {
     try {
       t.renderOnboardingPage!({

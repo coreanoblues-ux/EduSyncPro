@@ -15,7 +15,7 @@
  *   2. 못 찾으면 어떤 전역이 실제로 있는지를 로그로 남긴다. 이름을 추측해서
  *      조용히 실패하는 대신, 현장 로그만 보고 정확한 이름을 알 수 있게 한다.
  *   3. 존재하지 않는 SDK 메서드는 절대 만들어 쓰지 않는다. 없으면 없다고 로그하고
- *      그 기능만 건너뛴다 (예: renderIdlePage 가 없으면 자체 대기화면으로 대체).
+ *      그 기능만 건너뛴다 (예: renderIdlePage 가 없으면 정적 안내 텍스트로 대체).
  */
 
 import { describeError, log } from "./logger";
@@ -466,7 +466,8 @@ const TEMPLATE_CONTAINER_ID = "app";
  *       Minified React error #299 = "Target container is not a DOM element"
  *
  *   index.html 은 이 노드를 스크립트보다 위에 두고, 우리 코드는 이 노드를 절대
- *   지우지 않는다(screen.ts 는 자기 전용 #edusync-front-root 만 만들고 지운다).
+ *   지우거나 덮어쓰지 않는다 (0.3.26 부터 플러그인은 DOM 을 만들지 않는다 —
+ *   screen.ts 는 index.html 의 정적 안내 노드 #boot 의 글자만 바꾼다).
  *   그런데도 여기서 한 번 더 확인하는 이유는 두 가지다:
  *
  *     1. 우리가 확인할 수 없는 것이 남아 있다. 단말기 웹뷰가 문서를 다시 그리거나
@@ -491,7 +492,7 @@ function ensureTemplateContainer(): boolean {
   if (!document.body) {
     log.warn(
       "템플릿 컨테이너 없음",
-      `#${TEMPLATE_CONTAINER_ID} 를 만들 body 가 아직 없습니다. 자체 대기화면으로 갑니다.`,
+      `#${TEMPLATE_CONTAINER_ID} 를 만들 body 가 아직 없습니다. 정적 안내 텍스트로 갑니다.`,
     );
     return false;
   }
@@ -501,8 +502,8 @@ function ensureTemplateContainer(): boolean {
   if (existing) existing.remove();
   const el = document.createElement("div");
   el.id = TEMPLATE_CONTAINER_ID;
-  // 부팅 문구(#boot, position:fixed)보다 뒤에 붙는다. 덮개는 렌더 성공이
-  // 확인된 뒤에 confirmTemplateRendered 가 걷는다 — 순서는 0.3.9 그대로다.
+  // 정적 안내(#boot, position:fixed)보다 뒤에 붙는다. 덮개는 렌더 성공이
+  // 확인된 뒤에 hideStaticNotice 가 걷는다 — 순서는 0.3.9 그대로다.
   document.body.appendChild(el);
   log.warn(
     "템플릿 컨테이너 재생성",
@@ -517,7 +518,8 @@ function ensureTemplateContainer(): boolean {
  * 유휴 화면을 그린다.
  *
  * 공식 SDK 의 renderIdlePage 를 쓴다 (Toss 표준 컴포넌트 = 심사 정책 준수).
- * 없으면 자체 대기화면으로 대체한다. 여기서 아무것도 안 하면 다시 검은 화면이 된다.
+ * 없으면 호출부의 폴백(조작 요소 없는 정적 안내 텍스트)으로 내려간다.
+ * 여기서 아무것도 안 하면 다시 검은 화면이 된다.
  *
  * 왜 params 를 받게 바꿨나:
  *   원장이 본 "빨간 IP 주소만 있는 화면" 은 type:"default" 대기화면이다. 우리가
@@ -527,10 +529,10 @@ function ensureTemplateContainer(): boolean {
  *
  * params 를 넣은 호출이 실패하면 인자 없는 호출로 한 번 더 시도한다. 펌웨어가 구형이라
  * 인자를 모르더라도 최소한 Toss 기본 대기화면은 나와야 하기 때문이다. 그것마저
- * 실패할 때만 자체 화면으로 내려간다.
+ * 실패할 때만 폴백(정적 안내)으로 내려간다.
  *
- * @returns 공식 Template API 로 실제 렌더가 성공했으면 true, 자체 화면으로
- *   대체했으면 false.
+ * @returns 공식 Template API 로 실제 렌더가 성공했으면 true, 폴백(정적 안내)으로
+ *   내려갔으면 false.
  *
  *   호출부는 이 값으로만 부팅 문구를 지워야 한다. "renderIdlePage 라는 함수가
  *   존재한다"와 "그것이 그려졌다"는 서로 다른 사실인데, 0.3.8 까지 그 둘을 같은
@@ -551,7 +553,7 @@ export function renderIdle(
       );
     }
     // 마운트 지점이 없으면 부르지 않는다. 부르면 React #299 로 죽고, 죽으면
-    // 대기화면이 통째로 사라진다. 확보에 실패했을 때만 자체 화면으로 내려간다.
+    // 대기화면이 통째로 사라진다. 확보에 실패했을 때만 폴백으로 내려간다.
     if (!ensureTemplateContainer()) {
       fallback();
       return false;
@@ -572,11 +574,11 @@ export function renderIdle(
         log.info("renderIdlePage 기본 호출 성공", "인자 없는 기본 대기화면으로 그렸습니다.");
         return true;
       } catch (err2) {
-        log.error("renderIdlePage 기본 호출도 실패", err2, "자체 대기화면으로 대체합니다.");
+        log.error("renderIdlePage 기본 호출도 실패", err2, "정적 안내 텍스트로 대체합니다.");
       }
     }
   } else {
-    log.warn("renderIdlePage 없음", "SDK 유휴화면을 쓸 수 없어 자체 대기화면을 표시합니다.");
+    log.warn("renderIdlePage 없음", "SDK 유휴화면을 쓸 수 없어 정적 안내 텍스트를 표시합니다.");
   }
   fallback();
   return false;
@@ -586,7 +588,7 @@ export function renderIdle(
  * 결과·안내 화면을 공식 renderResultPage 로 그린다. 실패하면 fallback 을 부른다.
  *
  * renderIdle 과 같은 관문 구조다: 마운트 지점(#app)이 없으면 부르지 않고,
- * 던지면 잡아서 자체 안내 문구로 내려간다.
+ * 던지면 잡아서 정적 안내 문구로 내려간다.
  *
  * 성공 로그를 남기지 않는 이유:
  *   이 함수는 오류 화면의 "유지 재렌더"(10초마다 같은 화면을 다시 그림) 경로에서도
@@ -610,14 +612,14 @@ export function renderResult(
       return true;
     } catch (err) {
       log.warn(
-        "renderResultPage 실패 — 자체 안내 문구로 대체",
+        "renderResultPage 실패 — 정적 안내 문구로 대체",
         `${describeError(err)} · title=${params.title}`
       );
     }
   } else {
     log.warn(
       "renderResultPage 없음",
-      "이 펌웨어 template 에 결과 화면이 없습니다. 자체 안내 문구로 대체합니다."
+      "이 펌웨어 template 에 결과 화면이 없습니다. 정적 안내 문구로 대체합니다."
     );
   }
   fallback();

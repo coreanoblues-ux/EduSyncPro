@@ -34,9 +34,10 @@
                                                      태블릿 폴링으로 완료 확인
 ```
 
-플러그인 화면은 전부 Toss 표준 화면이다 (0.3.27 기준):
-`renderIdlePage`(대기), `renderResultPage`(결과·영수증 선택·오류 안내),
-`renderSelectPage`(관리자 메뉴), `renderOnboardingPage`(단말기 등록),
+플러그인 화면은 전부 Toss 표준 화면이다 (0.3.29 기준):
+`renderIdlePage`(대기 — `default` 타입, 프론트 꾸미기 배경 그대로·버튼 없음),
+`renderResultPage`(결과·영수증 선택·오류 안내),
+`renderSelectPage`(관리자 메뉴 — 오류 화면에서만 진입), `renderOnboardingPage`(단말기 등록),
 그리고 Toss 표준 결제창(`sdk.payment.requestPayment` / `requestPaymentCancel`).
 표준 화면을 쓸 수 없는 장애 상황의 안전망은 index.html 에 미리 선언된 정적
 안내 노드(#boot)의 **글자만 갱신**하는 텍스트 안내뿐이다 — 실행 중 DOM 생성·

@@ -466,22 +466,28 @@ const TEMPLATE_CONTAINER_ID = "app";
  *       Minified React error #299 = "Target container is not a DOM element"
  *
  *   index.html 은 이 노드를 스크립트보다 위에 두고, 우리 코드는 이 노드를 절대
- *   지우거나 덮어쓰지 않는다 (0.3.26 부터 플러그인은 DOM 을 만들지 않는다 —
- *   screen.ts 는 index.html 의 정적 안내 노드 #boot 의 글자만 바꾼다).
- *   그런데도 여기서 한 번 더 확인하는 이유는 두 가지다:
+ *   만들거나 지우거나 덮어쓰지 않는다 (0.3.27 부터 플러그인은 실행 중 화면용
+ *   DOM 노드를 일절 생성하지 않는다 — screen.ts 는 index.html 의 정적 안내 노드
+ *   #boot 의 글자만 바꾼다).
  *
- *     1. 우리가 확인할 수 없는 것이 남아 있다. 단말기 웹뷰가 문서를 다시 그리거나
- *        SDK 가 자기 화면을 넘겨받으며 노드를 치우는 경우를 우리는 못 본다.
- *     2. **없을 때 할 수 있는 일이 있다.** div 하나 만들어 붙이는 것은 공짜이고
- *        되돌릴 필요도 없다. 없는 채로 부르면 예외로 죽고 대기화면이 사라진다.
+ * ── 0.3.27: "없으면 다시 만든다" 를 제거 (검수 정책 최종 정리) ──
+ *   0.3.25~0.3.26 은 #app 이 사라져 있으면 createElement("div") 로 다시 만들어
+ *   붙였다. 표준 화면을 살리려는 의도였지만, 검수 기준은 "실행 중 자체 DOM
+ *   생성 금지" 이고 번들에 남는 createElement/appendChild 는 그 의도와 무관하게
+ *   지적 대상이 된다. 그래서 이제 이 함수는 **확인만 한다**:
+ *     · #app 이 문서에 붙어 있으면 → true (표준 화면 호출 진행)
+ *     · 없거나 떨어져 있으면    → false (호출을 안전하게 중단, 호출부가
+ *       정적 안내 텍스트 폴백으로 내려감. 새 DOM 으로 복원하지 않는다)
+ *   #app 이 사라지는 경우는 지금까지 실기기에서 관찰된 적이 없다 (0.3.25 에서
+ *   id 를 app 으로 맞춘 뒤 재생성 로그가 찍힌 일이 없다). 만약 생긴다면 그건
+ *   단말기 웹뷰가 문서를 통째로 다시 그린 것이라 재부팅으로만 회복된다.
  *
- *   즉 이 함수는 추측으로 덧붙인 fallback 이 아니라, **실패가 확정된 호출을 하지
- *   않기 위한 관문**이다. 취소 쪽에서 "해석 못 하면 부르지 않는다" 와 같은 결이다.
- *
- * 만들어 넣기만 하고 지우지 않는다. 내용도 건드리지 않는다 — 그 안은 SDK 것이다.
- *
- * @returns 컨테이너를 확보했으면 true.
+ * @returns 컨테이너가 문서에 붙어 있으면 true.
  */
+/** 컨테이너 부재 경고는 부팅당 한 번만 남긴다 — 오류 화면 유지 재렌더(10초 주기)
+ *  경로에서도 불리므로, 매번 warn 을 쌓으면 정작 봐야 할 로그가 밀린다. */
+let containerMissingLogged = false;
+
 function ensureTemplateContainer(): boolean {
   if (typeof document === "undefined") return false;
   const existing = document.getElementById(TEMPLATE_CONTAINER_ID);
@@ -489,29 +495,16 @@ function ensureTemplateContainer(): boolean {
   // 이유로 실패한다. "있다" 와 "붙어 있다" 는 다른 사실이다.
   if (existing && existing.isConnected) return true;
 
-  if (!document.body) {
+  if (!containerMissingLogged) {
+    containerMissingLogged = true;
     log.warn(
       "템플릿 컨테이너 없음",
-      `#${TEMPLATE_CONTAINER_ID} 를 만들 body 가 아직 없습니다. 정적 안내 텍스트로 갑니다.`,
+      `#${TEMPLATE_CONTAINER_ID} 가 문서에 없습니다. 표준 화면 호출을 중단하고 ` +
+        `정적 안내 텍스트로 내려갑니다 (새 DOM 을 만들어 복원하지 않습니다 — 검수 정책). ` +
+        `이 줄이 보이면 단말기 재시작이 필요합니다. 결제 폴링은 계속 동작합니다.`,
     );
-    return false;
   }
-
-  // 떨어져 있는 헌 노드가 있으면 치우고 새로 붙인다. 둘이 공존하면
-  // getElementById 가 어느 쪽을 주는지에 따라 증상이 오락가락한다.
-  if (existing) existing.remove();
-  const el = document.createElement("div");
-  el.id = TEMPLATE_CONTAINER_ID;
-  // 정적 안내(#boot, position:fixed)보다 뒤에 붙는다. 덮개는 렌더 성공이
-  // 확인된 뒤에 hideStaticNotice 가 걷는다 — 순서는 0.3.9 그대로다.
-  document.body.appendChild(el);
-  log.warn(
-    "템플릿 컨테이너 재생성",
-    `#${TEMPLATE_CONTAINER_ID} 가 문서에 없어 다시 만들었습니다. ` +
-      `이 줄이 보이면 index.html 의 노드가 어딘가에서 사라진 것입니다 — ` +
-      `React #299(Target container is not a DOM element) 로 죽기 전에 막았습니다.`,
-  );
-  return true;
+  return false;
 }
 
 /**

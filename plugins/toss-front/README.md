@@ -34,8 +34,13 @@
                                                      태블릿 폴링으로 완료 확인
 ```
 
-플러그인 화면은 오직 `sdk.template.renderIdlePage()` 로 렌더되는 표준 유휴 화면과
-Toss 표준 결제창(sdk.payment.requestPayment)뿐이다. 커스텀 HTML/CSS 없음, 확인 버튼 없음.
+플러그인 화면은 전부 Toss 표준 화면이다 (0.3.27 기준):
+`renderIdlePage`(대기), `renderResultPage`(결과·영수증 선택·오류 안내),
+`renderSelectPage`(관리자 메뉴), `renderOnboardingPage`(단말기 등록),
+그리고 Toss 표준 결제창(`sdk.payment.requestPayment` / `requestPaymentCancel`).
+표준 화면을 쓸 수 없는 장애 상황의 안전망은 index.html 에 미리 선언된 정적
+안내 노드(#boot)의 **글자만 갱신**하는 텍스트 안내뿐이다 — 실행 중 DOM 생성·
+삭제·추가 없음, 자체 버튼·입력칸 없음, innerHTML 없음.
 
 ## 폴링 방식 (1초 API 폴링)
 
@@ -61,8 +66,10 @@ Toss 표준 결제창(sdk.payment.requestPayment)뿐이다. 커스텀 HTML/CSS �
 
 ## 환경변수
 
-플러그인 자체는 하드코딩 시크릿 없음. 첫 부팅 시 원장이 발급한 32바이트 base64url
-`deviceKey`를 SDK 저장소에 붙여넣는다. 이후 15분짜리 accessToken을 자동 발급받아 사용.
+플러그인 자체는 하드코딩 시크릿 없음. 첫 부팅 시 표준 온보딩 화면에서 6자
+매장코드 + 4자리 PIN 을 입력하면 서버가 `deviceKey`(32바이트 base64url)를
+내려주고 SDK 저장소에 자동 저장된다 (0.3.2 부터 — 44자 키 직접 붙여넣기 폐지).
+이후 15분짜리 accessToken을 자동 발급받아 사용.
 
 - `TOSS_FRONT_DEVICE_KEY` — 최초 부팅 시 SDK storage에 저장되는 장기키
 - `TOSS_PLUGIN_SERVER_URL` — 로컬 개발 시 서버 주소 오버라이드 (미설정 시 프로덕션)

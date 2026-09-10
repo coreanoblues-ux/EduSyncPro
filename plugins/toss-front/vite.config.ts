@@ -27,6 +27,13 @@ const pkgVersion = JSON.parse(
  * - build.sourcemap: false → ZIP 에 소스맵 포함 금지 (배포 자산 최소화 + 소스 노출 방지)
  * - build.emptyOutDir: true → 이전 빌드 잔재 제거
  * - build.minify: "esbuild" → 기본값. 별도 옵션 없음.
+ * - build.modulePreload.polyfill: false (0.3.27) → Vite 기본 폴리필은
+ *   createElement("link") 로 <link rel="modulepreload"> 를 주입해 **여러 청크**를
+ *   미리 내려받게 하는 코드다. 이 플러그인은 동적 import 가 없어 청크가 단 하나
+ *   (assets/index-*.js)뿐이므로 폴리필이 실제로 할 일이 없다. 그런데 그 안의
+ *   createElement 호출이 번들 DOM 검사에서 계속 걸려 검수 설명 부담만 만들었다.
+ *   빌드 설정으로 정식 제거한다 (번들 문자열 사후 치환 아님). 청크가 하나뿐이라
+ *   실행 호환성에는 영향이 없다.
  */
 export default defineConfig({
   base: "./",
@@ -35,6 +42,7 @@ export default defineConfig({
     __PLUGIN_VERSION__: JSON.stringify(pkgVersion),
   },
   build: {
+    modulePreload: { polyfill: false },
     outDir: "dist",
     assetsDir: "assets",
     emptyOutDir: true,

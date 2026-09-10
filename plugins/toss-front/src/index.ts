@@ -1295,7 +1295,28 @@ async function handleDispatch(d: PendingDispatch) {
   }
 
   if (result.type === "SUCCESS") {
-    log.info("결제 승인", `승인번호=${result.response.approvalNumber ?? "-"} 금액=${result.response.amount}`);
+    // ── 승인 로그 (0.3.27 수정) ──
+    //   0.3.26 까지 result.response.approvalNumber / .amount 를 직접 읽어서
+    //   실기기에서 "승인번호=- 금액=undefined" 로 찍혔다 (승인번호는 공식 구조상
+    //   response.card.approvalNumber 에 있고, amount 는 승인 응답에 아예 없는
+    //   펌웨어가 있다). 저장 경로(confirmPaymentFromSdk)와 **같은 기준**으로 읽는다:
+    //     승인번호 → extractApproval (공통 추출 로직, card.approvalNumber 우선)
+    //     금액     → 응답에 숫자로 있으면 그 값, 없으면 서버 확정값 d.amount
+    //   누락이면 "(확인 불가)" 로 적는다 — 임의 생성·추측 금지. 로그 실패가
+    //   결제 성공 처리를 막지 않도록 try 로 감싼다.
+    try {
+      const logApproval = extractApproval(result.response, { paymentKey: d.paymentKey });
+      const rawAmount = (result.response as Record<string, unknown>).amount;
+      const logAmount =
+        typeof rawAmount === "number" && Number.isFinite(rawAmount) ? rawAmount : d.amount;
+      log.info(
+        "결제 승인",
+        `승인번호=${logApproval.approvalNumber ?? "(확인 불가)"} ` +
+          `금액=${typeof logAmount === "number" && Number.isFinite(logAmount) ? `${logAmount}원` : "(확인 불가)"}`,
+      );
+    } catch {
+      log.info("결제 승인", `paymentKey=${d.paymentKey} (상세값 추출 실패 — 승인 처리는 계속)`);
+    }
     try {
       // confirmPaymentFromSdk 는 이제 "아웃박스에 적고 한 번 보내 본다" 이다.
       // 전송이 실패해도 던지지 않는다 — 승인 기록은 이미 단말기에 남았고,
@@ -2002,6 +2023,15 @@ type ReceiptFlow = "approval" | "cancel";
  *   은 그대로 호출부 finally 한 곳이 책임진다 — 여기서는 부르지 않는다.
  *   영수증 실패는 결제·취소 실패로 바뀌지 않는다 (예외를 밖으로 안 던진다).
  *
+ * ── 0.3.27: 종료 조건을 두 단계로 분리 ──
+ *   · 선택 단계 상한 12초 — 화면 전환 등으로 버튼·타이머 콜백이 전부 무시될 때
+ *     선택 없이 접는다 (출력 안 함).
+ *   · 출력 단계 상한 20초(PRINT_RESULT_WAIT_MS) — 출력을 선택한 뒤 printReceipt
+ *     가 응답하지 않을 때 "미확인" 으로 기록하고 흐름을 접는다. 0.3.26 까지는
+ *     이 경우 promise 가 영구 pending 으로 남아 호출부 finally(busy 해제)가
+ *     멈추고 다음 결제 수신까지 막혔다. 재출력하지 않고, 뒤늦은 완료·실패
+ *     콜백은 로그만 남긴다 (화면 갱신 금지).
+ *
  * 이중 안전 guard:
  *   1) 이 함수의 로컬 `printCalledForThisPayment` 플래그 — race 시 최종 방어선.
  *   2) 로컬 `decided` 플래그 — 출력/생략/타임아웃 세 진입점 중 최초 1개만 통과.
@@ -2032,6 +2062,14 @@ type ReceiptFlow = "approval" | "cancel";
  */
 /** 영수증 실패 안내를 사람이 읽을 최소 시간. renderResultPage 허용 범위(3~10초) 안. */
 const RECEIPT_FAIL_NOTICE_MS = 5_000;
+
+/**
+ * printReceipt 응답을 기다리는 상한 (0.3.27).
+ * 실측상 영수증 한 장은 수 초면 끝난다. 20초가 지나도 응답이 없으면 프린터 쪽이
+ * 멈춘 것인데, 그때 결제 흐름까지 같이 잡아 두면 다음 결제 수신이 막힌다.
+ * 상한 도달은 "출력 미확인" 이지 "출력 실패" 가 아니다 — doPrint 안의 주석 참고.
+ */
+const PRINT_RESULT_WAIT_MS = 20_000;
 
 /**
  * "영수증 출력 실패" 안내를 띄우고, 안내가 제 역할을 다할 때까지 **기다린다**.
@@ -2126,13 +2164,42 @@ async function promptReceiptPrintAfterApproval(
       }
 
       try {
-        await sdk.printer.printReceipt({
+        // ── 출력 단계 상한 (0.3.27) ──
+        //   아래 12초 상한은 **선택 단계**만 지킨다 (decided=true 면 비켜 간다).
+        //   그래서 사용자가 [출력] 을 누른 뒤 printReceipt 가 영원히 응답하지
+        //   않으면 이 promise 가 pending 으로 남고, 호출부 finally(busy 해제 ·
+        //   goIdle)가 멈춰 **다음 결제 수신까지 막혔다**. 출력 단계에 별도 상한을
+        //   둔다. 상한 원칙:
+        //     · 시간 초과 ≠ 출력 취소. 성공도 실패도 단정하지 않고 "미확인" 으로
+        //       기록한다. 재출력하지 않는다 (이중 출력 위험).
+        //     · 뒤늦게 도착한 완료·실패 콜백은 **로그만** 남긴다 — 그 시점의
+        //       화면 주인은 다음 결제일 수 있으므로 화면을 절대 갱신하지 않는다.
+        const printPromise = sdk.printer.printReceipt({
           paymentKey,
           count: 1,
           // 승인 흐름은 지금까지처럼 아무것도 덧붙이지 않는다 (현장에서 검증된 출력물이다).
           // 취소일 때만 한 줄 붙인다 — 이유는 함수 헤더 참고.
           ...(isCancel ? { additionalText: "※ 결제취소 건입니다." } : {}),
         });
+        const outcome = await Promise.race([
+          Promise.resolve(printPromise).then(() => "done" as const),
+          new Promise<"timeout">((r) => setTimeout(() => r("timeout"), PRINT_RESULT_WAIT_MS)),
+        ]);
+        if (outcome === "timeout") {
+          log.warn(
+            isCancel ? "취소 영수증 출력 응답 지연" : "영수증 출력 응답 지연",
+            `paymentKey=${paymentKey} — ${Math.round(PRINT_RESULT_WAIT_MS / 1000)}초가 지나도 ` +
+              `프린터 응답이 없습니다. 출력 여부는 미확인입니다 (성공·실패 단정 안 함, 재출력 안 함). ` +
+              `결제 흐름은 정상 종료합니다.`,
+          );
+          // 뒤늦은 결과는 기록만 한다. 화면은 이미 다음 주인의 것이다.
+          Promise.resolve(printPromise).then(
+            () => log.info("영수증 출력 지연 완료", `paymentKey=${paymentKey} — 상한 이후 완료 응답. 화면은 갱신하지 않습니다.`),
+            (err) => log.error("영수증 출력 지연 실패", err, `paymentKey=${paymentKey} — 상한 이후 실패 응답. 화면은 갱신하지 않습니다.`),
+          );
+          resolve();
+          return;
+        }
         log.info(isCancel ? "취소 영수증 출력 완료" : "영수증 출력 완료", `paymentKey=${paymentKey}`);
         // 성공 시 별도 안내 화면을 오래 띄우지 않는다. 유휴 복귀가 자연스럽다.
       } catch (err) {

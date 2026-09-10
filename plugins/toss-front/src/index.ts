@@ -435,7 +435,7 @@ function openAdminMenu() {
  *   원인은 setIdle 이 아니라 우리 쪽이었다. 자체 화면(#edusync-front-root)과
  *   부팅 문구(#boot)는 둘 다 position:fixed·inset:0 이고, 자체 화면은
  *   z-index 가 2147483000 이다. 즉 setIdle 이 성공해서 토스가 첫화면을
- *   #root 에 그리더라도 그 위를 우리 판이 통째로 덮는다. 원장 눈에는
+ *   #app 에 그리더라도 그 위를 우리 판이 통째로 덮는다. 원장 눈에는
  *   "아무 일도 안 일어나고 로그만 한 줄 늘어나는" 화면이 된다.
  *   그래서 이제 부르기 전에 우리 화면을 먼저 걷어낸다.
  *
@@ -446,7 +446,7 @@ function openAdminMenu() {
  *        (이 펌웨어의 renderIdlePage 는 그냥 던졌다. 조용히 죽는 API 를
  *         이미 한 번 봤으니 응답 자체를 안 믿는다.)
  *     3) resolve 를 받아도 그것만으로는 성공으로 치지 않는다. 0.6초 뒤
- *        #root 에 자식 노드가 생겼는지 본다. 그게 "토스가 실제로 그렸다"는
+ *        #app 에 자식 노드가 생겼는지 본다. 그게 "토스가 실제로 그렸다"는
  *        유일한 양성 증거다. 없으면 실패로 처리한다.
  *   어느 쪽으로 실패하든 [토스 설정 열기](openSetting) 와 [대기화면으로] 를
  *   가진 화면을 그린다. openSetting 은 문서에 있는데 여태 한 번도 안 써 본
@@ -486,11 +486,12 @@ function exitToTossHome() {
       clearTimeout(watchdog);
       log.info("setIdle 응답", "성공. 토스가 실제로 그렸는지 확인합니다.");
       setTimeout(() => {
-        const drawn = (document.getElementById("root")?.childElementCount ?? 0) > 0;
+        // ⚠️ SDK 마운트 컨테이너는 #app 이다 (#root 아님 — sdk.ts 의 0.3.25 주석 참조).
+        const drawn = (document.getElementById("app")?.childElementCount ?? 0) > 0;
         if (drawn) {
           // 여기서만 true 가 된다. "나갔다고 믿는" 것이 아니라 "나간 것을 봤다".
           exitedToHome = true;
-          log.info("첫화면 이동 확인", "#root 에 토스 화면이 그려졌습니다. 폴링 화면 갱신을 멈춥니다.");
+          log.info("첫화면 이동 확인", "#app 에 토스 화면이 그려졌습니다. 폴링 화면 갱신을 멈춥니다.");
           return;
         }
         reportExitFailed("setIdle() 은 성공했지만 토스 첫화면이 그려지지 않았습니다.");

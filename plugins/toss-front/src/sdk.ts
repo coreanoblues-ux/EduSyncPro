@@ -440,14 +440,28 @@ function describeTemplateApi(template: NonNullable<TossFrontSdk["template"]>): s
 /** template API 모양은 부팅당 한 번만 남긴다. 대기화면은 자주 다시 그려지므로 로그가 밀린다. */
 let templateApiLogged = false;
 
-/** SDK 의 React 앱이 마운트하는 컨테이너. index.html 이 만들어 두는 노드다. */
-const TEMPLATE_CONTAINER_ID = "root";
+/**
+ * SDK 의 React 앱이 마운트하는 컨테이너. index.html 이 만들어 두는 노드다.
+ *
+ * ⚠️ **"app" 이다. "root" 가 아니다.** (0.3.25 에서 수정한 실제 사고)
+ *   0.3.24 까지 이 값이 "root" 였고, index.html 도 <div id="root"> 를 만들었다.
+ *   그런데 CDN SDK 번들(cdn.tossplace.com/toss-front-sdk/v0/index.js)을 직접
+ *   내려받아 확인한 결과, 렌더 코드는 정확히 이렇게 되어 있다:
+ *       root = createRoot(document.getElementById("app"))
+ *   공식 템플릿(github.com/tossplace/toss-front-plugin-template →
+ *   front-plugin-js/index.html)도 <div id="app"></div> 를 둔다.
+ *   즉 SDK 는 #app 만 찾는다. 우리는 #root 만 만들어 두었으니 SDK 는 null 을
+ *   쥐고 createRoot(null) → React #299 로 죽었고, 단말기에서는 표준 화면이
+ *   전부 실패해 텍스트 폴백만 나왔다 (2026-09-10 원장 로그 캡처로 확인).
+ *   이름을 짐작으로 정하면 안 된다는 교훈이 타입 선언에 이어 DOM id 에서도 반복됐다.
+ */
+const TEMPLATE_CONTAINER_ID = "app";
 
 /**
  * renderIdlePage 를 부르기 **전에** 마운트 지점이 실제로 문서에 붙어 있는지 본다.
  *
  * ── 왜 (React #299) ──
- *   sdk.template.* 는 내부에서 createRoot(document.getElementById("root")) 를 한다.
+ *   sdk.template.* 는 내부에서 createRoot(document.getElementById("app")) 를 한다.
  *   그 노드가 없으면 createRoot(null) 이 되어 단말기에 이 문구가 뜬다:
  *       Minified React error #299 = "Target container is not a DOM element"
  *
@@ -571,7 +585,7 @@ export function renderIdle(
 /**
  * 결과·안내 화면을 공식 renderResultPage 로 그린다. 실패하면 fallback 을 부른다.
  *
- * renderIdle 과 같은 관문 구조다: 마운트 지점(#root)이 없으면 부르지 않고,
+ * renderIdle 과 같은 관문 구조다: 마운트 지점(#app)이 없으면 부르지 않고,
  * 던지면 잡아서 자체 안내 문구로 내려간다.
  *
  * 성공 로그를 남기지 않는 이유:

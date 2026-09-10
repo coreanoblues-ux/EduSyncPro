@@ -169,14 +169,15 @@ const handledCancelIds = new Set<string>();
 let merchantName = "";
 
 /**
- * 원장이 [첫화면으로] 로 나가는 데 성공했는가.
+ * 원장이 [토스 설정 열기] 로 화면을 플러그인 밖에 넘긴 상태인가.
+ * (0.3.28 부터 나가는 경로는 openSetting 하나다 — setIdle 경유 나가기는 지웠다.)
  *
  * ── 이 플래그가 없으면 나가기는 여전히 안 된 것과 같다 ──
  *   폴링 루프는 우리 화면을 스스로 다시 그리는 자리가 두 곳 있다:
  *     · 연결이 끊겼다 복구되면  goIdle()
  *     · 연속 실패 5회가 되면     showResultScreen(persist)
  *   둘 다 #app 컨테이너에 화면을 새로 그린다 (0.3.26 부터는 표준 화면이지만,
- *   토스 첫화면을 덮어쓰는 것은 마찬가지다). 즉 원장이 토스 첫화면으로 잘
+ *   설정 화면을 덮어쓰는 것은 마찬가지다). 즉 원장이 설정 화면으로 잘
  *   나갔더라도, 몇 초 뒤 와이파이가 한 번 출렁이면 우리 화면이 그 위를 덮으며
  *   도로 끌고 들어온다. 원장이 신고한 "나갈 방법이 없다" 와 결과가 똑같다.
  *
@@ -336,7 +337,7 @@ function idleParams(): IdlePageParams {
  * 관리자 메뉴. 대기화면의 [관리자] 버튼에서만 들어온다.
  *
  * 대기화면이 oneButton 이 되면서 버튼이 하나로 줄었다. 그래서 "단말기 상태"와
- * "첫화면으로"를 여기 한 단계 아래로 모았다. 결과적으로 더 안전해졌다 —
+ * "토스 설정 열기"를 여기 한 단계 아래로 모았다. 결과적으로 더 안전해졌다 —
  * 이 화면은 학원 로비에 서 있고 학생도 만질 수 있는데, 이제 나가기까지
  * 두 번을 눌러야 하고 그 사이에 경고 문구를 읽게 된다.
  *
@@ -357,7 +358,7 @@ function openAdminMenu() {
   const opened = renderSelect(sdk, {
     title: merchantName || "관리자",
     subtitle:
-      "[첫화면으로]를 누르면 학생이 이 단말기로 결제할 수 없습니다. " +
+      "태블릿 없이 직접 결제하려면 [토스 설정 열기] → 플러그인을 끄세요. " +
       "결제 취소는 단말기가 아니라 토스플레이스 판매자센터(PC)에서 하세요.",
     options: [
       {
@@ -366,9 +367,9 @@ function openAdminMenu() {
         onClick: () => showTerminalStatus(),
       },
       {
-        title: "첫화면으로",
-        subtitle: "단말기 첫화면으로 나갑니다",
-        onClick: () => exitToTossHome(),
+        title: "토스 설정 열기",
+        subtitle: "단말기 설정으로 이동합니다 (플러그인 해제 후 직접 결제 가능)",
+        onClick: () => openTossSetting(),
       },
     ],
     onBack: () => goIdle(),
@@ -382,11 +383,11 @@ function openAdminMenu() {
     type: "twoButton",
     title: { text1: merchantName || "관리자", text2: "무엇을 할까요?" },
     description: {
-      text: "[첫화면으로]를 누르면 학생이 이 단말기로 결제할 수 없습니다.",
+      text: "태블릿 없이 직접 결제하려면 [토스 설정 열기] → 플러그인을 끄세요.",
       subText: "결제 취소는 단말기가 아니라 토스플레이스 판매자센터(PC)에서 하세요.",
     },
     primaryButton: { text: "단말기 상태", onClick: () => showTerminalStatus() },
-    secondaryButton: { text: "첫화면으로", onClick: () => exitToTossHome() },
+    secondaryButton: { text: "토스 설정 열기", onClick: () => openTossSetting() },
   };
 
   const rendered = renderIdle(
@@ -411,151 +412,47 @@ function openAdminMenu() {
   if (rendered) hideStaticNotice();
 }
 
+// exitToTossHome() (sdk.app.setIdle 경유) 은 0.3.28 에서 지웠다.
+//   2026-09-11 단말기 로그: 원장이 [첫화면으로] 를 세 번 눌렀고 setIdle 은 세 번
+//   모두 성공을 응답했지만 화면은 한 번도 바뀌지 않았다. 결제 단말기 모드에서는
+//   플러그인 화면이 곧 첫화면이라 setIdle 이 시각적으로 아무 일도 하지 않는 것이
+//   이 펌웨어의 실제 동작이다. "토스가 실제로 그렸는지" 검증(#app 자식 노드 확인)도
+//   우리 자신의 대기화면을 토스 화면으로 오인하는 가짜 양성이었다.
+//   SDK 문서(sdk.app 6개 메서드)에 플러그인을 종료하는 API 는 없다. 문서에 있는
+//   유일한 실제 탈출구는 openSetting 뿐이므로 관리자 메뉴 버튼을 그리로 바꿨다.
+//   reportExitFailed · EXIT_WATCHDOG_MS · EXIT_VERIFY_MS 도 함께 지웠다.
+
 /**
- * 단말기 첫화면으로 나간다.
+ * 관리자 메뉴의 [토스 설정 열기]. 0.3.28 부터 플러그인 밖으로 나가는 유일한 경로다.
  *
- * ── 정직하게 남겨 두는 한계 (2026-08-29 문서 재확인) ──
- *   sdk.app.setIdle 에 대해 Toss 레퍼런스가 적어 둔 것은 딱 한 줄이다:
- *     "setIdle — 첫화면으로 이동해요."
- *   (docs.tossplace.com/reference/plugin-sdk/front/app.html)
+ * SDK 문서(sdk.app)에서 화면을 플러그인 밖으로 옮기는 API 는 openSetting 하나뿐이다.
+ * 태블릿 장애 시 원장은 여기로 나가 단말기 설정에서 플러그인을 끄고, 토스 기본
+ * 화면에서 금액을 직접 입력해 결제한다(토스 프론트 공식 기본 기능). 상황이 끝나면
+ * 설정에서 플러그인을 다시 켠다.
  *
- *   "플러그인을 종료한다"거나 "토스 기본 결제앱으로 간다"는 서술은 없다.
- *   sdk.app 전체를 뒤져도 플러그인을 빠져나가는 API 는 문서에 존재하지 않는다
- *   (restartOnboarding · getSerialNumber · getMerchant · openSetting · setIdle ·
- *    isDebugMode 6개가 전부).
- *
- *   나는 앞서 원장에게 "[토스 홈으로] → [나가기] 로 기본 결제앱의 거래내역에서
- *   취소하시면 됩니다" 라고 안내했다. 그건 검증하지 않은 말이었다. 이 버튼이
- *   실제로 어디로 가는지는 단말기에서 눌러 봐야만 안다. 그래서 문구를
- *   "토스 홈으로"가 아니라 "첫화면으로" 로 바꾸고, 거래내역 이야기는 뺐다.
- *   결제 취소의 확실한 경로는 판매자센터(PC 웹)뿐이다.
- *
- * ── 0.3.12 에서 고친 것 (원장 신고: "눌러도 화면이 바뀌질 않아") ──
- *   원인은 setIdle 이 아니라 우리 쪽이었다. 자체 화면(#edusync-front-root)과
- *   부팅 문구(#boot)는 둘 다 position:fixed·inset:0 이고, 자체 화면은
- *   z-index 가 2147483000 이다. 즉 setIdle 이 성공해서 토스가 첫화면을
- *   #app 에 그리더라도 그 위를 우리 판이 통째로 덮는다. 원장 눈에는
- *   "아무 일도 안 일어나고 로그만 한 줄 늘어나는" 화면이 된다.
- *   그래서 이제 부르기 전에 우리 화면을 먼저 걷어낸다.
- *
- *   덮개를 걷으면 새 위험이 생긴다 — setIdle 이 조용히 실패하면 화면에
- *   아무것도 안 남는다. 그래서 세 가지를 같이 넣었다:
- *     1) reject 를 잡아 실패 화면으로 되돌린다.
- *     2) 3초 워치독. resolve 도 reject 도 안 오는 경우를 잡는다.
- *        (이 펌웨어의 renderIdlePage 는 그냥 던졌다. 조용히 죽는 API 를
- *         이미 한 번 봤으니 응답 자체를 안 믿는다.)
- *     3) resolve 를 받아도 그것만으로는 성공으로 치지 않는다. 0.6초 뒤
- *        #app 에 자식 노드가 생겼는지 본다. 그게 "토스가 실제로 그렸다"는
- *        유일한 양성 증거다. 없으면 실패로 처리한다.
- *   어느 쪽으로 실패하든 [토스 설정 열기](openSetting) 와 [대기화면으로] 를
- *   가진 화면을 그린다. openSetting 은 문서에 있는데 여태 한 번도 안 써 본
- *   나가는 길이다 — 설정 화면까지만 가도 원장이 단말기를 다룰 수 있다.
+ * ⚠️ 아직 이 단말기에서 실제로 눌러 본 적 없는 API 다. 설정 화면이 정말 열리는지,
+ *    플러그인 해제 후 직접 결제가 되는지는 단말기에서 확인해야 한다.
  */
-const EXIT_WATCHDOG_MS = 3000;
-const EXIT_VERIFY_MS = 600;
-
-function exitToTossHome() {
-  if (!sdk?.app?.setIdle) {
-    log.warn("setIdle 없음", "이 펌웨어는 첫화면 이동을 지원하지 않습니다.");
-    reportExitFailed("이 단말기 펌웨어에는 sdk.app.setIdle 이 없습니다.");
-    return;
-  }
-
-  log.info("첫화면으로 이동", "원장 요청으로 sdk.app.setIdle() 을 호출합니다.");
-
-  // 화면을 토스에게 넘긴다. 우리 쪽 결과 화면의 타이머·persist 재렌더가
-  // 뒤늦게 깨어나 토스 첫화면을 덮지 못하게 세대를 올린다.
-  screenSeq++;
-  // 덮개(정적 안내)를 먼저 걷는다. 이게 0.3.12 수정의 핵심이다 — #boot 은
-  // position:fixed·inset:0 이라, 남겨 두면 setIdle 이 성공해도 원장 눈에는
-  // "아무 일도 안 일어나는" 화면이 된다. 실패하면 reportExitFailed 가 되찾는다.
-  hideStaticNotice();
-
-  let settled = false;
-  const watchdog = setTimeout(() => {
-    if (settled) return;
-    settled = true;
-    reportExitFailed("setIdle() 이 3초 안에 응답하지 않았습니다.");
-  }, EXIT_WATCHDOG_MS);
-
-  void sdk.app
-    .setIdle()
-    .then(() => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(watchdog);
-      log.info("setIdle 응답", "성공. 토스가 실제로 그렸는지 확인합니다.");
-      setTimeout(() => {
-        // ⚠️ SDK 마운트 컨테이너는 #app 이다 (#root 아님 — sdk.ts 의 0.3.25 주석 참조).
-        const drawn = (document.getElementById("app")?.childElementCount ?? 0) > 0;
-        if (drawn) {
-          // 여기서만 true 가 된다. "나갔다고 믿는" 것이 아니라 "나간 것을 봤다".
-          exitedToHome = true;
-          log.info("첫화면 이동 확인", "#app 에 토스 화면이 그려졌습니다. 폴링 화면 갱신을 멈춥니다.");
-          return;
-        }
-        reportExitFailed("setIdle() 은 성공했지만 토스 첫화면이 그려지지 않았습니다.");
-      }, EXIT_VERIFY_MS);
-    })
-    .catch((err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(watchdog);
-      reportExitFailed(describeErr(err));
-    });
-}
-
-// removeBootNode() 는 0.3.26 에서 지웠다.
-//   #boot 을 remove() 로 영구히 지우던 함수였다. 지우고 나면 그 뒤의 실패에서
-//   안전망이 없다 — clearOwnScreen(자체 화면 제거)과 함께 hideStaticNotice
-//   (hidden 토글, 재사용 가능) 하나로 통일했다. runPairingFlow 는 #boot 을
-//   남기고 confirmTemplateRendered 는 지우던 비일관도 이것으로 사라졌다.
-
-/** 나가기가 안 됐을 때. 빈 화면에 원장을 버려 두지 않는 것이 이 함수의 전부다. */
-function reportExitFailed(reason: string) {
-  // 나가지 못했으니 화면은 다시 우리 것이다. 폴링 갱신도 다시 허용한다.
-  exitedToHome = false;
-  log.error("첫화면 이동 실패", reason, "대안 경로를 화면에 띄웁니다.");
-
-  const buttons: Array<{ label: string; onClick: () => void }> = [];
-  if (sdk?.app?.openSetting) {
-    buttons.push({ label: "토스 설정 열기", onClick: () => openTossSetting() });
-  }
-  buttons.push({ label: "대기화면으로", onClick: () => goIdle() });
-
-  // persist: 원장이 버튼을 누를 때까지 남는다. 예전 자체 화면도 그랬다.
-  showResultScreen({
-    status: "error",
-    title: "첫화면으로 나가지 못했습니다",
-    description:
-      "이 단말기 펌웨어가 플러그인 밖으로 나가는 것을 허용하지 않습니다. " +
-      "결제 취소는 토스플레이스 판매자센터(PC 웹)에서 하세요. " +
-      "단말기 자체를 다루셔야 하면 [토스 설정 열기]를 눌러 보세요.",
-    buttons,
-    timerMs: 10_000,
-    persist: true,
-  });
-}
-
-/** 문서에 있는데 여태 안 써 본 두 번째 탈출구. */
 function openTossSetting() {
   if (!sdk?.app?.openSetting) return;
   log.info("토스 설정 열기", "sdk.app.openSetting() 을 호출합니다.");
-  // 설정 화면도 남에게 넘긴 화면이다. 옛 화면 타이머가 덮지 못하게 세대를 올린다.
+  // 설정 화면은 남에게 넘긴 화면이다. 옛 화면 타이머가 덮지 못하게 세대를 올린다.
   screenSeq++;
   hideStaticNotice();
-  // 설정 화면도 남에게 넘긴 화면이다. 폴링이 그 위를 덮지 않게 막는다.
-  // 실패하면 아래 catch 에서 reportExitFailed 와 같은 이유로 도로 푼다.
+  // 폴링이 설정 화면 위를 덮지 않게 막는다. 실패하면 아래 catch 에서 도로 푼다.
+  // (결제요청이 오면 폴링 루프가 exitedToHome 을 풀고 화면을 되찾는다 — 설정을
+  //  보던 중이어도 학생 결제가 막히지는 않는다.)
   exitedToHome = true;
   void sdk.app.openSetting().catch((err) => {
     exitedToHome = false;
     log.error("openSetting 실패", err, "대기화면으로 되돌립니다.");
     showResultScreen({
       status: "error",
-      title: "설정 화면도 열지 못했습니다",
+      title: "설정 화면을 열지 못했습니다",
       description:
         "단말기에서 직접 설정으로 들어가셔야 합니다. 진입 방법은 " +
-        "태블릿 화면(단말기 모드 안내)에 적어 두었습니다.",
+        "태블릿 화면(단말기 모드 안내)에 적어 두었습니다. " +
+        "직접 결제는 설정에서 플러그인을 끈 뒤 토스 기본 화면에서 할 수 있습니다.",
       buttons: [{ label: "대기화면으로", onClick: () => goIdle() }],
       timerMs: 10_000,
       persist: true,
@@ -1078,7 +975,7 @@ async function pollOnce(gen: number) {
     if (consecutivePollErrors > 0) {
       log.info("backend connection 복구", `연속 실패 ${consecutivePollErrors}회 뒤 정상화되었습니다.`);
       consecutivePollErrors = 0;
-      // 원장이 첫화면으로 나가 있으면 화면을 도로 뺏지 않는다. 복구 사실은
+      // 원장이 설정 화면으로 나가 있으면 화면을 도로 뺏지 않는다. 복구 사실은
       // 로그로만 남긴다. 결제요청이 오면 아래에서 어차피 화면을 되찾는다.
       if (!exitedToHome) goIdle();
     }

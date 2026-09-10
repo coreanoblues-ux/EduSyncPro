@@ -120,7 +120,7 @@ export function showStaticNotice(opts: {
  *   · 표준 화면이 실제로 그려졌음이 확인된 직후 (renderIdle/renderResult/
  *     renderSelect 가 true 를 준 뒤). #boot 을 남겨 두면 그 화면을 덮는다.
  *   · 화면을 SDK 에게 넘기기 직전 — renderOnboardingPage(등록)·requestPayment
- *     (결제창)·setIdle(토스 첫화면) 앞. 이때는 "그려졌다"는 증거가 아직 없지만
+ *     (결제창)·openSetting(단말기 설정) 앞. 이때는 "그려졌다"는 증거가 아직 없지만
  *     덮개를 두고 넘길 수는 없다. 넘긴 쪽이 실패하면 호출부가 showStaticNotice
  *     또는 showResultScreen 으로 화면을 되찾는다 — 빈 화면으로 안 끝난다.
  */

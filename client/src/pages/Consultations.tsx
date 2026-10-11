@@ -8,7 +8,18 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MessageSquare, Phone, Search, Trash2, UserPlus, CalendarClock, Pencil } from "lucide-react";
+import {
+  MessageSquare,
+  Phone,
+  Search,
+  Trash2,
+  UserPlus,
+  CalendarClock,
+  Pencil,
+  FileText,
+  Printer,
+  MessageSquarePlus,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -33,6 +44,12 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { labelClassesByTeacher } from "@shared/classLabel";
+import { groupLevelTestsByConsultation } from "@shared/levelTestMatch";
+import {
+  openLevelTestApp,
+  useLevelTests,
+  type LevelTestRow,
+} from "@/hooks/useLevelTests";
 import type { Consultation, Class, Teacher } from "@shared/schema";
 
 /**
@@ -120,6 +137,79 @@ function formatDate(value: string | Date): string {
   return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, "0")}.${String(d.getDate()).padStart(2, "0")}`;
 }
 
+/**
+ * 레벨테스트 앱에 저장된 결과지 한 건.
+ *
+ * ── 왜 상담 화면에 다시 그리는가 ──
+ *   원장이 학부모와 통화하는 순간에 보는 화면은 상담 카드다. 그 자리에서
+ *   "이 학생 점수가 몇 점이었지"를 알려면 지금까지는 레벨테스트 기록 화면으로
+ *   건너가서 이름으로 다시 찾아야 했다. 통화 중에 할 만한 일이 아니다.
+ *
+ * ── 채점 중인 기록도 숨기지 않는다 ──
+ *   미채점이 남아 있으면 totalScore 가 null 로 온다. 그런 건을 감추면 원장은
+ *   "저장이 안 됐나" 로 받아들인다. 점수 자리에 "채점 중" 이라고 적어 보여 준다.
+ */
+function LevelTestResult({ row }: { row: LevelTestRow }) {
+  const scores: [string, number | null][] = [
+    ["독해", row.readingScore],
+    ["문법", row.grammarScore],
+    ["어휘", row.vocabScore],
+    ["서술형", row.writingScore],
+  ];
+  const grading = row.totalScore == null || !!row.pendingCount;
+
+  return (
+    <div
+      className="rounded-md border bg-background px-3 py-2 space-y-2"
+      data-testid={`consultation-level-test-${row.id}`}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium">{row.testDate}</span>
+        <span className="text-sm text-muted-foreground">{row.examTitle}</span>
+        {grading ? (
+          <Badge variant="outline">채점 중{row.pendingCount ? ` · 미채점 ${row.pendingCount}` : ""}</Badge>
+        ) : (
+          <Badge variant="secondary" className="tabular-nums">
+            총점 {row.totalScore}점
+          </Badge>
+        )}
+        <Button
+          size="sm"
+          variant="ghost"
+          className="ml-auto"
+          onClick={() => openLevelTestApp(row.id)}
+          data-testid={`button-open-result-${row.id}`}
+        >
+          <Printer className="h-4 w-4 mr-1" />
+          결과지 열기
+        </Button>
+      </div>
+
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        {scores.map(([label, value]) => (
+          <span key={label}>
+            {label} <span className="font-semibold tabular-nums text-foreground">{value == null ? "-" : value}</span>
+          </span>
+        ))}
+        <span>
+          정답 {row.correctCount ?? 0}/{row.questionCount ?? 0}
+        </span>
+        {row.teacherName && <span>담당 {row.teacherName}</span>}
+      </div>
+
+      {row.notes && <p className="text-xs text-muted-foreground border-t pt-1">메모: {row.notes}</p>}
+    </div>
+  );
+}
+
+/** 검색 상자가 레벨테스트 쪽 글자도 찾을 수 있게, 한 건을 검색용 문자열로 펼친다. */
+function levelTestSearchText(row: LevelTestRow): string {
+  return [row.studentName, row.school, row.grade, row.examTitle, row.teacherName, row.testDate, row.notes]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
 interface ConsultationsProps {
   userRole: "owner" | "teacher" | "superadmin";
 }
@@ -157,6 +247,25 @@ export default function Consultations({ userRole }: ConsultationsProps) {
   const { data: classes = [] } = useQuery<Class[]>({ queryKey: ["/api/classes"] });
   const { data: teachers = [] } = useQuery<Teacher[]>({ queryKey: ["/api/teachers"] });
 
+  /**
+   * 레벨테스트 앱이 저장한 결과지.
+   *
+   * 조회가 실패해도 상담 목록은 그대로 보여야 한다. 그래서 isError 를 화면에
+   * 띄우지 않고 빈 배열로 떨어뜨린다 — 상담 관리는 레벨테스트와 무관하게
+   * 원장이 매일 쓰는 화면이고, 여기서 에러 박스를 띄워 가릴 이유가 없다.
+   * (레벨테스트 기록 화면에서는 같은 실패를 분명하게 보여 준다.)
+   */
+  const { data: levelTests = [] } = useLevelTests();
+
+  /**
+   * 상담 건 ↔ 결과지 짝 맞추기. 규칙은 shared/levelTestMatch.ts 에 있다
+   * (이름으로 맞추고, 연락처가 양쪽에 있는데 다르면 동명이인으로 보고 잇지 않는다).
+   */
+  const { byConsultation, unmatched } = useMemo(
+    () => groupLevelTestsByConsultation(consultations, levelTests),
+    [consultations, levelTests]
+  );
+
   // 학생 전환·추천반 드롭다운에서 쓸 반 목록.
   // 강사 표기([김], [정], [고] 등)를 자동으로 붙이고, 원장이 자주 고르는 강사·요일 순으로 정렬한다.
   const activeClassOptions = useMemo(
@@ -192,9 +301,15 @@ export default function Consultations({ userRole }: ConsultationsProps) {
       .filter((c) => showStale || !staleIds.has(c.id))
       .filter((c) => {
         if (!term) return true;
-        return [c.studentName, c.guardianName, c.phone, c.subject, c.memo]
-          .filter(Boolean)
-          .some((v) => String(v).toLowerCase().includes(term));
+        if (
+          [c.studentName, c.guardianName, c.phone, c.subject, c.memo]
+            .filter(Boolean)
+            .some((v) => String(v).toLowerCase().includes(term))
+        )
+          return true;
+        // 레벨테스트 쪽 글자(시험지 이름·학교·담당 선생님)로도 찾을 수 있게 한다.
+        // 원장이 "그날 Level 3 본 애" 처럼 기억하는 경우가 있다.
+        return (byConsultation[c.id] ?? []).some((r) => levelTestSearchText(r).includes(term));
       })
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
@@ -202,9 +317,22 @@ export default function Consultations({ userRole }: ConsultationsProps) {
       status,
       items: matched.filter((c) => c.status === status),
     })).filter((g) => g.items.length > 0);
-  }, [consultations, search, statusFilter, showStale, staleFinal]);
+  }, [consultations, search, statusFilter, showStale, staleFinal, byConsultation]);
 
   const visibleCount = groups.reduce((sum, g) => sum + g.items.length, 0);
+
+  /**
+   * 상담 기록이 없는 레벨테스트. 검색어가 있으면 같은 말로 걸러 준다.
+   *
+   * 이 목록을 따로 내보내는 이유: 워크인으로 와서 테스트만 보고 간 학생은
+   * 상담 행이 없어 지금까지 상담 관리 화면에서 아예 보이지 않았다. 등록
+   * 전환이 가장 아쉬운 사람들이 제일 안 보이던 셈이다.
+   */
+  const unmatchedVisible = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) return unmatched;
+    return unmatched.filter((r) => levelTestSearchText(r).includes(term));
+  }, [unmatched, search]);
 
   const statusMutation = useMutation({
     mutationFn: async ({ id, status }: { id: string; status: Status }) => {
@@ -257,6 +385,58 @@ export default function Consultations({ userRole }: ConsultationsProps) {
     },
     onError: (err: Error) => {
       toast({ title: "저장 실패", description: err.message.replace(/^\d+:\s*/, ""), variant: "destructive" });
+    },
+  });
+
+  /**
+   * 결과지만 있고 상담 행이 없는 학생에게 상담 기록을 만들어 준다.
+   *
+   * ── 왜 버튼 한 번으로 만드는가 ──
+   *   이름·학년·연락처·점수는 이미 결과지 안에 다 있다. 원장이 그걸 보고
+   *   상담 입력창에 손으로 옮겨 적는 동안 오타가 나면 이름이 어긋나 짝이
+   *   안 맞고, 그러면 또 "왜 안 붙지" 가 된다. 같은 글자를 그대로 넣는다.
+   *
+   * ── consultationId 를 직접 박지 않는 이유 ──
+   *   level_tests 를 수정하는 API 가 아직 없다(앱의 upsert 만 있다). 대신
+   *   같은 이름·같은 연락처로 상담을 만들면 levelTestMatch 규칙이 바로
+   *   짝지어 주므로, 서버를 건드리지 않고도 다음 렌더에서 붙는다.
+   */
+  const createFromLevelTest = useMutation({
+    mutationFn: async (row: LevelTestRow) => {
+      const domains = [
+        ["독해", row.readingScore],
+        ["문법", row.grammarScore],
+        ["어휘", row.vocabScore],
+        ["서술형", row.writingScore],
+      ] as const;
+      const breakdown = domains
+        .filter(([, v]) => v != null)
+        .map(([label, v]) => `${label} ${v}`)
+        .join(" · ");
+
+      await apiRequest("POST", "/api/consultations", {
+        phone: row.parentPhone || null,
+        studentName: row.studentName,
+        studentGrade: row.grade || null,
+        status: "레벨테스트완료",
+        // testDate 는 YYYY-MM-DD 문자열이다. 그냥 Date 로 만들면 UTC 자정으로
+        // 읽혀 한국 시간 기준 전날로 표시된다. 정오로 고정해 날짜가 밀리지 않게 한다.
+        levelTestDate: new Date(`${row.testDate}T12:00:00`).toISOString(),
+        levelTestScore: row.totalScore == null ? null : `${row.totalScore}점`,
+        levelTestNotes: [row.examTitle, breakdown, row.school].filter(Boolean).join(" / ") || null,
+        memo: row.notes || null,
+        sourceText: `레벨테스트 기록에서 생성 (${row.testDate} ${row.examTitle})`,
+      });
+    },
+    onSuccess: (_data, row) => {
+      qc.invalidateQueries({ queryKey: ["/api/consultations"] });
+      toast({
+        title: `${row.studentName} 상담 기록을 만들었습니다`,
+        description: "레벨테스트완료 단계에 들어갔습니다. 반배정 상담을 잡아 주세요.",
+      });
+    },
+    onError: (err: Error) => {
+      toast({ title: "상담 기록 생성 실패", description: err.message.replace(/^\d+:\s*/, ""), variant: "destructive" });
     },
   });
 
@@ -375,6 +555,7 @@ export default function Consultations({ userRole }: ConsultationsProps) {
         <h1 className="text-2xl font-bold">상담 관리</h1>
         <p className="text-muted-foreground">
           AI 입력으로 저장한 상담·문의 {consultations.length}건
+          {levelTests.length > 0 && ` · 레벨테스트 결과지 ${levelTests.length}건`}
         </p>
       </div>
 
@@ -394,7 +575,7 @@ export default function Consultations({ userRole }: ConsultationsProps) {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
             className="pl-9"
-            placeholder="이름, 연락처, 과목으로 검색"
+            placeholder="이름, 연락처, 과목, 레벨테스트로 검색"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             data-testid="input-consultation-search"
@@ -525,7 +706,8 @@ export default function Consultations({ userRole }: ConsultationsProps) {
 
                 {(c.levelTestDate || c.levelTestScore || c.levelTestNotes || c.recommendedClassId) && (
                   <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm space-y-1">
-                    <div className="text-xs font-medium text-muted-foreground">레벨테스트</div>
+                    {/* 원장이 상담 중에 손으로 적은 한 줄. 앱이 채점한 결과지는 아래 따로 나온다. */}
+                    <div className="text-xs font-medium text-muted-foreground">레벨테스트 (직접 입력)</div>
                     {c.levelTestDate && (
                       <div>일정: {new Date(c.levelTestDate).toLocaleString("ko-KR")}</div>
                     )}
@@ -534,6 +716,23 @@ export default function Consultations({ userRole }: ConsultationsProps) {
                     {c.recommendedClassId && (
                       <div>추천반: {classes.find((k) => k.id === c.recommendedClassId)?.name ?? "(삭제된 반)"}</div>
                     )}
+                  </div>
+                )}
+
+                {/*
+                  레벨테스트 앱에 저장된 결과지. 위의 수동 입력란(levelTestScore 등)과
+                  따로 보여 준다 — 위는 원장이 손으로 적은 한 줄, 여기는 앱이 채점한
+                  회차별 원본이다. 둘을 합치면 어느 쪽 숫자인지 알 수 없게 된다.
+                */}
+                {(byConsultation[c.id] ?? []).length > 0 && (
+                  <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 space-y-2">
+                    <div className="flex items-center gap-2 text-xs font-medium text-primary">
+                      <FileText className="h-3.5 w-3.5" />
+                      레벨테스트 결과지 {byConsultation[c.id].length}건
+                    </div>
+                    {byConsultation[c.id].map((r) => (
+                      <LevelTestResult key={r.id} row={r} />
+                    ))}
                   </div>
                 )}
 
@@ -573,6 +772,66 @@ export default function Consultations({ userRole }: ConsultationsProps) {
           </section>
           ))}
         </div>
+      )}
+
+      {/*
+        상담 기록이 없는 레벨테스트.
+        워크인으로 테스트만 보고 간 학생이다. 상담 행이 없으니 위 목록에는 끝까지
+        나타나지 않는다 — 등록으로 이어질 가능성이 가장 높은 사람이 가장 안 보이던
+        자리라서, 목록 끝에 따로 모아 "상담 기록 만들기" 한 번으로 흐름에 태운다.
+      */}
+      {unmatchedVisible.length > 0 && (
+        <section className="space-y-3" data-testid="consultation-unmatched-level-tests">
+          <div className="flex items-baseline gap-2 border-b pb-2">
+            <h2 className="text-lg font-semibold flex items-center gap-2">
+              <FileText className="h-4 w-4 text-primary" />
+              상담 기록이 없는 레벨테스트
+            </h2>
+            <span className="text-sm text-muted-foreground">{unmatchedVisible.length}건</span>
+            <span className="hidden text-xs text-muted-foreground sm:inline">
+              · 테스트만 보고 간 학생 — 상담 기록을 만들면 위 목록에서 함께 관리됩니다
+            </span>
+          </div>
+
+          {unmatchedVisible.map((r) => (
+            <Card key={r.id} className="hover-elevate" data-testid={`unmatched-level-test-${r.id}`}>
+              <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-3">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <CardTitle className="text-lg">{r.studentName}</CardTitle>
+                    {r.grade && <Badge variant="secondary">{r.grade}</Badge>}
+                    {r.school && <Badge variant="outline">{r.school}</Badge>}
+                  </div>
+                  <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
+                    {r.parentPhone ? (
+                      <a href={`tel:${r.parentPhone}`} className="flex items-center gap-1 hover:underline">
+                        <Phone className="h-4 w-4" />
+                        {r.parentPhone}
+                      </a>
+                    ) : (
+                      <span className="text-xs">연락처 미입력 — 상담 기록을 만든 뒤 넣어 주세요</span>
+                    )}
+                  </div>
+                </div>
+                {canEdit && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={createFromLevelTest.isPending}
+                    onClick={() => createFromLevelTest.mutate(r)}
+                    data-testid={`button-create-consultation-${r.id}`}
+                  >
+                    <MessageSquarePlus className="h-4 w-4 mr-2" />
+                    상담 기록 만들기
+                  </Button>
+                )}
+              </CardHeader>
+              <CardContent>
+                <LevelTestResult row={r} />
+              </CardContent>
+            </Card>
+          ))}
+        </section>
       )}
 
       <Dialog open={!!enrollTarget} onOpenChange={(open) => !open && setEnrollTarget(null)}>

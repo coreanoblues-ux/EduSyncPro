@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, FileText, Printer, RefreshCw, Search, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,7 +7,12 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import type { LevelTest } from "@shared/schema";
+import {
+  openLevelTestApp as openApp,
+  useLevelTests,
+  LEVEL_TESTS_QUERY_KEY,
+  type LevelTestRow,
+} from "@/hooks/useLevelTests";
 
 /**
  * 레벨테스트 기록.
@@ -27,23 +32,6 @@ import type { LevelTest } from "@shared/schema";
  *   학원 계정에 묶여 저장되므로 어느 PC 에서 열어도 같은 목록이 보인다.
  */
 
-/** 목록 응답은 결과지 원본(raw_state)을 빼고 온다 — 서버가 일부러 제외한다. */
-type LevelTestRow = Omit<LevelTest, "rawState">;
-
-const APP_URL = "/level-test/app";
-
-/**
- * 레벨테스트 앱이 저장에 성공할 때마다 이 키에 시각을 남긴다.
- * 같은 브라우저의 다른 탭들은 storage 이벤트로 그 사실을 전해 듣는다.
- * (아래 useEffect 주석 참고 — 이 화면과 저장 버튼이 서로 다른 탭에 있기 때문이다.)
- */
-const SAVED_SIGNAL_KEY = "edusync-level-test-saved";
-
-function openApp(recordId?: string) {
-  // noopener: 새 탭이 window.opener 로 이 화면을 조작하지 못하게 한다.
-  window.open(recordId ? `${APP_URL}?record=${encodeURIComponent(recordId)}` : APP_URL, "_blank", "noopener");
-}
-
 /** 점수 칸. 아직 채점이 덜 끝난 항목은 숫자 대신 "-" 로 둔다. */
 function Score({ label, value }: { label: string; value: number | null }) {
   return (
@@ -59,42 +47,13 @@ export default function LevelTests({ userRole }: { userRole: "owner" | "teacher"
   const { toast } = useToast();
   const [keyword, setKeyword] = useState("");
 
-  const { data: rows = [], isLoading, isFetching, isError, error, refetch } = useQuery<LevelTestRow[]>({
-    queryKey: ["/api/level-tests"],
-    // ── 왜 전역 기본값을 따르지 않는가 (2026-10 수정) ──
-    //   이 앱의 queryClient 기본값은 staleTime: Infinity · 창 복귀 시 재조회 없음이다.
-    //   그 기본값은 "저장도 조회도 같은 탭 안에서 일어난다"는 전제 위에 서 있다.
-    //   수납·학생 화면은 저장 직후 invalidateQueries 로 캐시를 깨우니 문제가 없다.
-    //
-    //   그런데 이 화면만 전제가 다르다. 저장 버튼은 **다른 탭**(레벨테스트 앱)에 있다.
-    //   다른 탭의 저장은 이 탭의 캐시를 건드릴 수 없으므로, 원장이 채점을 마치고
-    //   돌아와도 목록은 처음 열었을 때의 빈 화면 그대로였다. 기록은 서버에 멀쩡히
-    //   들어가 있는데 화면만 "아직 기록이 없습니다" 라고 말하는 상태 — 저장이
-    //   실패한 것으로 오해하기 딱 좋다. 실제로 그렇게 보고됐다.
-    //
-    //   그래서 이 쿼리만 예외로 둔다. 전역 기본값은 건드리지 않는다
-    //   (수납·결제 화면의 재조회 동작까지 흔들 이유가 없다).
-    staleTime: 0,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: true,
-  });
-
-  // 두 창을 나란히 띄워 둔 경우에는 "창 복귀" 이벤트가 오지 않는다. 그 경우까지
-  // 덮으려고, 앱이 저장에 성공하면 localStorage 에 남기는 표시를 같이 듣는다.
-  // storage 이벤트는 같은 출처의 **다른** 탭에서만 오므로 저장한 탭 자신과는
-  // 겹치지 않는다.
-  useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === SAVED_SIGNAL_KEY) qc.invalidateQueries({ queryKey: ["/api/level-tests"] });
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, [qc]);
+  // 재조회 설정과 다른 탭 저장 신호는 useLevelTests 안에 있다 (그 쪽 주석 참고).
+  const { data: rows = [], isLoading, isFetching, isError, error, refetch } = useLevelTests();
 
   const removeRecord = useMutation({
     mutationFn: async (id: string) => (await apiRequest("DELETE", `/api/level-tests/${id}`)).json(),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["/api/level-tests"] });
+      qc.invalidateQueries({ queryKey: LEVEL_TESTS_QUERY_KEY });
       toast({ title: "삭제했습니다." });
     },
     onError: (e: Error) =>

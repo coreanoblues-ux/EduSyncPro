@@ -468,21 +468,41 @@ async function main() {
     );
   });
 
-  await test("목록 화면이 앱과 같은 신호 키를 듣는다", () => {
-    const page = readFileSync(
-      path.resolve(here, "..", "client", "src", "pages", "LevelTests.tsx"),
+  // 재조회 설정과 신호 키를 화면마다 복사해 두면 한쪽만 고쳐져 같은 사고가
+  // 되살아난다. 그래서 useLevelTests 훅 한 곳에 모아 뒀고, 여기서도 그 한 곳을 본다.
+  await test("조회 훅이 앱과 같은 신호 키를 듣는다", () => {
+    const hook = readFileSync(
+      path.resolve(here, "..", "client", "src", "hooks", "useLevelTests.ts"),
       "utf8"
     );
-    assert.ok(page.includes(SAVED_SIGNAL_KEY), "목록 화면의 신호 키가 앱과 다릅니다");
+    assert.ok(hook.includes(SAVED_SIGNAL_KEY), "조회 훅의 신호 키가 앱과 다릅니다");
     assert.ok(
-      /refetchOnWindowFocus:\s*true/.test(page),
+      /refetchOnWindowFocus:\s*true/.test(hook),
       "다른 탭에서 저장하고 돌아왔을 때 목록을 다시 불러오지 않습니다"
     );
     assert.ok(
-      /refetchOnMount:\s*"always"/.test(page),
+      /refetchOnMount:\s*"always"/.test(hook),
       "메뉴를 다시 눌러 들어와도 예전 목록이 그대로 보입니다"
     );
   });
+
+  // 레벨테스트 기록 화면과 상담 화면이 **둘 다** 그 훅을 써야 의미가 있다.
+  // 어느 한쪽이 useQuery 를 직접 쓰기 시작하면 그 화면만 다시 멈춘다.
+  await test("두 화면 모두 조회 훅을 통해 기록을 읽는다", () => {
+    for (const file of ["LevelTests.tsx", "Consultations.tsx"]) {
+      const page = readFileSync(path.resolve(here, "..", "client", "src", "pages", file), "utf8");
+      assert.ok(
+        /useLevelTests\(\)/.test(page),
+        `${file} 이 useLevelTests 를 쓰지 않습니다 — 그 화면만 갱신이 멈춥니다`
+      );
+      assert.ok(
+        !/queryKey:\s*\[\s*"\/api\/level-tests"/.test(page),
+        `${file} 이 레벨테스트 조회를 직접 만들고 있습니다 — 재조회 설정이 갈라집니다`
+      );
+    }
+  });
+
+  await testMatching();
 
   // ─── 라우터 수준 검증 ──────────────────────────────────────────────────
   //
@@ -495,6 +515,109 @@ async function main() {
 
   console.log(`\n통과 ${passed} · 실패 ${failed}`);
   if (failed > 0) process.exit(1);
+}
+
+/**
+ * 상담 기록 ↔ 레벨테스트 결과지 짝 맞추기 (shared/levelTestMatch.ts).
+ *
+ * ── 왜 이걸 테스트로 못 박는가 ──
+ *   이 규칙이 느슨해지면 **남의 성적이 다른 학생 상담 카드에 붙는다.** 원장이
+ *   그 화면을 보면서 학부모에게 점수를 말하는 자리라서, 못 붙이는 쪽(원장이
+ *   눈으로 보고 직접 연결하면 된다)보다 잘못 붙이는 쪽이 훨씬 나쁘다.
+ *   "확신이 없으면 잇지 않는다" 는 그 판단을 여기서 고정한다.
+ */
+async function testMatching() {
+  const { isSamePerson, groupLevelTestsByConsultation } = await import("../shared/levelTestMatch");
+
+  const row = (over: Partial<Parameters<typeof isSamePerson>[1]> = {}) => ({
+    id: "r1",
+    studentName: "김민준",
+    parentPhone: "010-1234-5678",
+    testDate: "2026-10-01",
+    ...over,
+  });
+  const con = (over: Partial<Parameters<typeof isSamePerson>[0]> = {}) => ({
+    id: "c1",
+    studentName: "김민준",
+    phone: "010-1234-5678",
+    ...over,
+  });
+
+  await test("이름과 연락처가 같으면 같은 사람으로 본다", () => {
+    assert.equal(isSamePerson(con(), row()), true);
+  });
+
+  await test("연락처 표기가 달라도 뒤 8자리가 같으면 같은 사람", () => {
+    // 레벨테스트 앱에서는 "01012345678", 상담에서는 "010-1234-5678" 로 적힌다.
+    assert.equal(isSamePerson(con({ phone: "01012345678" }), row()), true);
+    assert.equal(isSamePerson(con({ phone: "+82 10 1234 5678" }), row()), true);
+  });
+
+  await test("이름 사이 공백과 대소문자는 무시한다", () => {
+    assert.equal(isSamePerson(con({ studentName: "김 민준" }), row()), true);
+    assert.equal(isSamePerson(con({ studentName: "Kevin" }), row({ studentName: "kevin" })), true);
+  });
+
+  await test("동명이인은 연락처가 다르면 잇지 않는다", () => {
+    // 이걸 놓치면 다른 집 아이 점수가 이 상담 카드에 붙는다.
+    assert.equal(isSamePerson(con(), row({ parentPhone: "010-9999-0000" })), false);
+  });
+
+  await test("한쪽에 연락처가 없으면 이름으로 잇는다", () => {
+    // 급하게 적은 상담 건은 연락처가 비어 있다. 그걸 이유로 결과지를 숨기면
+    // 원장은 "저장이 안 됐다" 로 받아들인다.
+    assert.equal(isSamePerson(con({ phone: null }), row()), true);
+    assert.equal(isSamePerson(con(), row({ parentPhone: null })), true);
+    assert.equal(isSamePerson(con({ phone: null }), row({ parentPhone: null })), true);
+  });
+
+  await test("이름이 비어 있으면 판단하지 않는다", () => {
+    // 이름 없는 상담 건끼리 연락처가 없다는 이유로 서로 붙어 버리면 안 된다.
+    assert.equal(isSamePerson(con({ studentName: null }), row()), false);
+    assert.equal(isSamePerson(con({ studentName: null }), row({ studentName: "" })), false);
+  });
+
+  await test("consultationId 가 박혀 있으면 그것이 정답이다", () => {
+    // 앱이 나중에 이 칼럼을 채우면 이름·연락처보다 그 값을 믿어야 한다.
+    assert.equal(isSamePerson(con(), row({ consultationId: "c1", studentName: "다른이름" })), true);
+    assert.equal(isSamePerson(con(), row({ consultationId: "c2" })), false);
+  });
+
+  await test("상담별로 묶고 최근 시험을 위로 올린다", () => {
+    const rows = [
+      row({ id: "a", testDate: "2026-09-01" }),
+      row({ id: "b", testDate: "2026-10-05" }),
+    ];
+    const { byConsultation, unmatched } = groupLevelTestsByConsultation([con()], rows);
+    assert.deepEqual(byConsultation["c1"].map((r) => r.id), ["b", "a"]);
+    assert.equal(unmatched.length, 0);
+  });
+
+  await test("같은 날 시험은 순서가 흔들리지 않는다", () => {
+    // 정렬 기준이 날짜뿐이면 같은 날 두 건의 위아래가 렌더마다 뒤집힌다.
+    const rows = [row({ id: "z" }), row({ id: "a" })];
+    const once = groupLevelTestsByConsultation([con()], rows).byConsultation["c1"];
+    const again = groupLevelTestsByConsultation([con()], [...rows].reverse()).byConsultation["c1"];
+    assert.deepEqual(once.map((r) => r.id), again.map((r) => r.id));
+  });
+
+  await test("상담 기록이 없는 결과지는 unmatched 로 남는다", () => {
+    // 워크인으로 테스트만 보고 간 학생. 여기서 빠지면 상담 화면에서 영영 안 보인다.
+    const walkIn = row({ id: "w", studentName: "박서준", parentPhone: "010-7777-8888" });
+    const { byConsultation, unmatched } = groupLevelTestsByConsultation([con()], [row(), walkIn]);
+    assert.deepEqual(byConsultation["c1"].map((r) => r.id), ["r1"]);
+    assert.deepEqual(unmatched.map((r) => r.id), ["w"]);
+  });
+
+  await test("한 결과지가 여러 상담에 걸리면 unmatched 에 남기지 않는다", () => {
+    // 같은 학생의 상담 기록이 두 번 만들어진 경우(실제로 생긴다). 양쪽에 보여 주되
+    // "상담 없는 레벨테스트" 목록에 또 나오면 원장이 같은 건을 세 번 보게 된다.
+    const cons = [con(), con({ id: "c2" })];
+    const { byConsultation, unmatched } = groupLevelTestsByConsultation(cons, [row()]);
+    assert.equal(byConsultation["c1"].length, 1);
+    assert.equal(byConsultation["c2"].length, 1);
+    assert.equal(unmatched.length, 0);
+  });
 }
 
 async function testRoutes() {

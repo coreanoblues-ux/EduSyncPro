@@ -157,7 +157,7 @@ export default function SystemAdmin() {
         <div className="text-center space-y-4">
           <div className="flex items-center justify-center gap-3">
             <Crown className="h-10 w-10 text-yellow-400" />
-            <h1 className="text-4xl font-bold text-white">시대영재 시스템 관리자</h1>
+            <h1 className="text-4xl font-bold text-white">페이지원영어학원 시스템 관리자</h1>
             <Crown className="h-10 w-10 text-yellow-400" />
           </div>
           <p className="text-purple-200 text-lg">

@@ -36,6 +36,7 @@
     "test:funnel": "tsx scripts/test-funnel-watch.ts",
     "test:recommend": "tsx scripts/test-class-recommend.ts",
     "test:share": "tsx scripts/test-share-link.ts",
+    "gen:report-data": "node scripts/extract-report-data.mjs",
     "plugin:build": "npm --prefix plugins/toss-front install --no-audit --no-fund && npm --prefix plugins/toss-front run build",
     "plugin:pack": "npm run plugin:build && node scripts/pack-toss-plugin.mjs",
     "db:push": "drizzle-kit push",

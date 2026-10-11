@@ -109,6 +109,22 @@ export const tenants = pgTable("tenants", {
   name: text("name").notNull(), // 학원명
   ownerName: text("owner_name").notNull(), // 대표자명
   ownerPhone: text("owner_phone").notNull(), // 대표자 연락처
+  /**
+   * 학부모에게 보여 주는 학원 대표 전화번호.
+   *
+   * ── 왜 ownerPhone 을 그대로 쓰지 않는가 ──
+   *   ownerPhone 은 가입할 때 적은 **대표자 개인 연락처**다(보통 원장 휴대폰).
+   *   학부모용 결과지 링크 맨 아래의 "학원에 전화하기" 버튼에 그 번호가 찍히면
+   *   원장 개인 번호가 모든 학부모에게 나간다. 학원 유선번호(062-456-0990 같은)
+   *   와 개인 번호는 다른 칸이어야 한다.
+   *
+   *   비어 있으면 결과지는 ownerPhone 으로 돌아간다 — 전화 버튼이 아예
+   *   사라지는 것보다는 낫다(학부모가 결과를 본 직후가 전화가 걸리는 순간이다).
+   *   원장은 레벨테스트 화면에서 이 번호를 직접 고친다.
+   *
+   *   nullable 이다. drizzle-kit push 가 데이터 손실 없이 칼럼만 더한다.
+   */
+  sharePhone: text("share_phone"),
   status: tenantStatusEnum("status").default("pending").notNull(),
   activeUntil: timestamp("active_until"),
   // 학년 자동 진급을 어느 학년도까지 반영했는가. 3월이 지나 이 값보다 학년도가

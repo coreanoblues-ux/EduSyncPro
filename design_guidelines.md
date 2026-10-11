@@ -1,4 +1,4 @@
-# 시대영재 학원관리 SaaS 디자인 가이드라인
+# 페이지원영어학원 학원관리 SaaS 디자인 가이드라인
 
 ## Design Approach
 **선택된 접근법**: Design System Approach (Material Design + Custom Elements)
@@ -50,7 +50,7 @@
 
 ### Navigation
 - 좌측 사이드바 (데스크톱) / 하단 탭바 (모바일)
-- "시대영재 학원관리" 로고 좌상단 고정
+- "페이지원영어학원 학원관리" 로고 좌상단 고정
 - 권한별 메뉴 표시 (학원장/교사/슈퍼관리자)
 
 ### Data Display

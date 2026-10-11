@@ -3,6 +3,8 @@
  *
  *   POST   /api/level-tests/:id/share   링크 발급 (원장·강사)
  *   DELETE /api/level-tests/:id/share   링크 끊기 (원장·강사)
+ *   GET    /api/academy-profile        학부모에게 보이는 학원 이름·전화번호 (원장·강사)
+ *   PATCH  /api/academy-profile        그 두 칸 고치기 (원장만)
  *   GET    /r/:token                    학부모용 결과지 (로그인 없음) ⚠️
  *   GET    /robots.txt                  /r/ 를 검색 로봇에서 제외
  *
@@ -28,10 +30,10 @@ import {
   shareState,
   checkShareRate,
   sweepShareRate,
-  renderSharePage,
   renderShareError,
   SHARE_DEFAULT_DAYS,
 } from "../lib/shareLink";
+import { renderSharePage, pickReportSettings } from "../lib/shareReport";
 
 const router = Router();
 
@@ -69,6 +71,116 @@ function shareInfo(row: {
     lastViewedAt: row.shareLastViewedAt,
   };
 }
+
+// ─── 학부모에게 보이는 학원 이름·전화번호 ────────────────────────────────
+/**
+ * 학부모 눈에 닿는 학원 정보 두 칸. **코드가 아니라 DB 에 있는 값**이다.
+ *
+ * ── 이름(tenants.name) ──
+ *   화면 오른쪽 위 배지, 카카오톡 메시지 첫 줄("안녕하세요, ○○입니다"),
+ *   결과지 맨 위 워드마크와 맨 아래 서명 — 넷 다 이 한 칸을 읽는다.
+ *   가입할 때 한 번 적고 나면 고칠 자리가 없었다. 학원 이름이 바뀌면
+ *   (상호 변경·브랜드 교체) 학부모에게 옛 이름이 계속 나가는데도 원장이
+ *   손쓸 방법이 없다는 뜻이다. 그래서 여기서 고칠 수 있게 했다.
+ *
+ *   ⚠️ 결제·정산은 이 값을 읽지 않는다(표시 전용). 확인하고 열었다.
+ *      만약 나중에 이 값을 결제·세금계산서 쪽에서 읽게 되면, 그때는
+ *      "표시 이름" 과 "상호" 를 반드시 다른 칸으로 갈라야 한다.
+ *
+ * ── 전화번호(tenants.sharePhone) ──
+ *   가입할 때 적은 `ownerPhone` 은 **대표자 개인 연락처**(보통 원장 휴대폰)다.
+ *   결과지 맨 아래 "학원에 전화하기" 버튼에 그 번호가 찍히면 원장 개인 번호가
+ *   모든 학부모에게 나간다. 학원 유선번호와는 다른 칸이어야 한다.
+ *
+ *   비워 두면 결과지는 ownerPhone 으로 돌아간다 — 전화 버튼이 사라지는 것보다
+ *   낫다. 학부모가 결과를 본 직후가 전화가 걸리는 순간이고, 그 전화가 이
+ *   기능의 목적이다.
+ */
+const academyProfileSchema = z.object({
+  /**
+   * 학원 이름. 빈 이름은 받지 않는다 — 이름 칸이 비면 결과지 워드마크와
+   * 카톡 첫 줄이 "학원" 으로 떨어지고, 원장은 그 사실을 한참 뒤에 안다.
+   * 60자 제한은 결과지 워드마크가 휴대폰에서 두 줄로 깨지지 않는 길이다
+   * (렌더러도 38자에서 한 번 더 자른다).
+   */
+  name: z.string().trim().min(1, "학원 이름을 입력해 주세요.").max(60, "학원 이름이 너무 깁니다.").optional(),
+  /**
+   * 숫자·하이픈·공백·괄호·+ 만 받는다. 길이 20자 제한.
+   *
+   * 왜 느슨한가: 062-456-0990 / 0624560990 / 062)456-0990 모두 원장이 쓸 수
+   * 있는 표기다. 모양을 강제하면 "왜 저장이 안 되지" 가 된다. 실제 전화
+   * 걸기는 renderSharePage 가 숫자만 남겨서 tel: 로 만든다.
+   * 빈 문자열은 "지우기" 로 받는다.
+   */
+  phone: z
+    .string()
+    .trim()
+    .max(20, "전화번호가 너무 깁니다.")
+    .regex(/^$|^[0-9+\-()\s]+$/, "숫자와 - 만 사용해 주세요.")
+    .nullable()
+    .optional(),
+});
+
+router.get(
+  "/api/academy-profile",
+  authGuard,
+  tenantGuard,
+  roleGuard("owner", "teacher"),
+  async (req: Request, res: Response) => {
+    try {
+      const tenant = await storage.getTenant(req.user!.tenantId!);
+      if (!tenant) return res.status(404).json({ error: "학원 정보를 찾을 수 없습니다." });
+      res.json({
+        academyName: tenant.name,
+        // 지금 결과지에 실제로 찍히는 번호와, 비었을 때의 대체 번호를 함께 준다.
+        sharePhone: tenant.sharePhone ?? null,
+        fallbackPhone: tenant.ownerPhone ?? null,
+      });
+    } catch (error) {
+      console.error("Get academy profile error:", error);
+      res.status(500).json({ error: "학원 정보를 불러오지 못했습니다." });
+    }
+  }
+);
+
+router.patch(
+  "/api/academy-profile",
+  authGuard,
+  tenantGuard,
+  // 둘 다 학부모 전원에게 나가는 값이다. 원장만 고친다.
+  roleGuard("owner"),
+  async (req: Request, res: Response) => {
+    const parsed = academyProfileSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: parsed.error.errors[0]?.message ?? "입력을 확인해 주세요." });
+    }
+    try {
+      const patch: { name?: string; sharePhone?: string | null } = {};
+      if (parsed.data.name !== undefined) patch.name = parsed.data.name;
+      if (parsed.data.phone !== undefined) {
+        // 빈 문자열은 "지우기" 다 → NULL. 그러면 결과지가 ownerPhone 으로 돌아간다.
+        patch.sharePhone = parsed.data.phone === "" ? null : parsed.data.phone;
+      }
+      if (Object.keys(patch).length === 0) {
+        return res.status(400).json({ error: "바꿀 내용이 없습니다." });
+      }
+
+      const updated = await storage.updateTenantProfile(req.user!.tenantId!, patch);
+      if (!updated) return res.status(404).json({ error: "학원 정보를 찾을 수 없습니다." });
+      res.json({
+        academyName: updated.name,
+        sharePhone: updated.sharePhone ?? null,
+        fallbackPhone: updated.ownerPhone ?? null,
+        message: "학원 정보를 저장했습니다.",
+      });
+    } catch (error) {
+      console.error("Update academy profile error:", error);
+      res.status(500).json({ error: "저장 중 오류가 발생했습니다." });
+    }
+  }
+);
 
 // ─── 발급 ────────────────────────────────────────────────────────────────
 router.post(
@@ -238,7 +350,14 @@ router.get("/r/:token", async (req: Request, res: Response) => {
     });
 
     // 6) 보여 줄 칸만 골라 넘긴다 (행을 그대로 넘기지 않는다).
-    //    연락처·학교·상담id·원본(rawState)은 여기서 끊긴다.
+    //    **연락처(parentPhone) · 학교(school) · 상담 메모(notes) · 상담id ·
+    //    문항별 채점 상태는 여기서 끊긴다.**
+    //    - 학교: 인쇄물에는 나오지만 링크에서는 뺀다. 링크가 엉뚱한 단체방에
+    //      올라갔을 때 "이름 + 학교 + 학년 + 점수" 가 모이면 그 학생이 바로
+    //      특정된다. 학부모는 자기 아이 학교를 이미 안다.
+    //    - 상담 메모: 교사용으로 적은 글이다. 레벨테스트 앱도 결과지에
+    //      인쇄하지 않는다고 분명히 적어 두었다. 같은 규칙을 지킨다.
+    //    자세한 판단은 server/lib/shareReport.ts 머리말에 있다.
     res
       .status(200)
       .type("html")
@@ -248,6 +367,7 @@ router.get("/r/:token", async (req: Request, res: Response) => {
             studentName: row.studentName,
             grade: row.grade,
             testDate: row.testDate,
+            examCode: row.examCode,
             examTitle: row.examTitle,
             totalScore: row.totalScore,
             readingScore: row.readingScore,
@@ -256,11 +376,15 @@ router.get("/r/:token", async (req: Request, res: Response) => {
             writingScore: row.writingScore,
             questionCount: row.questionCount,
             correctCount: row.correctCount,
-            notes: row.notes,
             teacherName: row.teacherName,
           },
+          // 커리큘럼 페이지를 그리는 설정 네 칸만 골라 넘긴다.
+          // 고르는 규칙은 shareReport.ts 의 pickReportSettings 에 있다.
+          // rawState 를 그대로 넘기지 말 것.
+          settings: pickReportSettings(row.rawState),
           academyName: tenant?.name ?? "학원",
-          academyPhone: tenant?.ownerPhone ?? null,
+          // 학원 유선번호가 있으면 그것, 없으면 대표자 연락처로 돌아간다.
+          academyPhone: tenant?.sharePhone ?? tenant?.ownerPhone ?? null,
           expiresAt: row.shareExpiresAt,
         })
       );

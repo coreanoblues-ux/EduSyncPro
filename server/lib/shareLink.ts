@@ -20,10 +20,12 @@
  *    학생 한 명의 과거 기록 목록도 열리지 않는다. 토큰이 새어도 새는 것은
  *    그 한 장이다.
  *
- * 2) **보여 줄 것을 고른다(allowlist).** DB 행을 그대로 뿌리지 않고 아래
- *    renderSharePage 가 쓰는 칸만 고른다. 특히 **학부모 연락처(parentPhone)
- *    와 학교(school)는 내보내지 않는다.** 링크를 잘못 보냈을 때 남의 연락처가
- *    같이 새는 것이 가장 되돌리기 어렵다.
+ * 2) **보여 줄 것을 고른다(allowlist).** DB 행을 그대로 뿌리지 않고
+ *    shareReport.ts 의 renderSharePage 가 쓰는 칸만 고른다. 특히
+ *    **학부모 연락처(parentPhone) · 학교(school) · 상담 메모(notes) ·
+ *    문항별 채점 상태(rawState) 는 내보내지 않는다.** 링크를 잘못 보냈을 때
+ *    연락처가 같이 새는 것이 가장 되돌리기 어렵고, 상담 메모는 애초에
+ *    교사용으로 적은 글이다(결과지에도 인쇄되지 않는다).
  *
  * 3) **쓰기가 없다.** 공개 경로에서 할 수 있는 유일한 쓰기는 "열어 본 횟수 +1"
  *    이다. 점수를 고치거나 다른 기록을 보는 입구는 없다.
@@ -274,152 +276,15 @@ export function renderShareError(kind: "expired" | "revoked" | "notfound" | "rat
 }
 
 /**
- * 학부모가 보는 결과지 한 장.
+ * ── 학부모가 보는 결과지 HTML 은 여기 없다 ──
  *
- * ── 여기 나오는 칸이 곧 "내보내는 개인정보 전부" 다 ──
- *   학생 이름 · 학년 · 응시일 · 시험 이름 · 점수 · 선생님 메모 · 학원 이름.
- *   연락처와 학교는 뺀다(파일 머리말 2번 항목). 칸을 더할 때는 "링크를 잘못
- *   보냈을 때 이것이 새도 괜찮은가" 를 먼저 묻는다.
+ *   server/lib/shareReport.ts 가 그린다(renderSharePage).
  *
- * ── 왜 점수를 크게 하나만 보여 주고 영역별은 작게 두는가 ──
- *   학부모가 1초 안에 알고 싶은 것은 총점이다. 영역별 점수는 그다음이고,
- *   그걸 보고 상담 전화를 걸게 만드는 것이 이 페이지의 목적이다. 그래서
- *   맨 아래에 학원 전화번호를 둔다 — 결과를 본 직후가 전화가 걸리는 순간이다.
+ *   왜 갈랐나: 그 페이지는 원장이 인쇄하는 **2페이지 결과지와 같은 내용**
+ *   (진단 + 12개월 커리큘럼)을 그려야 해서, 커리큘럼 문구 묶음과 단계 계산이
+ *   붙는다. 이 파일은 토큰 규칙·만료·횟수 제한처럼 "문을 여닫는 규칙" 만
+ *   담당한다. 섞어 두면 어느 쪽을 고치다 다른 쪽을 깨뜨리기 쉽다.
  *
- * ── 채점이 안 끝난 기록은 어떻게 되는가 ──
- *   이 함수는 그런 기록을 받지 않는다(라우터가 막는다). 미채점이 남은 점수를
- *   학부모가 보면 그 숫자가 최종 점수로 기억된다. 되돌릴 수 없는 종류의 사고다.
+ *   방향은 한쪽이다: shareReport → shareLink (esc·날짜 함수를 가져간다).
+ *   이 파일에서 shareReport 를 import 하면 서로 물려 버린다. 하지 말 것.
  */
-export function renderSharePage(input: {
-  row: Pick<
-    LevelTest,
-    | "studentName"
-    | "grade"
-    | "testDate"
-    | "examTitle"
-    | "totalScore"
-    | "readingScore"
-    | "grammarScore"
-    | "vocabScore"
-    | "writingScore"
-    | "questionCount"
-    | "correctCount"
-    | "notes"
-    | "teacherName"
-  >;
-  academyName: string;
-  academyPhone?: string | null;
-  expiresAt?: Date | null;
-}): string {
-  const { row, academyName, academyPhone, expiresAt } = input;
-
-  const domains: [string, number | null][] = [
-    ["독해", row.readingScore],
-    ["문법", row.grammarScore],
-    ["어휘", row.vocabScore],
-    ["서술형", row.writingScore],
-  ];
-  const shown = domains.filter(([, v]) => v != null);
-
-  const domainHtml = shown.length
-    ? `<div class="domains">${shown
-        .map(
-          ([label, v]) => `<div class="domain">
-       <div class="dlabel">${escapeHtml(label)}</div>
-       <div class="dbar"><span style="width:${Math.max(0, Math.min(100, Number(v)))}%"></span></div>
-       <div class="dscore">${escapeHtml(v)}점</div>
-     </div>`
-        )
-        .join("")}</div>`
-    : "";
-
-  const correctHtml =
-    row.correctCount != null && row.questionCount != null
-      ? `<div class="sub">전체 ${escapeHtml(row.questionCount)}문항 중 ${escapeHtml(
-          row.correctCount
-        )}문항 정답</div>`
-      : "";
-
-  // 메모는 줄바꿈만 살린다. 이스케이프를 먼저 하고 그 뒤에 <br> 로 바꾼다 —
-  // 순서를 바꾸면 메모에 적은 글자가 태그로 해석된다.
-  const notesHtml = row.notes
-    ? `<section class="card">
-     <h2>선생님 의견</h2>
-     <p class="notes">${escapeHtml(row.notes).replace(/\r?\n/g, "<br>")}</p>
-     ${row.teacherName ? `<div class="by">${escapeHtml(row.teacherName)} 선생님</div>` : ""}
-   </section>`
-    : "";
-
-  const phoneHtml = academyPhone
-    ? `<a class="call" href="tel:${escapeHtml(String(academyPhone).replace(/[^0-9+]/g, ""))}">
-       학원에 전화하기 ${escapeHtml(academyPhone)}
-     </a>`
-    : "";
-
-  const expiryHtml = expiresAt
-    ? `<div class="expiry">이 링크는 ${escapeHtml(formatKoreanDate(expiresAt))} 까지 볼 수 있습니다</div>`
-    : "";
-
-  return `<!doctype html>
-<html lang="ko"><head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex,nofollow,noarchive">
-<meta name="referrer" content="no-referrer">
-<title>${escapeHtml(row.studentName)} 학생 레벨테스트 결과</title>
-<style>
- *{box-sizing:border-box}
- body{margin:0;background:#f6f7f9;padding:20px 16px 40px;
-      font-family:-apple-system,BlinkMacSystemFont,"Malgun Gothic","맑은 고딕",sans-serif;color:#37373A}
- .wrap{max-width:460px;margin:0 auto}
- .brand{text-align:center;font-size:13px;color:#F96E00;font-weight:700;letter-spacing:.04em;margin-bottom:14px}
- .card{background:#fff;border-radius:16px;padding:22px 20px;margin-bottom:12px;
-       box-shadow:0 1px 3px rgba(0,0,0,.06)}
- h1{font-size:20px;margin:0 0 4px}
- .meta{font-size:13px;color:#8a8a8f;margin:0}
- .total{text-align:center;padding:26px 20px}
- .tlabel{font-size:13px;color:#8a8a8f;margin-bottom:6px}
- .tscore{font-size:46px;font-weight:800;line-height:1;color:#F96E00}
- .tscore small{font-size:18px;font-weight:600;margin-left:2px}
- .sub{font-size:13px;color:#8a8a8f;margin-top:10px}
- h2{font-size:14px;margin:0 0 14px;color:#8a8a8f;font-weight:600}
- .domain{display:flex;align-items:center;gap:10px;margin-bottom:10px}
- .dlabel{width:46px;font-size:13px;flex:none}
- .dbar{flex:1;height:8px;background:#eef0f3;border-radius:4px;overflow:hidden}
- .dbar span{display:block;height:100%;background:#F96E00;border-radius:4px}
- .dscore{width:42px;text-align:right;font-size:13px;font-variant-numeric:tabular-nums;flex:none}
- .notes{font-size:14px;line-height:1.75;margin:0;white-space:normal}
- .by{font-size:12px;color:#8a8a8f;margin-top:10px;text-align:right}
- .call{display:block;text-align:center;background:#F96E00;color:#fff;text-decoration:none;
-       padding:15px;border-radius:12px;font-weight:700;font-size:15px;margin-top:4px}
- .expiry{text-align:center;font-size:12px;color:#a0a0a5;margin-top:16px;line-height:1.6}
-</style></head>
-<body><div class="wrap">
-
- <div class="brand">${escapeHtml(academyName)}</div>
-
- <section class="card">
-  <h1>${escapeHtml(row.studentName)} 학생</h1>
-  <p class="meta">${[
-    escapeHtml(row.grade),
-    escapeHtml(formatKoreanDate(row.testDate)) + " 응시",
-  ]
-    .filter(Boolean)
-    .join(" · ")}</p>
- </section>
-
- <section class="card total">
-  <div class="tlabel">${escapeHtml(row.examTitle)}</div>
-  <div class="tscore">${escapeHtml(row.totalScore)}<small>점</small></div>
-  ${correctHtml}
- </section>
-
- ${shown.length ? `<section class="card"><h2>영역별 점수</h2>${domainHtml}</section>` : ""}
-
- ${notesHtml}
-
- ${phoneHtml}
- ${expiryHtml}
-
-</div></body></html>`;
-}

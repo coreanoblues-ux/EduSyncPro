@@ -54,6 +54,18 @@ export interface IStorage {
   createTenant(tenant: InsertTenant): Promise<Tenant>;
   getAllTenants(): Promise<Tenant[]>;
   updateTenantStatus(id: string, status: 'pending' | 'active' | 'expired' | 'suspended'): Promise<Tenant>;
+  /**
+   * 학부모 눈에 닿는 학원 정보 두 칸(이름 · 결과지 전화번호)만 고친다.
+   *
+   * 매개변수 타입이 Partial<Tenant> 가 아니라 **두 칸짜리 전용 타입**인 것이
+   * 핵심이다. 상태(status)·활성기한(activeUntil)·대표자는 결제 권한과 이어진
+   * 칸이라 "학원 이름 고치기" 버튼이 거기까지 닿을 자리를 만들면 안 된다.
+   * 그래서 일반적인 updateTenant(부분 수정) 를 끝내 만들지 않는다.
+   */
+  updateTenantProfile(
+    id: string,
+    patch: { name?: string; sharePhone?: string | null }
+  ): Promise<Tenant | undefined>;
   deleteTenant(id: string): Promise<void>;
   
   // Student methods
@@ -215,6 +227,33 @@ export class DbStorage implements IStorage {
         updatedAt: new Date(),
         activeUntil: status === 'active' ? sql`NOW() + INTERVAL '1 year'` : null
       })
+      .where(eq(tenants.id, id))
+      .returning();
+    return result[0];
+  }
+
+  /**
+   * 학부모 눈에 닿는 학원 정보. name · share_phone 두 칸만 쓴다.
+   *
+   * ⚠️ set 에 들어가는 칸을 늘리지 말 것. 아래 세 줄이 전부여야 한다.
+   *    여기에 status/activeUntil 이 끼면 "학원 정보 저장" 버튼이 학원의
+   *    결제 상태까지 바꿀 수 있게 된다. 테스트가 이 사실을 글자로 확인한다.
+   *
+   * patch 에 들어온 칸만 쓴다 — 전화번호만 보냈는데 이름이 undefined 로
+   * 덮이는 일이 없게 한다.
+   */
+  async updateTenantProfile(
+    id: string,
+    patch: { name?: string; sharePhone?: string | null }
+  ): Promise<Tenant | undefined> {
+    const set: { name?: string; sharePhone?: string | null; updatedAt: Date } = {
+      updatedAt: new Date(),
+    };
+    if (patch.name !== undefined) set.name = patch.name;
+    if (patch.sharePhone !== undefined) set.sharePhone = patch.sharePhone;
+
+    const result = await db.update(tenants)
+      .set(set)
       .where(eq(tenants.id, id))
       .returning();
     return result[0];

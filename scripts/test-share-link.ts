@@ -31,13 +31,26 @@ import {
   __resetShareRateForTest,
   escapeHtml,
   formatKoreanDate,
-  renderSharePage,
   renderShareError,
   SHARE_DEFAULT_DAYS,
   SHARE_TOKEN_LENGTH,
   SHARE_PURGE_DAYS,
   sharePurgeCutoff,
 } from "../server/lib/shareLink";
+/*
+  결과지 HTML 은 shareReport.ts 가 그린다(2026-10 부터). shareLink.ts 에는
+  주소·수명·안내문만 남았다. 이 파일을 DB 없이 돌리기 위해 pickReportSettings
+  도 거기에 두었다 — shareRoutes.ts 를 import 하면 storage 가 따라 들어와
+  Postgres 연결을 시도한다.
+*/
+import {
+  renderSharePage,
+  buildShareReportModel,
+  pickReportSettings,
+  autoBandFor,
+  interpretDomain,
+  academyProgramKey,
+} from "../server/lib/shareReport";
 import { buildShareMessage } from "../shared/shareMessage";
 
 let passed = 0;
@@ -68,6 +81,11 @@ const schemaSrc = readFileSync(join(process.cwd(), "shared", "schema.ts"), "utf8
 const storageSrc = readFileSync(join(process.cwd(), "server", "storage.ts"), "utf8");
 const libSrc = readFileSync(join(process.cwd(), "server", "lib", "shareLink.ts"), "utf8");
 const purgeSrc = readFileSync(join(process.cwd(), "server", "lib", "sharePurge.ts"), "utf8");
+const reportSrc = readFileSync(join(process.cwd(), "server", "lib", "shareReport.ts"), "utf8");
+const reportDataSrc = readFileSync(
+  join(process.cwd(), "server", "level-test", "reportData.ts"),
+  "utf8"
+);
 
 /**
  * 주석을 떼고 **실제로 돌아가는 코드만** 남긴다.
@@ -91,6 +109,9 @@ function row(over: Partial<any> = {}) {
     studentName: "김민준",
     grade: "중2",
     testDate: "2026-10-11",
+    // 실제 시험 코드는 네 개뿐이다: m1(Lv1) · all(Lv2) · m3(Lv3) · high(Lv4).
+    // 이 값이 12개월 커리큘럼을 고르는 열쇠다.
+    examCode: "all",
     examTitle: "중등 종합",
     totalScore: 78,
     readingScore: 72,
@@ -424,6 +445,24 @@ function main() {
     assert.ok(!html.includes(SECRET_SCHOOL), "학교가 공개 페이지에 들어갔다");
   });
 
+  test("상담 메모는 어떤 경우에도 결과지에 나오지 않는다", () => {
+    /*
+      2026-10 에 바뀐 규칙이다. 그 전에는 메모를 "선생님 의견" 이라는 칸에
+      그대로 찍었다. 메모는 **교사용으로 적는 글**이다 ("어머니가 예민함",
+      "숙제 거의 안 함" 같은 문장이 들어간다). 레벨테스트 앱도 결과지에
+      인쇄하지 않는다고 분명히 적어 두었으므로 링크도 같은 규칙을 지킨다.
+    */
+    const SECRET_MEMO = "내부메모유출금지";
+    const html = page({ notes: SECRET_MEMO } as any);
+    assert.ok(!html.includes(SECRET_MEMO), "상담 메모가 학부모 화면에 들어갔다");
+    assert.ok(!html.includes("선생님 의견"), "메모를 찍는 칸이 되살아났다");
+    // 렌더러가 notes 를 아예 받지 않는지도 못 박는다(주석은 떼고 본다).
+    assert.ok(
+      !/\bnotes\b/.test(stripComments(reportSrc)),
+      "shareReport.ts 가 notes 를 다시 읽는다"
+    );
+  });
+
   test("상담 id·내부 id·원본 상태가 결과지에 나오지 않는다", () => {
     const html = page({
       consultationId: SECRET_CONSULTATION,
@@ -458,21 +497,21 @@ function main() {
     assert.ok(html.includes("&lt;script&gt;"), "이스케이프된 형태가 안 보인다");
   });
 
-  test("메모에 태그를 적어도 글자로만 나온다", () => {
-    const html = page({ notes: `<img src=x onerror="alert(1)">` });
+  test("시험 이름에 태그를 적어도 글자로만 나온다", () => {
+    const html = page({ examTitle: `<img src=x onerror="alert(1)">` });
     assert.ok(!html.includes("<img"), "img 태그가 그대로 들어갔다");
     assert.ok(html.includes("&lt;img"), "이스케이프된 형태가 안 보인다");
-    // "onerror" 라는 **글자** 는 화면에 남는다. 그건 괜찮다 — 메모에 그 단어를
-    // 적은 선생님이 있을 수도 있다. 막아야 하는 것은 그 글자가 **태그의
-    // 속성이 되는 것** 이다. 꺾쇠가 모두 &lt; 로 바뀌었으면 될 수 없다.
+    // "onerror" 라는 **글자** 는 화면에 남는다. 그건 괜찮다. 막아야 하는 것은
+    // 그 글자가 **태그의 속성이 되는 것** 이다. 꺾쇠가 모두 &lt; 로 바뀌었으면
+    // 될 수 없다.
     assert.ok(!/<[^>]*onerror/i.test(html), "onerror 가 태그 속성으로 살아 있다");
   });
 
-  test("메모의 줄바꿈은 살리되, 이스케이프를 먼저 한다", () => {
-    const html = page({ notes: "첫째 줄\n<b>둘째 줄</b>" });
-    assert.ok(html.includes("첫째 줄<br>"), "줄바꿈이 <br> 로 바뀌지 않았다");
-    assert.ok(html.includes("&lt;b&gt;"), "태그가 이스케이프되지 않았다");
-    assert.ok(!html.includes("<b>둘째"), "태그가 살아 있다");
+  test("담당 교사 이름에 태그가 있어도 안전하다", () => {
+    // clip() 이 18자에서 자른다. 잘린 뒤에도 꺾쇠가 남지 않는지 본다.
+    const html = page({ teacherName: `<b>이선생</b>` });
+    assert.ok(!html.includes("<b>이선생"), "태그가 살아 있다");
+    assert.ok(html.includes("&lt;b&gt;"), "이스케이프된 형태가 안 보인다");
   });
 
   test("학원 이름에 태그가 있어도 안전하다", () => {
@@ -494,38 +533,51 @@ function main() {
     assert.ok(html.includes("78"), "총점이 없다");
     assert.ok(html.includes("중등 종합"), "시험 이름이 없다");
     assert.ok(html.includes("2026년 10월 11일"), "응시일이 한국어로 없다");
-    assert.ok(html.includes("40문항 중 31문항"), "정답 수가 없다");
+    assert.ok(html.includes("정답 31 / 평가 40문항"), "정답 수가 없다");
   });
 
-  test("영역별 점수가 보이고, 없는 영역은 빠진다", () => {
-    // 메모는 비운다. 기본 메모에 "서술형" 이라는 낱말이 들어 있어서, 그대로
-    // 두면 메모에 적힌 글자를 점수 칸으로 오인한다 (처음 이 테스트를 그렇게
-    // 썼다가 틀린 실패를 봤다). 점수 칸은 dlabel 로만 판단한다.
-    const html = page({ writingScore: null, notes: null });
-    for (const label of ["독해", "문법", "어휘"]) {
-      assert.ok(
-        html.includes(`<div class="dlabel">${label}</div>`),
-        `${label} 점수 칸이 없다`
-      );
+  test("네 영역이 모두 보이고, 점수가 없는 영역은 0 이 아니라 미평가다", () => {
+    /*
+      예전에는 점수가 없는 영역을 빼 버렸다. 그러면 학부모는 그 영역을
+      "안 본 것" 인지 "0점" 인지 알 수 없고, 칸 수가 학생마다 달라져 비교도
+      안 된다. 이제 네 칸을 항상 그리고, 없는 것은 **미평가**라고 적는다.
+      0 을 찍으면 안 본 영역이 빵점으로 읽힌다 — 되돌릴 수 없는 오해다.
+    */
+    const html = page({ writingScore: null });
+    for (const label of ["문법", "독해", "서술형", "어휘"]) {
+      assert.ok(html.includes(`</i>${label}</b>`), `${label} 칸이 없다`);
     }
-    assert.ok(
-      !html.includes(`<div class="dlabel">서술형</div>`),
-      "점수가 없는 영역이 0점처럼 나온다"
-    );
+    assert.ok(html.includes("미평가"), "점수 없는 영역에 미평가 표시가 없다");
+    // 막대 길이도 0% 여야 한다 (빈 칸이 꽉 찬 막대로 보이면 안 된다).
+    assert.ok(html.includes('style="width:0%"'), "미평가 막대가 0% 가 아니다");
   });
 
-  test("영역 점수가 모두 없으면 그 칸을 통째로 뺀다", () => {
+  test("영역 순서가 인쇄물과 같다 (문법 → 독해 → 서술형 → 어휘)", () => {
+    // DB 칼럼 순서(reading/grammar/vocab/writing)와 일부러 다르다. 학부모가
+    // 종이 결과지와 링크를 나란히 놓고 볼 때 순서가 어긋나면 안 된다.
+    const html = page();
+    const at = (s: string) => html.indexOf(`</i>${s}</b>`);
+    assert.ok(at("문법") < at("독해"), "문법이 독해보다 뒤에 있다");
+    assert.ok(at("독해") < at("서술형"), "독해가 서술형보다 뒤에 있다");
+    assert.ok(at("서술형") < at("어휘"), "서술형이 어휘보다 뒤에 있다");
+  });
+
+  test("가장 낮은 영역을 우선 보완으로, 80점 이상을 강점으로 고른다", () => {
+    // 고정값: 문법81 · 독해72 · 서술형60 · 어휘85
+    const html = page();
+    assert.ok(html.includes("서술형 · 60%"), "가장 낮은 영역이 우선 보완이 아니다");
+    assert.ok(html.includes("문법 · 어휘 — 유지·확장"), "80점 이상이 강점으로 안 묶였다");
+  });
+
+  test("점수가 하나도 없으면 단정하지 않고 '추가 확인 필요' 라고 적는다", () => {
     const html = page({
       readingScore: null,
       grammarScore: null,
       vocabScore: null,
       writingScore: null,
     });
-    assert.ok(!html.includes("영역별 점수"), "빈 표가 나온다");
-  });
-
-  test("메모가 없으면 선생님 의견 칸이 안 나온다", () => {
-    assert.ok(!page({ notes: null }).includes("선생님 의견"));
+    assert.ok(html.includes("추가 확인 필요"), "없는 점수로 약점을 지어낸다");
+    assert.ok(!html.includes("· 0%"), "미평가를 0% 로 적는다");
   });
 
   test("학원 전화번호가 있으면 전화 버튼이 나온다", () => {
@@ -543,6 +595,212 @@ function main() {
     assert.equal(formatKoreanDate(""), "");
     assert.equal(formatKoreanDate("쓰레기값"), "");
     assert.equal(formatKoreanDate("2026-01-05"), "2026년 1월 5일");
+  });
+
+  /*
+    ════════════════════════════════════════════════════════════════════
+    12개월 커리큘럼 (결과지 2페이지)
+    ════════════════════════════════════════════════════════════════════
+    문구는 손으로 적은 것이 아니라 레벨테스트 앱에서 뽑아 온 것이다
+    (scripts/extract-report-data.mjs → server/level-test/reportData.ts).
+    인쇄물과 링크가 조용히 달라지는 일을 막기 위해서다. 아래 테스트는
+    "뽑아 온 문구가 실제로 화면까지 도달하는가" 를 본다.
+  */
+  console.log("\n─── 12개월 커리큘럼 ───");
+
+  test("커리큘럼 4단계가 모두 나온다", () => {
+    const html = page();
+    for (const name of [
+      "통합 역량 재정비",
+      "심화 이해와 표현",
+      "종합 적용력 강화",
+      "완성도 점검과 확장",
+    ]) {
+      assert.ok(html.includes(name), `${name} 단계가 없다`);
+    }
+    assert.equal(
+      (html.match(/class="phase"/g) ?? []).length,
+      4,
+      "단계 개수가 4개가 아니다"
+    );
+  });
+
+  test("단계마다 기간이 진단 다음 달부터 3개월씩 붙는다", () => {
+    // 진단 2026-10-11 → 시작 2026년 11월. 1단계 11월~1월, 2단계 2월~4월.
+    const html = page();
+    assert.ok(html.includes("2026년 11월 – 2027년 1월"), "1단계 기간이 틀리다");
+    assert.ok(html.includes("2027년 2월 – 2027년 4월"), "2단계 기간이 틀리다");
+    assert.ok(html.includes("2026년 11월 시작"), "시작월 안내가 없다");
+  });
+
+  test("원장이 시작월을 정해 두면 그 달부터 센다", () => {
+    const html = page({}, { settings: { startMonth: "2027-03" } });
+    assert.ok(html.includes("2027년 3월 – 2027년 5월"), "지정한 시작월이 무시됐다");
+  });
+
+  test("보완 중점은 1·2단계에만 붙는다", () => {
+    /*
+      3·4단계에 안 붙이는 것은 빠뜨린 것이 아니다. 6개월 뒤의 약한 영역을
+      오늘 점수로 단정하지 않겠다는 뜻이다(레벨테스트 앱도 같다).
+    */
+    const html = page();
+    assert.equal(
+      (html.match(/보완 중점/g) ?? []).length,
+      2,
+      "보완 중점이 1·2단계 말고 다른 단계에도 붙었다"
+    );
+  });
+
+  test("수준 띠가 총점에 맞게 붙는다 (78점 → 실력 굳히기)", () => {
+    assert.ok(page().includes("Level 2 · 중등 종합 역량 · 실력 굳히기"), "수준 표시가 틀리다");
+  });
+
+  test("총점 경계값에서 수준이 갈린다 (60 / 80)", () => {
+    assert.equal(autoBandFor(59), "기초 다지기");
+    assert.equal(autoBandFor(60), "실력 굳히기");
+    assert.equal(autoBandFor(79), "실력 굳히기");
+    assert.equal(autoBandFor(80), "한 단계 도약");
+    // 점수가 없으면 가장 낮은 수준. 없는 실력을 높게 약속하지 않는다.
+    assert.equal(autoBandFor(null), "기초 다지기");
+  });
+
+  test("원장이 수준을 손으로 바꿔 두면 그 커리큘럼이 나온다", () => {
+    const html = page({}, { settings: { trackOverride: "m3|실력 굳히기" } });
+    assert.ok(html.includes("Level 3 · 심화 종합 역량"), "직접 고른 과정이 무시됐다");
+  });
+
+  test("있지도 않은 수준을 지정하면 조용히 자동 판정으로 돌아간다", () => {
+    for (const bad of ["없는시험|실력 굳히기", "all|없는수준", "쓰레기", "", "a|b|c"]) {
+      const html = page({}, { settings: { trackOverride: bad } });
+      assert.ok(
+        html.includes("Level 2 · 중등 종합 역량"),
+        `잘못된 지정(${bad})이 커리큘럼을 깨뜨렸다`
+      );
+    }
+  });
+
+  test("모르는 시험 종류면 커리큘럼을 지어내지 않는다", () => {
+    /*
+      예전 앱은 여기서 터졌다. 학부모 화면은 터지면 안 되고, 그렇다고
+      아무 커리큘럼이나 보여 주면 거짓 약속이 된다. 그래서 2페이지를
+      통째로 빼고 "상담에서 안내" 라고 적는다.
+    */
+    for (const code of ["m99", "", null, undefined]) {
+      const html = page({ examCode: code } as any);
+      assert.ok(html.includes("상담에서 안내"), `${String(code)}: 안내 문구가 없다`);
+      assert.ok(!html.includes("통합 역량 재정비"), `${String(code)}: 가짜 커리큘럼이 나온다`);
+    }
+  });
+
+  test("중등·고등 학년에 맞는 수업 과정이 나온다", () => {
+    assert.ok(page({ grade: "중2" }).includes("중등부"), "중2 에 중등부 과정이 없다");
+    assert.ok(page({ grade: "고2" }).includes("고등부"), "고2 에 고등부 과정이 없다");
+  });
+
+  test("학년으로 과정이 안 정해지면 단정하지 않는다", () => {
+    const html = page({ grade: "초6" });
+    assert.ok(!html.includes("중등부"), "초6 에 중등부 과정이 붙었다");
+    assert.ok(!html.includes("고등부"), "초6 에 고등부 과정이 붙었다");
+    assert.ok(html.includes("상담 내용을 바탕으로"), "대체 안내가 없다");
+  });
+
+  test("배정 과정 판단이 학년 표기에 휘둘리지 않는다", () => {
+    assert.equal(academyProgramKey("중1", null), "middle");
+    assert.equal(academyProgramKey("고3", null), "high");
+    assert.equal(academyProgramKey("초6", null), null);
+    assert.equal(academyProgramKey("중등부", null), null);
+    assert.equal(academyProgramKey(null, null), null);
+    // 원장이 직접 고른 값이 학년보다 우선이다.
+    assert.equal(academyProgramKey("중2", "high"), "high");
+    // 엉뚱한 값은 학년 판단으로 돌아간다.
+    assert.equal(academyProgramKey("중2", "쓰레기"), "middle");
+  });
+
+  test("영역 해석이 점수대로 갈린다", () => {
+    assert.equal(interpretDomain(null), "추가 확인 필요");
+    assert.equal(interpretDomain(59), "개념 보완");
+    assert.equal(interpretDomain(60), "적용 훈련");
+    assert.equal(interpretDomain(79), "적용 훈련");
+    assert.equal(interpretDomain(80), "유지·확장");
+  });
+
+  test("깨진 진단 날짜에도 터지지 않고 기간만 빠진다", () => {
+    const html = page({ testDate: "쓰레기값" });
+    assert.ok(html.includes("통합 역량 재정비"), "커리큘럼이 통째로 사라졌다");
+    assert.ok(html.includes("시작월 상담에서 확정"), "시작월 대체 문구가 없다");
+    assert.ok(!html.includes("NaN"), "NaN 이 화면에 나왔다");
+    assert.ok(!html.includes("Invalid"), "Invalid Date 가 화면에 나왔다");
+  });
+
+  test("학습 방식 설정이 안내 문장에 반영된다", () => {
+    assert.ok(page().includes("학생과 확인하며 조정합니다"), "기본 안내가 없다");
+    assert.ok(
+      page({}, { settings: { learningSupport: "practice" } }).includes("문제를 직접 풀고"),
+      "고른 학습 방식이 무시됐다"
+    );
+  });
+
+  console.log("\n─── 결과지 설정 고르기 (rawState 거르개) ───");
+
+  test("rawState 에서 네 칸만 통과시킨다", () => {
+    const picked = pickReportSettings({
+      trackOverride: "all|실력 굳히기",
+      startMonth: "2027-03",
+      learningSupport: "practice",
+      classProgram: "middle",
+      // 아래는 전부 통과하면 안 되는 것들
+      marks: [1, 0, 1],
+      edits: { 3: "고침" },
+      parentPhone: SECRET_PHONE,
+      school: SECRET_SCHOOL,
+      consultationId: SECRET_CONSULTATION,
+    });
+    assert.deepEqual(Object.keys(picked).sort(), [
+      "classProgram",
+      "learningSupport",
+      "startMonth",
+      "trackOverride",
+    ]);
+    assert.equal(JSON.stringify(picked).includes(SECRET_PHONE), false, "연락처가 통과했다");
+    assert.equal(JSON.stringify(picked).includes(SECRET_SCHOOL), false, "학교가 통과했다");
+  });
+
+  test("문자열이 아니거나 너무 긴 값은 버린다", () => {
+    const picked = pickReportSettings({
+      trackOverride: { evil: true },
+      startMonth: 12345,
+      learningSupport: "x".repeat(41),
+      classProgram: ["middle"],
+    });
+    for (const v of Object.values(picked)) {
+      assert.equal(v, undefined, `이상한 값이 통과했다: ${String(v)}`);
+    }
+  });
+
+  test("rawState 가 비어 있거나 없어도 터지지 않는다", () => {
+    for (const v of [null, undefined, {}, "문자열", 0]) {
+      assert.doesNotThrow(() => pickReportSettings(v), `${String(v)} 에서 터졌다`);
+    }
+  });
+
+  test("설정 거르개가 라우터가 아니라 결과지 쪽에 있다 (테스트가 DB 없이 돈다)", () => {
+    assert.ok(reportSrc.includes("export function pickReportSettings"), "거르개가 옮겨졌다");
+    assert.ok(
+      /settings: pickReportSettings\(row\.rawState\)/.test(routesSrc),
+      "라우터가 거르개를 거치지 않는다"
+    );
+    assert.ok(
+      !/settings:\s*row\.rawState/.test(routesSrc),
+      "라우터가 rawState 를 그대로 넘긴다 — 채점 상태가 샌다"
+    );
+  });
+
+  test("뽑아 온 문구 파일에 코드나 그림이 섞여 들지 않았다", () => {
+    assert.ok(!reportDataSrc.includes("base64"), "이미지가 들어가 파일이 비대해졌다");
+    assert.ok(!/\b(function|=>|require\(|process\.)/.test(reportDataSrc), "코드가 섞여 있다");
+    assert.ok(reportDataSrc.length < 200_000, "문구 파일이 너무 커졌다");
+    // 다시 뽑는 방법이 파일에 적혀 있어야 한다 (손으로 고치는 것을 막는다).
+    assert.ok(reportDataSrc.includes("gen:report-data"), "다시 뽑는 명령이 안 적혀 있다");
   });
 
   console.log("\n─── 안 열릴 때 안내 ───");
@@ -777,6 +1035,94 @@ function main() {
     }
   });
 
+  console.log("\n─── 학원 이름·전화번호 (학부모에게 나가는 값) ───");
+
+  test("결과지에 학원 전화번호가 있으면 그것, 없으면 가입 번호로 돌아간다", () => {
+    assert.ok(
+      page({}, { academyPhone: "062-456-0990" }).includes("062-456-0990"),
+      "지정한 학원 번호가 안 나온다"
+    );
+    // 라우터가 sharePhone → ownerPhone 순서로 고르는지 글자로 확인한다.
+    assert.ok(
+      /academyPhone: tenant\?\.sharePhone \?\? tenant\?\.ownerPhone \?\? null/.test(routesSrc),
+      "번호 고르는 순서가 바뀌었다 — 원장 개인 번호가 먼저 나갈 수 있다"
+    );
+  });
+
+  test("학원 이름은 코드가 아니라 학원 계정에서 읽는다", () => {
+    /*
+      이름이 코드에 박혀 있으면 상호가 바뀔 때마다 배포를 해야 하고, 그동안
+      학부모에게는 옛 이름이 나간다. 결과지·카톡 메시지 모두 tenant 에서
+      읽어야 한다.
+    */
+    assert.ok(routesSrc.includes("academyName: tenant.name"), "발급 응답이 학원 이름을 안 읽는다");
+    assert.ok(
+      routesSrc.includes('academyName: tenant?.name ?? "학원"'),
+      "결과지가 학원 이름을 안 읽는다"
+    );
+    // 특정 학원의 상호가 서버 코드에 박혀 있으면 안 된다. 다른 학원이 쓰면
+    // 그대로 사고이고, 이름이 바뀔 때 배포를 해야 한다.
+    for (const [label, src] of [
+      ["shareRoutes.ts", routesSrc],
+      ["shareReport.ts", reportSrc],
+      ["shareMessage.ts", readFileSync(join(process.cwd(), "shared", "shareMessage.ts"), "utf8")],
+    ] as const) {
+      const code = stripComments(src);
+      for (const brand of ["페이지원", "시대영재"]) {
+        assert.ok(!code.includes(brand), `${label} 에 학원 상호("${brand}")가 박혔다`);
+      }
+    }
+  });
+
+  test("원장만 학원 정보를 고칠 수 있다 (강사는 보기만)", () => {
+    assert.ok(
+      /router\.patch\(\s*\n?\s*"\/api\/academy-profile",\s*\n?\s*authGuard,\s*\n?\s*tenantGuard,[\s\S]{0,200}?roleGuard\("owner"\)/.test(
+        routesSrc
+      ),
+      "고치기가 원장 전용이 아니다"
+    );
+    assert.ok(
+      /router\.get\(\s*\n?\s*"\/api\/academy-profile",\s*\n?\s*authGuard,\s*\n?\s*tenantGuard,\s*\n?\s*roleGuard\("owner", "teacher"\)/.test(
+        routesSrc
+      ),
+      "읽기의 인증 미들웨어가 바뀌었다"
+    );
+  });
+
+  test("학원 정보 저장이 결제 상태·활성기한을 건드리지 못한다", () => {
+    /*
+      이것이 이 묶음에서 가장 중요한 테스트다. "학원 이름 저장" 버튼 하나가
+      학원의 결제 상태나 활성기한까지 바꿀 수 있게 되면, 눌렀을 때 결제가
+      멈추는 사고가 난다. set 에 들어가는 칸을 글자로 못 박는다.
+    */
+    const m = /async updateTenantProfile\([\s\S]*?\n  \}/.exec(storageSrc);
+    assert.ok(m, "updateTenantProfile 의 구현을 찾을 수 없다");
+    const body = stripComments(m![0]);
+    for (const forbidden of ["status", "activeUntil", "ownerPhone", "ownerName", "email"]) {
+      assert.ok(!body.includes(forbidden), `학원 정보 저장이 ${forbidden} 를 건드린다`);
+    }
+    assert.ok(body.includes("set(set)"), "set 을 조립해서 쓰지 않는다");
+    assert.ok(body.includes("patch.name !== undefined"), "보내지 않은 칸을 덮어쓴다");
+    assert.ok(body.includes("patch.sharePhone !== undefined"), "보내지 않은 칸을 덮어쓴다");
+  });
+
+  test("빈 학원 이름은 저장되지 않는다", () => {
+    // 이름이 비면 결과지 워드마크와 카톡 첫 줄이 "학원" 으로 떨어지는데,
+    // 원장은 그 사실을 한참 뒤에야 안다.
+    assert.ok(
+      /name: z\.string\(\)\.trim\(\)\.min\(1,/.test(routesSrc),
+      "빈 이름을 막지 않는다"
+    );
+  });
+
+  test("일반적인 '학원 아무 칸이나 고치기' 함수를 만들지 않았다", () => {
+    const code = stripComments(storageSrc);
+    assert.ok(
+      !/async updateTenant\(/.test(code),
+      "updateTenant(부분 수정) 가 생겼다 — 결제 칸까지 닿는 통로다"
+    );
+  });
+
   console.log("\n─── 화면 연결 ───");
 
   const shareUi = readFileSync(
@@ -813,6 +1159,32 @@ function main() {
   test("전역 캐시 설정을 건드리지 않는다 (결제 화면과 공유한다)", () => {
     for (const forbidden of ["staleTime", "refetchInterval", "refetchOnWindowFocus"]) {
       assert.ok(!shareUi.includes(forbidden), `${forbidden} 가 생겼다`);
+    }
+  });
+
+  test("원장이 학원 이름·전화번호를 고칠 자리가 화면에 있다", () => {
+    /*
+      이 칸이 화면에 없으면 학원 이름을 고칠 방법이 아예 없다 (가입할 때 적은
+      값이 DB 에 그대로 남는다). "서버에 길은 있는데 누를 데가 없는" 상태를
+      막는다.
+    */
+    const src = readFileSync(join(process.cwd(), "client", "src", "pages", "LevelTests.tsx"), "utf8");
+    assert.ok(src.includes("AcademyProfileCard"), "학원 정보 카드가 없다");
+    assert.ok(src.includes('"/api/academy-profile"'), "저장 주소가 안 붙어 있다");
+    assert.ok(src.includes('data-testid="input-academy-name"'), "학원 이름 칸이 없다");
+    assert.ok(src.includes('data-testid="input-academy-phone"'), "전화번호 칸이 없다");
+    // 원장에게만 보인다 (서버도 owner 만 고치게 막아 뒀다).
+    assert.ok(
+      /userRole === "owner" && <AcademyProfileCard \/>/.test(src),
+      "강사에게도 보인다"
+    );
+    // 이름을 바꾸면 오른쪽 위 배지도 같이 새로 받아야 한다.
+    assert.ok(
+      src.includes('queryKey: ["/api/auth/me"]'),
+      "이름을 고쳐도 화면 배지가 안 바뀐다"
+    );
+    for (const forbidden of ["staleTime", "refetchInterval", "refetchOnWindowFocus"]) {
+      assert.ok(!src.includes(forbidden), `${forbidden} 가 생겼다`);
     }
   });
 

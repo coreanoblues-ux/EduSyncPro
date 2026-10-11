@@ -139,7 +139,7 @@ export default function SignupForm({ onSignup, onTeacherSignup, onBackToLogin }:
                   <Input
                     id="academyName"
                     type="text"
-                    placeholder="예: 시대영재학원"
+                    placeholder="예: 페이지원영어학원"
                     value={academyFormData.academyName}
                     onChange={(e) => handleAcademyInputChange('academyName', e.target.value)}
                     required

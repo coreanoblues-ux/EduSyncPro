@@ -67,6 +67,25 @@ function extractSaveBlock(): string {
   return html.slice(open + "<script>".length, close);
 }
 
+/**
+ * HTML 안에서 이름으로 함수 한 개의 소스만 떼어 온다.
+ *
+ * 채점 화면 코드는 로고 base64 가 섞여 240KB 가 넘는 블록 안에 있고, DOM 을
+ * 잔뜩 만진다. 블록 전체를 돌리는 건 과하므로, 검증하려는 함수 하나만 꺼내
+ * 가짜 환경에서 실행한다. 중괄호 짝을 세어 끝을 찾는다 (이 함수들 안에는
+ * 중괄호가 든 문자열이 없다 — 있으면 테스트가 먼저 깨지므로 금방 안다).
+ */
+function extractFunction(name: string): string {
+  const start = html.indexOf(`function ${name}(`);
+  assert.ok(start > 0, `${name} 함수를 찾지 못했습니다.`);
+  let depth = 0;
+  for (let i = html.indexOf("{", start); i < html.length; i++) {
+    if (html[i] === "{") depth++;
+    else if (html[i] === "}" && --depth === 0) return html.slice(start, i + 1);
+  }
+  throw new Error(`${name} 함수의 끝을 찾지 못했습니다.`);
+}
+
 /** 테스트용 가짜 앱 상태. 로고는 일부러 크게 넣어 둔다 (사고 ②의 재현). */
 function makeState() {
   return {
@@ -345,6 +364,76 @@ async function main() {
       /EduSyncPro 에서 열어야/,
       "file:// 로 열었을 때 원인을 알려 주지 않는다"
     );
+  });
+
+  // ── 전체 정답으로 체크 (채점 속도) ───────────────────────────────────
+  //
+  // 원장이 채점하는 방식은 "맞은 것을 세는" 게 아니라 "틀린 것만 골라내는"
+  // 것이다. 전부 O 로 깔고 틀린 번호만 X 로 바꾼다. 이 버튼이 그 출발점이라
+  // 다음 두 가지가 절대 깨지면 안 된다:
+  //   · 이미 매긴 O·X·미응시를 덮어쓰지 않을 것 (채점하던 걸 날리면 큰일이다)
+  //   · 되돌리기(Z)로 복구할 수 있게 이력을 남길 것
+  function runBulkRightPending(marks: Record<string, string>, confirmAnswer = true) {
+    const ids = ["1", "2", "3", "4", "5"];
+    const sandbox: any = {
+      state: { exam: "m3", marks },
+      gradingHistory: [] as any[],
+      qkey: (q: any) => "m3:" + q.id,
+      questions: () => ids.map((id) => ({ id })),
+      status: (q: any) => marks["m3:" + q.id] || "pending",
+      confirm: () => confirmAnswer,
+      toast: (m: string) => {
+        sandbox.lastToast = m;
+      },
+      save: () => {},
+      render: () => {},
+      lastToast: "",
+    };
+    vm.runInNewContext(extractFunction("bulkRightPending") + "\n;bulkRightPending();", sandbox, {
+      timeout: 5000,
+    });
+    return sandbox;
+  }
+
+  await test("전체 정답으로 체크: 빈 시험지를 한 번에 전부 정답으로 만든다", () => {
+    const marks: Record<string, string> = {};
+    const s = runBulkRightPending(marks);
+    assert.deepEqual(Object.values(marks), ["right", "right", "right", "right", "right"]);
+    assert.equal(s.gradingHistory.length, 5, "되돌리기 이력이 없으면 Z 로 복구할 수 없다");
+  });
+
+  await test("전체 정답으로 체크: 이미 매긴 오답·미응시는 건드리지 않는다", () => {
+    const marks: Record<string, string> = { "m3:2": "wrong", "m3:4": "skip" };
+    runBulkRightPending(marks);
+    assert.equal(marks["m3:2"], "wrong", "틀렸다고 매긴 문항이 정답으로 뒤집혔다");
+    assert.equal(marks["m3:4"], "skip", "미응시로 매긴 문항이 정답으로 뒤집혔다");
+    assert.equal(marks["m3:1"], "right");
+    assert.equal(marks["m3:5"], "right");
+  });
+
+  await test("전체 정답으로 체크: 채점 중이면 한 번 묻고, 거절하면 아무것도 바꾸지 않는다", () => {
+    const marks: Record<string, string> = { "m3:2": "wrong" };
+    runBulkRightPending(marks, false);
+    assert.deepEqual(marks, { "m3:2": "wrong" }, "확인창에서 취소했는데 채점이 바뀌었다");
+  });
+
+  await test("전체 정답으로 체크: 빈 시험지에서는 확인창을 띄우지 않는다", () => {
+    // 아무것도 채점하지 않았으면 이 버튼이 곧 채점의 시작이다. 매번 묻는 것은
+    // 속도를 위해 만든 버튼의 취지를 깎는다. confirm 이 '취소'를 돌려줘도
+    // 그대로 진행돼야 한다 = 아예 묻지 않았다는 뜻.
+    const marks: Record<string, string> = {};
+    runBulkRightPending(marks, false);
+    assert.equal(marks["m3:1"], "right", "빈 시험지인데도 확인창을 띄우고 있다");
+  });
+
+  await test("전체 정답으로 체크: 채점 화면에 버튼이 남아 있다", () => {
+    assert.ok(html.includes("전체 정답으로 체크"), "채점 속도를 올리는 버튼이 사라졌습니다");
+    assert.ok(
+      html.includes('onclick="bulkRightPending()"'),
+      "버튼이 전체 정답 처리 함수에 연결돼 있지 않습니다"
+    );
+    // 틀린 것만 X 로 바꾸는 흐름이므로 문항판의 X 버튼도 함께 있어야 한다.
+    assert.ok(html.includes("markFromTile"), "문항판 O/X 버튼이 사라졌습니다");
   });
 
   // ── 저장 직후 다른 탭을 깨우는 신호 ──────────────────────────────────

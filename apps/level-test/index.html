@@ -1064,12 +1064,25 @@ function undoGrade(){
   state.exam=h.exam;state.focus=h.id;state.marks[h.exam+':'+h.id]=h.old;
   save();render();toast(h.id+'번 채점을 되돌렸습니다.');
 }
+/* 전체 정답으로 체크.
+
+   채점 현장의 실제 순서는 "맞은 것을 하나씩 세는" 것이 아니라 "틀린 것만
+   골라내는" 것이다. 20~40문항 중 틀리는 건 보통 몇 개뿐이라, 전부 O 로 깔아
+   두고 틀린 번호만 X 로 바꾸는 편이 훨씬 빠르다.
+
+   ⚠️ 이미 매긴 O·X·미응시는 절대 건드리지 않는다. 채우는 것은 미채점뿐이다.
+      (그래서 채점을 하다가 눌러도 작업이 날아가지 않는다.)
+
+   확인창은 "채점을 하던 중일 때"만 띄운다. 아무것도 채점하지 않은 상태에서
+   이 버튼은 곧 채점의 시작이고, 미채점에는 지울 정보가 없다. 매번 묻는 것은
+   속도를 위해 만든 버튼의 취지를 깎아먹는다. */
 function bulkRightPending(){
-  const pending=questions().filter(q=>status(q)==='pending');
-  if(!pending.length)return toast('미채점 문항이 없습니다.');
-  if(!confirm(`미채점 ${pending.length}문항을 모두 정답으로 처리할까요? 기존 오답과 미응시는 유지합니다.`))return;
+  const qs=questions(), pending=qs.filter(q=>status(q)==='pending');
+  if(!pending.length)return toast('이미 모든 문항을 채점했습니다.');
+  const graded=qs.length-pending.length;
+  if(graded&&!confirm(`남은 미채점 ${pending.length}문항을 정답으로 처리할까요? 이미 매긴 ${graded}문항은 그대로 둡니다.`))return;
   pending.forEach(q=>{gradingHistory.push({exam:state.exam,id:q.id,old:'pending'});state.marks[qkey(q)]='right'});
-  save();render();toast('미채점 문항을 정답 처리했습니다.');
+  save();render();toast(pending.length+'문항을 정답 처리했습니다. 틀린 문항만 X 를 눌러 주세요.');
 }
 const originalBulk=bulk;
 bulk=function(){
@@ -1093,15 +1106,16 @@ function markFromTile(id,value){state.focus=id;setMark(id,value)}
 renderGrade=function(){
   const s=summary(),q=s.qs.find(q=>q.id===state.focus)||s.qs[0];
   const index=s.qs.indexOf(q),done=s.qs.length-s.pending;
-  return heading('STEP 02 · QUICK GRADING','한 문항씩, 빠르고 정확하게','문항판에서 정답 확인 후 O / X 클릭 · 단축키 O / X / S · ← → 이동 · Z 되돌리기',`<button class="primary" onclick="go('report')">결과지 보기 →</button>`)+`
+  return heading('STEP 02 · QUICK GRADING','한 문항씩, 빠르고 정확하게','전체 정답으로 체크한 뒤 틀린 문항만 X · 단축키 O / X / S · ← → 이동 · Z 되돌리기',`<button class="primary" onclick="go('report')">결과지 보기 →</button>`)+`
   <div class="grading quick-grading"><div class="grading-overview"><div class="card">
     <div class="row between"><h2>${esc(('Level '+exam().level+' '+exam().title))}</h2><span class="pill">${esc(state.student||'이름 미입력')}</span></div>
     <div class="row between"><div class="stat">${s.score??'—'}<small> / 100</small></div><span>${done} / ${s.qs.length}문항 채점</span></div>
     <progress max="${s.qs.length}" value="${done}" aria-label="채점 진행률"></progress>
     <div class="score-chips"><span>O 정답 ${s.right}</span><span>X 오답 ${s.wrong}</span><span>미응시 ${s.skip}</span><span>미채점 ${s.pending}</span></div>
+    <button class="primary fill" onclick="bulkRightPending()" ${s.pending?'':'disabled'}>${s.pending?`전체 정답으로 체크 (미채점 ${s.pending}문항)`:'모두 채점했습니다'}</button>
+    <p class="small muted">먼저 전체를 정답으로 깔고, 틀린 문항만 아래 문항판에서 X 를 누르세요. 이미 매긴 O·X·미응시는 그대로 둡니다.</p>
     <div class="qgrid">${s.qs.map(x=>gradeTile(x,q.id)).join('')}</div>
     <div class="row quick-tools"><button onclick="nextPending()">다음 미채점</button><button onclick="undoGrade()" ${gradingHistory.length?'':'disabled'}>↶ 되돌리기</button></div>
-    <button class="fill" onclick="bulkRightPending()">미채점만 모두 정답 처리</button>
     <details class="bulk-details"><summary>오답 번호로 한꺼번에 채점</summary><label>오답 번호<input id="wrongInput" placeholder="예: 2, 5, 8-10" value="${s.qs.filter(x=>status(x)==='wrong').map(x=>x.id).join(', ')}"></label><p class="small muted">미응시를 먼저 표시하세요. 나머지는 모두 정답 처리됩니다.</p><button onclick="bulk()">오답 적용</button></details>
   </div><button onclick="printAnswers()">교사용 정답표 출력</button></div>
   <div class="card active-question"><div class="row between"><h2>문항 ${q.id} <small class="muted">/ ${s.qs.length}</small></h2><span class="pill">${esc(q.domain)} · ${esc(q.skill)}</span></div>

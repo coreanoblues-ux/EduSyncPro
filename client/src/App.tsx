@@ -14,6 +14,7 @@ import Payments from "@/pages/Payments";
 import LessonLogs from "@/pages/LessonLogs";
 import Overdues from "@/pages/Overdues";
 import Consultations from "@/pages/Consultations";
+import LevelTests from "@/pages/LevelTests";
 import Todos from "@/pages/Todos";
 import LoginForm from "@/components/LoginForm";
 import SignupForm from "@/components/SignupForm";
@@ -53,6 +54,7 @@ function Router({ user, tenant }: { user: User | null; tenant: Tenant | null }) 
       <Route path="/students/edit/:id" component={() => <EditStudent />} />
       <Route path="/students" component={() => <Students userRole={user.role} />} />
       <Route path="/consultations" component={() => <Consultations userRole={user.role} />} />
+      <Route path="/level-tests" component={() => <LevelTests userRole={user.role} />} />
       <Route path="/todos" component={() => <Todos />} />
       <Route path="/payments" component={() => <Payments userRole={user.role} />} />
       <Route path="/logs" component={() => <LessonLogs userRole={user.role} />} />

@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, integer, timestamp, decimal, boolean, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, timestamp, decimal, boolean, pgEnum, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -260,6 +260,77 @@ export const consultations = pgTable("consultations", {
   recommendedClassId: varchar("recommended_class_id").references(() => classes.id, { onDelete: "set null" }), // 반배정상담 단계에서 추천된 반
   sourceText: text("source_text"),
   createdBy: varchar("created_by").references(() => users.id).notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+/**
+ * LevelTest table (레벨테스트 결과지 누적 보관)
+ *
+ * 왜 consultations 에 더 붓지 않고 별도 표를 만드는가:
+ *   consultations 에는 이미 levelTestDate / levelTestScore / levelTestNotes 가
+ *   있지만 그건 "상담 한 건에 딸린 요약 한 줄"이다. 레벨테스트 앱은 한 학생에게
+ *   12개월치 시험(m1~m12)을 여러 번 치르게 하고, 회차마다 영역별 점수와 문항별
+ *   채점 원본을 남긴다. 상담 행에 욱여넣으면 회차가 덮어쓰기된다.
+ *
+ * 연동 고리(consultationId / studentId)는 지금은 비어 있다. 원장이 레벨테스트를
+ * 먼저 치르고 나중에 등록으로 이어지는 순서가 실제 현장 순서이기 때문이다.
+ * 나중에 상담·학생과 이어붙일 때 이 두 칼럼만 채우면 된다 — 그래서 NOT NULL 이
+ * 아니고, 상담/학생이 지워져도 시험 기록은 남도록 set null 이다.
+ */
+export const levelTests = pgTable("level_tests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+
+  // 시험 당시 적어 둔 값 그대로 보관한다. 나중에 students 행과 이어져도
+  // 이 칼럼을 지우지 않는다 — 그때의 학교·학년이 결과지 재출력에 필요하다.
+  studentName: text("student_name").notNull(),
+  school: text("school"),
+  grade: text("grade"),           // "중1", "고2" 등
+  parentPhone: text("parent_phone"),
+
+  // 연동 고리 (지금은 null)
+  consultationId: varchar("consultation_id").references(() => consultations.id, { onDelete: "set null" }),
+  studentId: varchar("student_id").references(() => students.id, { onDelete: "set null" }),
+
+  // YYYY-MM-DD 문자열. timestamp 로 두면 UTC 변환 때문에 저녁에 치른 시험이
+  // 전날로 뜬다 (tasks.dueDate 와 같은 이유).
+  testDate: text("test_date").notNull(),
+  examCode: text("exam_code").notNull(),    // "m1" ~ "m12"
+  examTitle: text("exam_title").notNull(),  // "Level 1 ..." 표시용 문자열
+
+  // 점수는 모두 100점 환산값. 미채점이 남아 있으면 null 일 수 있다.
+  totalScore: integer("total_score"),
+  readingScore: integer("reading_score"),
+  grammarScore: integer("grammar_score"),
+  vocabScore: integer("vocab_score"),
+  writingScore: integer("writing_score"),
+
+  questionCount: integer("question_count"), // 평가 문항 수
+  correctCount: integer("correct_count"),   // 정답 수
+  pendingCount: integer("pending_count"),   // 미채점 수
+  skippedCount: integer("skipped_count"),   // 미응시 수
+
+  teacherName: text("teacher_name"),
+  notes: text("notes"), // 상담 메모
+
+  // 결과지 재출력·재채점용 원본(문항별 채점 상태 등). 화면 구성이 바뀌어도
+  // 과거 결과지를 그대로 다시 뽑을 수 있게 앱 상태를 통째로 남긴다.
+  rawState: jsonb("raw_state"),
+
+  /**
+   * 앱이 만든 기록 식별자 (앱 내부의 consultationId + ':' + exam).
+   * upsert 키다 — 같은 학생의 같은 회차를 다시 저장하면 새 행이 아니라
+   * 덮어쓰기가 되어야 한다 (엑셀 누적 저장이 하던 동작과 동일).
+   *
+   * drizzle 스키마에 .unique() 로 적지 않는 이유: 유니크는 (tenant_id,
+   * client_record_id) 복합이어야 하는데, 여기에 단일 .unique() 를 적으면
+   * drizzle-kit 이 테넌트를 무시한 전역 유니크로 만들어 다른 학원의 기록과
+   * 충돌한다. 제약은 scripts/migrate-add-level-tests.ts 가 단독으로 소유한다.
+   */
+  clientRecordId: text("client_record_id").notNull(),
+
+  createdBy: varchar("created_by").references(() => users.id),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
@@ -789,6 +860,7 @@ export const insertTaskSchema = createInsertSchema(tasks).omit({
   updatedAt: true,
 });
 export const insertAiAuditLogSchema = createInsertSchema(aiAuditLogs).omit({ id: true, createdAt: true });
+export const insertLevelTestSchema = createInsertSchema(levelTests).omit({ id: true, createdAt: true, updatedAt: true });
 
 // ─── Toss Front 통합 insert 스키마 ───────────────────────────────────────
 export const insertAttendanceSchema = createInsertSchema(attendance).omit({ id: true, createdAt: true });
@@ -836,6 +908,64 @@ export const updateTaskBodySchema = z.object({
   defer: z.enum(["퇴근전", "출근전"]).optional(),
 });
 
+/**
+ * 레벨테스트 저장 본문 (POST /api/level-tests).
+ *
+ * tenantId / createdBy 는 서버가 토큰에서 채운다 — 클라이언트가 보내면
+ * 다른 학원 기록으로 넣을 수 있으므로 받지 않는다.
+ *
+ * 점수는 0~100 환산값만 허용한다. 앱이 계산해서 보내지만, 채점이 덜 끝난
+ * 상태로 저장하는 경우가 실제로 있어 null 을 막지는 않는다.
+ */
+const score100 = z.number().int().min(0).max(100).nullable().optional();
+const countField = z.number().int().min(0).max(1000).nullable().optional();
+
+export const saveLevelTestBodySchema = insertLevelTestSchema
+  .omit({ tenantId: true, createdBy: true })
+  .extend({
+    studentName: z.string().trim().min(1, "학생 이름이 필요합니다.").max(60),
+    school: z.string().trim().max(60).nullable().optional(),
+    grade: z.string().trim().max(20).nullable().optional(),
+    parentPhone: z.string().trim().max(30).nullable().optional(),
+    testDate: ymd,
+    examCode: z.string().trim().min(1, "시험 종류가 필요합니다.").max(20),
+    examTitle: z.string().trim().min(1).max(120),
+    totalScore: score100,
+    readingScore: score100,
+    grammarScore: score100,
+    vocabScore: score100,
+    writingScore: score100,
+    questionCount: countField,
+    correctCount: countField,
+    pendingCount: countField,
+    skippedCount: countField,
+    teacherName: z.string().trim().max(60).nullable().optional(),
+    notes: z.string().max(2000).nullable().optional(),
+    /**
+     * 결과지 재출력용 원본(채점 표시 + 입력값). 구조가 앱 버전마다 달라질 수
+     * 있으므로 형태는 검증하지 않지만, **크기는 반드시 막는다.**
+     *
+     * 왜: 레벨테스트 앱의 state 안에는 로고 base64(한 개가 11만 자)와 교재
+     * 이미지가 들어 있다. state 를 그대로 보내면 한 건이 수백 KB가 되어
+     *   · express.json 기본 한도(100kb)에 걸려 저장이 통째로 실패하고,
+     *   · 통과해도 DB 가 이미지 사본으로 부풀어 목록 조회가 느려진다.
+     * 앱은 반드시 이미지·브랜드 자산을 뺀 allowlist payload 만 보낸다.
+     * 이 한도는 그 규칙이 깨졌을 때 서버가 바로 알려 주는 안전망이다.
+     */
+    rawState: z
+      .any()
+      .nullable()
+      .optional()
+      .refine(
+        (v) => v == null || JSON.stringify(v).length <= 60_000,
+        {
+          message:
+            "결과지 원본이 너무 큽니다(60KB 초과). 이미지·로고가 섞여 들어간 경우입니다.",
+        }
+      ),
+    clientRecordId: z.string().trim().min(1, "기록 ID가 필요합니다.").max(200),
+  });
+
 // Update schemas
 export const updateEnrollmentSchema = z.object({
   studentId: z.string().optional(),
@@ -861,6 +991,7 @@ export type Consultation = typeof consultations.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type TaskSlot = Task["slot"];
 export type AiAuditLog = typeof aiAuditLogs.$inferSelect;
+export type LevelTest = typeof levelTests.$inferSelect;
 export type Attendance = typeof attendance.$inferSelect;
 export type TossFrontDevice = typeof tossFrontDevices.$inferSelect;
 export type PaymentIntent = typeof paymentIntents.$inferSelect;
@@ -883,3 +1014,5 @@ export type InsertWaiter = z.infer<typeof insertWaiterSchema>;
 export type InsertConsultation = z.infer<typeof insertConsultationSchema>;
 export type InsertTask = z.infer<typeof insertTaskSchema>;
 export type InsertAiAuditLog = z.infer<typeof insertAiAuditLogSchema>;
+export type InsertLevelTest = z.infer<typeof insertLevelTestSchema>;
+export type SaveLevelTestBody = z.infer<typeof saveLevelTestBodySchema>;

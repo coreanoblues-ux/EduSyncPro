@@ -23,6 +23,8 @@ import {
   type InsertTask,
   type AiAuditLog,
   type InsertAiAuditLog,
+  type LevelTest,
+  type InsertLevelTest,
   users,
   tenants,
   students,
@@ -35,6 +37,7 @@ import {
   consultations,
   tasks,
   aiAuditLogs,
+  levelTests,
 } from "@shared/schema";
 import { eq, and, sql, desc, isNull, gt, ilike } from "drizzle-orm";
 import { randomUUID } from "crypto";
@@ -115,6 +118,18 @@ export interface IStorage {
   createConsultation(consultation: InsertConsultation): Promise<Consultation>;
   updateConsultation(id: string, consultation: Partial<InsertConsultation>): Promise<Consultation>;
   deleteConsultation(id: string): Promise<void>;
+
+  // LevelTest methods (레벨테스트 결과지 기록)
+  /**
+   * 목록용. raw_state 는 일부러 빼고 읽는다 — 결과지 원본이 한 건에 수십 KB라
+   * 목록에 다 실으면 화면이 수 MB를 받는다. 재출력이 필요할 때만 getLevelTest 로
+   * 한 건씩 가져온다.
+   */
+  getLevelTestsByTenant(tenantId: string): Promise<Array<Omit<LevelTest, "rawState">>>;
+  getLevelTest(id: string, tenantId: string): Promise<LevelTest | undefined>;
+  /** 같은 (tenantId, clientRecordId) 면 새 행이 아니라 덮어쓴다 */
+  upsertLevelTest(levelTest: InsertLevelTest): Promise<LevelTest>;
+  deleteLevelTest(id: string, tenantId: string): Promise<void>;
 
   // Task methods (퇴근전 할 일)
   getTasksByTenant(tenantId: string): Promise<Task[]>;
@@ -608,6 +623,112 @@ export class DbStorage implements IStorage {
 
   async deleteConsultation(id: string): Promise<void> {
     await db.delete(consultations).where(eq(consultations.id, id));
+  }
+
+  // LevelTest methods (레벨테스트 결과지 기록)
+  async getLevelTestsByTenant(tenantId: string): Promise<Array<Omit<LevelTest, "rawState">>> {
+    // raw_state 제외. 칼럼을 하나하나 적는 이유는 위 인터페이스 주석 참조.
+    return await db
+      .select({
+        id: levelTests.id,
+        tenantId: levelTests.tenantId,
+        studentName: levelTests.studentName,
+        school: levelTests.school,
+        grade: levelTests.grade,
+        parentPhone: levelTests.parentPhone,
+        consultationId: levelTests.consultationId,
+        studentId: levelTests.studentId,
+        testDate: levelTests.testDate,
+        examCode: levelTests.examCode,
+        examTitle: levelTests.examTitle,
+        totalScore: levelTests.totalScore,
+        readingScore: levelTests.readingScore,
+        grammarScore: levelTests.grammarScore,
+        vocabScore: levelTests.vocabScore,
+        writingScore: levelTests.writingScore,
+        questionCount: levelTests.questionCount,
+        correctCount: levelTests.correctCount,
+        pendingCount: levelTests.pendingCount,
+        skippedCount: levelTests.skippedCount,
+        teacherName: levelTests.teacherName,
+        notes: levelTests.notes,
+        clientRecordId: levelTests.clientRecordId,
+        createdBy: levelTests.createdBy,
+        createdAt: levelTests.createdAt,
+        updatedAt: levelTests.updatedAt,
+      })
+      .from(levelTests)
+      .where(eq(levelTests.tenantId, tenantId))
+      .orderBy(desc(levelTests.testDate), desc(levelTests.createdAt));
+  }
+
+  async getLevelTest(id: string, tenantId: string): Promise<LevelTest | undefined> {
+    // tenantId 를 WHERE 에 같이 넣는다. id 만으로 찾으면 다른 학원의 기록 id 를
+    // 주워 넣었을 때 남의 학생 성적이 그대로 넘어간다.
+    const result = await db
+      .select()
+      .from(levelTests)
+      .where(and(eq(levelTests.id, id), eq(levelTests.tenantId, tenantId)))
+      .limit(1);
+    return result[0];
+  }
+
+  /**
+   * 레벨테스트 저장. (tenantId, clientRecordId) 가 같으면 덮어쓴다.
+   *
+   * 앱은 채점 도중에도 저장을 여러 번 누른다. 그때마다 행이 쌓이면 한 학생의
+   * 한 회차가 열 줄이 되므로, 엑셀 누적 저장이 하던 것과 같이 "같은 회차는 한 줄"
+   * 로 만든다. 충돌 대상 인덱스는
+   * scripts/migrate-add-level-test-records.ts 의
+   * level_tests_tenant_client_record_uniq 다.
+   *
+   * createdAt / createdBy 는 덮어쓰지 않는다 — 처음 치른 시각이 사실이다.
+   */
+  async upsertLevelTest(insert: InsertLevelTest): Promise<LevelTest> {
+    const now = new Date();
+    const result = await db
+      .insert(levelTests)
+      .values({
+        ...insert,
+        id: randomUUID(),
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [levelTests.tenantId, levelTests.clientRecordId],
+        set: {
+          studentName: insert.studentName,
+          school: insert.school ?? null,
+          grade: insert.grade ?? null,
+          parentPhone: insert.parentPhone ?? null,
+          consultationId: insert.consultationId ?? null,
+          studentId: insert.studentId ?? null,
+          testDate: insert.testDate,
+          examCode: insert.examCode,
+          examTitle: insert.examTitle,
+          totalScore: insert.totalScore ?? null,
+          readingScore: insert.readingScore ?? null,
+          grammarScore: insert.grammarScore ?? null,
+          vocabScore: insert.vocabScore ?? null,
+          writingScore: insert.writingScore ?? null,
+          questionCount: insert.questionCount ?? null,
+          correctCount: insert.correctCount ?? null,
+          pendingCount: insert.pendingCount ?? null,
+          skippedCount: insert.skippedCount ?? null,
+          teacherName: insert.teacherName ?? null,
+          notes: insert.notes ?? null,
+          rawState: insert.rawState ?? null,
+          updatedAt: now,
+        },
+      })
+      .returning();
+    return result[0];
+  }
+
+  async deleteLevelTest(id: string, tenantId: string): Promise<void> {
+    await db
+      .delete(levelTests)
+      .where(and(eq(levelTests.id, id), eq(levelTests.tenantId, tenantId)));
   }
 
   // Task methods (퇴근전 할 일)

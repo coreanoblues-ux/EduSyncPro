@@ -47,6 +47,7 @@ import { ensureCardCancelSchema } from "./toss-front/cardCancelSchema";
 import { ensureInstallmentSchema } from "./toss-front/installmentSchema";
 import { ensureCustomPaymentSchema } from "./toss-front/customPaymentSchema";
 import tossPluginLogRouter from "./toss-front/pluginLogs";
+import levelTestRouter from "./level-test/routes";
 import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
 import { parseDays, parseSchedule } from "@shared/timetable";
@@ -1822,6 +1823,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // 플러그인 라이프사이클 로그 수집. Front 단말기가 화면에 아무것도 못 그리는
   // 상황에서도 원인을 볼 수 있게, 인증 이전 단계의 로그까지 받아 준다.
   app.use("/api/toss-front", tossPluginLogRouter);
+  // 레벨테스트 결과지 저장/조회 + 앱 HTML 전달.
+  // 라우터 안에서 경로를 전부 적어 두었으므로 프리픽스 없이 마운트한다
+  // (/api/level-tests 와 /level-test/app 두 계열을 한 파일이 함께 다룬다).
+  app.use(levelTestRouter);
   // 학생용 태블릿 웹앱 전용 API. 완전히 별도 인증(kioskGuard) 경로.
   app.use("/api/toss-kiosk", tossKioskRouter);
   // 결제 단말기 모드 dispatch. 두 라우터는 인증 미들웨어가 서로 달라서

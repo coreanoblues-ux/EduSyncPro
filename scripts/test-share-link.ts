@@ -240,6 +240,30 @@ function main() {
 
   console.log("\n─── 6개월 뒤 파기 (주소 값을 아예 지운다) ───");
 
+  test("배포할 때 DB 칸이 자동으로 생긴다 (마이그레이션을 빠뜨리지 않았는가)", () => {
+    /*
+      이 테스트가 있는 이유 — 실제로 한 번 빠뜨렸다.
+
+      코드를 올렸는데 railway.toml 의 preDeployCommand 에 이 마이그레이션을
+      안 넣으면, 배포된 새 코드가 없는 칼럼을 조회한다. 레벨테스트 기록
+      화면이 "column does not exist" 로 안 열린다. 코드는 멀쩡한데 화면이
+      죽는, 찾기 어려운 종류의 사고다.
+
+      순서도 함께 확인한다: level_tests 테이블을 만드는 level-test-records
+      **뒤**여야 한다. 앞에 두면 빈 DB 에서 "테이블이 없습니다" 로 멈춘다.
+    */
+    const toml = readFileSync(join(process.cwd(), "railway.toml"), "utf8");
+    assert.ok(
+      toml.includes("db:migrate:level-test-share"),
+      "railway.toml 에 공유 링크 마이그레이션이 없다 — 배포하면 화면이 안 열린다"
+    );
+    assert.ok(
+      toml.indexOf("db:migrate:level-test-records") <
+        toml.indexOf("db:migrate:level-test-share"),
+      "공유 링크 마이그레이션이 level_tests 테이블 생성보다 먼저 돈다"
+    );
+  });
+
   test("파기 기준은 발급 후 180일(6개월)이다", () => {
     assert.equal(SHARE_PURGE_DAYS, 180);
     const now = new Date("2027-04-11T00:00:00Z");

@@ -17,7 +17,13 @@ buildCommand = "npm install && npm run build"
 #    students/users 를 외래키로 참조하므로, 완전히 빈 DB에서는 push가 먼저 그
 #    테이블들을 만들어 줘야 한다. (push는 복합 유니크를 표현할 수 없어서
 #    인덱스 생성은 이 스크립트가 따로 맡는다 — 스크립트 주석 참조)
-preDeployCommand = "npm run db:migrate:level-test && npm run db:migrate:toss-front && npm run db:migrate:toss-kiosk && npm run db:push && npm run db:migrate:level-test-records"
+# 4) level-test-share 는 **맨 마지막**이다. level_tests 테이블이 있어야 돌아가므로
+#    3) 보다 뒤여야 한다. push 가 칼럼 자체는 먼저 만들어 둘 수 있지만, 이 기능에
+#    필요한 **부분 유니크 인덱스**(share_token IS NOT NULL)는 push 가 표현하지
+#    못한다. 그 인덱스가 없으면 같은 주소가 두 기록에 생길 수 있고, 학부모가
+#    링크를 누를 때마다 전체 테이블을 훑는다. 그래서 이 스크립트가 따로 맡는다.
+#    여러 번 돌아도 안전하다(IF NOT EXISTS) — 이미 있으면 "이미 존재" 만 찍는다.
+preDeployCommand = "npm run db:migrate:level-test && npm run db:migrate:toss-front && npm run db:migrate:toss-kiosk && npm run db:push && npm run db:migrate:level-test-records && npm run db:migrate:level-test-share"
 startCommand = "npm start"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3

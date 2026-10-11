@@ -1,0 +1,19 @@
+{
+  "name": "페이지원영어학원 관리",
+  "short_name": "페이지원 관리",
+  "description": "페이지원영어학원 통합 관리 시스템 (원장·선생님용)",
+  "lang": "ko-KR",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#F96E00",
+  "icons": [
+    {
+      "src": "/pageone-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

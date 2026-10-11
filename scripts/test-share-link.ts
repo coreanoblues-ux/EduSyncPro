@@ -1106,6 +1106,45 @@ function main() {
     assert.ok(body.includes("patch.sharePhone !== undefined"), "보내지 않은 칸을 덮어쓴다");
   });
 
+  test("share_phone 칼럼이 배포 때 실제로 생긴다 (로그인이 여기 달려 있다)", () => {
+    /*
+      ════════════════════════════════════════════════════════════════
+      이 테스트는 실제 사고를 겪고 추가됐다. 읽고 지우지 말 것.
+      ════════════════════════════════════════════════════════════════
+      share_phone 은 NULL 허용이라 drizzle-kit push 가 알아서 더해 줄 것이라
+      보고 전용 마이그레이션을 만들지 않았다. 배포는 초록색이었는데
+      **로그인이 안 됐다.**
+
+      이유: Drizzle 은 SELECT 에 칼럼 이름을 하나하나 적는다. 스키마에만 있고
+      DB 에 없는 칼럼이 하나라도 생기면 그 테이블을 읽는 **모든** 경로가
+      죽는다. 로그인은 비밀번호 확인 뒤 학원 정보(tenants)를 읽으므로 거기서
+      멈췄다. 즉 칼럼 한 칸이 원장을 시스템 밖으로 밀어낸다.
+
+      그래서 "스키마에 칼럼을 더했으면 배포 명령에도 더했는가" 를 글자로
+      확인한다. 이것이 빠진 채로 또 배포되는 일이 없어야 한다.
+    */
+    assert.ok(
+      schemaSrc.includes('sharePhone: text("share_phone")'),
+      "스키마에서 share_phone 이 사라졌다 — 이 테스트를 지우기 전에 왜인지 확인할 것"
+    );
+    const toml = readFileSync(join(process.cwd(), "railway.toml"), "utf8");
+    assert.ok(
+      toml.includes("db:migrate:tenant-share-phone"),
+      "railway.toml 에 share_phone 마이그레이션이 없다 — 배포하면 로그인이 막힌다"
+    );
+    // 스크립트가 실제로 존재하고, 여러 번 돌아도 안전한 모양인가.
+    const mig = readFileSync(
+      join(process.cwd(), "scripts", "migrate-add-tenant-share-phone.ts"),
+      "utf8"
+    );
+    assert.ok(mig.includes("ADD COLUMN IF NOT EXISTS"), "다시 돌리면 터지는 마이그레이션이다");
+    assert.ok(mig.includes('"share_phone"'), "엉뚱한 칼럼을 만든다");
+    // 칼럼을 더하는 일만 해야 한다. 지우거나 바꾸면 안 된다.
+    for (const forbidden of ["DROP", "DELETE", "TRUNCATE", "UPDATE "]) {
+      assert.ok(!mig.toUpperCase().includes(forbidden), `마이그레이션에 ${forbidden} 이 있다`);
+    }
+  });
+
   test("빈 학원 이름은 저장되지 않는다", () => {
     // 이름이 비면 결과지 워드마크와 카톡 첫 줄이 "학원" 으로 떨어지는데,
     // 원장은 그 사실을 한참 뒤에야 안다.

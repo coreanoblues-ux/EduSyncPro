@@ -23,7 +23,17 @@ buildCommand = "npm install && npm run build"
 #    못한다. 그 인덱스가 없으면 같은 주소가 두 기록에 생길 수 있고, 학부모가
 #    링크를 누를 때마다 전체 테이블을 훑는다. 그래서 이 스크립트가 따로 맡는다.
 #    여러 번 돌아도 안전하다(IF NOT EXISTS) — 이미 있으면 "이미 존재" 만 찍는다.
-preDeployCommand = "npm run db:migrate:level-test && npm run db:migrate:toss-front && npm run db:migrate:toss-kiosk && npm run db:push && npm run db:migrate:level-test-records && npm run db:migrate:level-test-share"
+# 5) tenant-share-phone: tenants.share_phone 한 칸.
+#    ⚠️ 이 줄은 **사고를 겪고 추가됐다.** NULL 허용 칼럼이라 위 2)의 push 가
+#    알아서 더해 줄 것이라 보고 전용 스크립트를 만들지 않았는데, 배포는
+#    초록색으로 끝났지만 **로그인이 안 됐다.** Drizzle 은 SELECT 에 칼럼
+#    이름을 하나하나 적기 때문에, 스키마에만 있고 DB 에 없는 칼럼이 하나라도
+#    생기면 그 테이블을 읽는 모든 경로가 죽는다. 로그인은 비밀번호 확인 뒤
+#    학원 정보를 읽으므로 거기서 멈췄다.
+#    교훈: **이 저장소에서 칼럼 추가는 push 에 맡기지 않는다.** 위 1)~4)가
+#    전부 전용 스크립트인 이유가 이것이고, 앞으로 칼럼을 더할 때도 같은 모양의
+#    스크립트를 만들어 이 줄 뒤에 잇는다. 테스트가 이 사실을 글자로 확인한다.
+preDeployCommand = "npm run db:migrate:level-test && npm run db:migrate:toss-front && npm run db:migrate:toss-kiosk && npm run db:push && npm run db:migrate:level-test-records && npm run db:migrate:level-test-share && npm run db:migrate:tenant-share-phone"
 startCommand = "npm start"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3

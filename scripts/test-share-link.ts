@@ -1205,26 +1205,69 @@ function main() {
     /*
       이 칸이 화면에 없으면 학원 이름을 고칠 방법이 아예 없다 (가입할 때 적은
       값이 DB 에 그대로 남는다). "서버에 길은 있는데 누를 데가 없는" 상태를
-      막는다.
+      막는다. 카드는 컴포넌트 파일 하나에 있고, 설정 화면과 레벨테스트 기록
+      화면 두 곳이 그 한 파일을 가져다 쓴다.
     */
-    const src = readFileSync(join(process.cwd(), "client", "src", "pages", "LevelTests.tsx"), "utf8");
-    assert.ok(src.includes("AcademyProfileCard"), "학원 정보 카드가 없다");
-    assert.ok(src.includes('"/api/academy-profile"'), "저장 주소가 안 붙어 있다");
-    assert.ok(src.includes('data-testid="input-academy-name"'), "학원 이름 칸이 없다");
-    assert.ok(src.includes('data-testid="input-academy-phone"'), "전화번호 칸이 없다");
-    // 원장에게만 보인다 (서버도 owner 만 고치게 막아 뒀다).
-    assert.ok(
-      /userRole === "owner" && <AcademyProfileCard \/>/.test(src),
-      "강사에게도 보인다"
+    const card = readFileSync(
+      join(process.cwd(), "client", "src", "components", "AcademyProfileCard.tsx"),
+      "utf8"
     );
+    assert.ok(card.includes('"/api/academy-profile"'), "저장 주소가 안 붙어 있다");
+    assert.ok(card.includes('data-testid="input-academy-name"'), "학원 이름 칸이 없다");
+    assert.ok(card.includes('data-testid="input-academy-phone"'), "전화번호 칸이 없다");
     // 이름을 바꾸면 오른쪽 위 배지도 같이 새로 받아야 한다.
     assert.ok(
-      src.includes('queryKey: ["/api/auth/me"]'),
+      card.includes('queryKey: ["/api/auth/me"]'),
       "이름을 고쳐도 화면 배지가 안 바뀐다"
     );
-    for (const forbidden of ["staleTime", "refetchInterval", "refetchOnWindowFocus"]) {
-      assert.ok(!src.includes(forbidden), `${forbidden} 가 생겼다`);
+    // 두 화면 모두에 붙어 있고, 둘 다 원장에게만 보인다 (서버도 owner 만 허용).
+    for (const f of ["pages/LevelTests.tsx", "pages/Settings.tsx"]) {
+      const src = readFileSync(join(process.cwd(), "client", "src", ...f.split("/")), "utf8");
+      assert.ok(
+        src.includes('from "@/components/AcademyProfileCard"'),
+        `${f} 가 공용 카드 파일을 안 쓴다 (복사본이 생기면 한쪽만 고쳐진다)`
+      );
+      assert.ok(
+        /userRole === "owner" (&&|\?) \(?\s*<AcademyProfileCard \/>/.test(src),
+        `${f}: 강사에게도 보인다`
+      );
     }
+    for (const forbidden of ["staleTime", "refetchInterval", "refetchOnWindowFocus"]) {
+      assert.ok(!card.includes(forbidden), `${forbidden} 가 생겼다`);
+    }
+  });
+
+  test("저장하면 새로고침 없이 오른쪽 위 배지가 바뀐다", () => {
+    /*
+      사고 기록: 카드에서 이름을 저장해도 배지는 로그인 때 받아 둔 값(useState)을
+      계속 보여 줘서, F5 를 눌러야 바뀌었다. 배지가 /api/auth/me 쿼리를 직접
+      구독해야 카드의 invalidate 가 배지까지 닿는다.
+    */
+    const app = readFileSync(join(process.cwd(), "client", "src", "App.tsx"), "utf8");
+    assert.ok(app.includes("TenantNameBadge"), "배지 컴포넌트가 없다");
+    assert.ok(
+      app.includes('queryKey: ["/api/auth/me"]'),
+      "배지가 /api/auth/me 쿼리를 구독하지 않는다 — 저장해도 새로고침 전엔 안 바뀐다"
+    );
+    assert.ok(
+      !/\{tenant\.name\}/.test(app),
+      "배지가 다시 useState 의 tenant.name 을 직접 그린다 (새로고침 전까지 안 바뀜)"
+    );
+    for (const forbidden of ["staleTime", "refetchInterval", "refetchOnWindowFocus"]) {
+      assert.ok(!app.includes(forbidden), `App.tsx 에 ${forbidden} 가 생겼다`);
+    }
+  });
+
+  test("설정 메뉴로도 들어갈 수 있다", () => {
+    // 학원 이름은 레벨테스트만의 설정이 아니다. 찾는 사람은 "설정"을 먼저 뒤진다.
+    const app = readFileSync(join(process.cwd(), "client", "src", "App.tsx"), "utf8");
+    assert.ok(app.includes('path="/settings"'), "/settings 경로가 없다");
+    const sidebar = readFileSync(
+      join(process.cwd(), "client", "src", "components", "AcademySidebar.tsx"),
+      "utf8"
+    );
+    assert.ok(sidebar.includes('"/settings"'), "사이드바에 설정 메뉴가 없다");
+    assert.ok(sidebar.includes("설정"), "메뉴 이름이 '설정'이 아니다");
   });
 
   console.log(`\n통과 ${passed} · 실패 ${failed}`);

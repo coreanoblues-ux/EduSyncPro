@@ -16,6 +16,7 @@ import Overdues from "@/pages/Overdues";
 import Consultations from "@/pages/Consultations";
 import LevelTests from "@/pages/LevelTests";
 import Todos from "@/pages/Todos";
+import Settings from "@/pages/Settings";
 import LoginForm from "@/components/LoginForm";
 import SignupForm from "@/components/SignupForm";
 import Dashboard from "@/components/Dashboard";
@@ -43,6 +44,29 @@ interface Tenant {
   status: 'pending' | 'active' | 'expired' | 'suspended';
 }
 
+/**
+ * 오른쪽 위 학원 이름 배지.
+ *
+ * App 이 로그인할 때 받아 둔 tenant(useState)는 설정 화면에서 이름을 바꿔도
+ * 모른다 — 새로고침해야 바뀌는 "껄쩍지근한" 상태였다. 그래서 배지만큼은
+ * /api/auth/me 쿼리를 직접 구독한다. AcademyProfileCard 가 저장에 성공하면
+ * 이 queryKey 를 invalidate 하므로, 저장 즉시 배지가 새 이름으로 바뀐다.
+ * 쿼리가 아직 안 왔으면 로그인 때 받아 둔 이름(initialName)을 그대로 쓴다.
+ * (전역 캐시 설정은 건드리지 않는다 — invalidate 가 오면 그때만 다시 받는다.)
+ */
+function TenantNameBadge({ initialName }: { initialName: string | null }) {
+  const { data } = useQuery<{ tenant: { name: string } | null }>({
+    queryKey: ["/api/auth/me"],
+  });
+  const name = data?.tenant?.name ?? initialName;
+  if (!name) return null;
+  return (
+    <span className="ml-2 text-xs bg-primary/10 text-primary px-2 py-1 rounded">
+      {name}
+    </span>
+  );
+}
+
 function Router({ user, tenant }: { user: User | null; tenant: Tenant | null }) {
   if (!user) return null;
   
@@ -59,6 +83,7 @@ function Router({ user, tenant }: { user: User | null; tenant: Tenant | null }) 
       <Route path="/payments" component={() => <Payments userRole={user.role} />} />
       <Route path="/logs" component={() => <LessonLogs userRole={user.role} />} />
       <Route path="/overdues" component={() => <Overdues userRole={user.role} />} />
+      <Route path="/settings" component={() => <Settings userRole={user.role} />} />
       {(user.role === 'owner' || user.role === 'superadmin') && (
         <Route path="/toss-front" component={() => <TossFront />} />
       )}
@@ -316,11 +341,7 @@ function App() {
                     <div className="hidden sm:block">
                       <span className="text-sm text-muted-foreground">
                         안녕하세요, <span className="font-medium text-foreground">{user.name}</span>
-                        {tenant && (
-                          <span className="ml-2 text-xs bg-primary/10 text-primary px-2 py-1 rounded">
-                            {tenant.name}
-                          </span>
-                        )}
+                        <TenantNameBadge initialName={tenant?.name ?? null} />
                       </span>
                     </div>
                   </div>

@@ -130,6 +130,11 @@ function runSaveBlock(state: ReturnType<typeof makeState>) {
       throw new Error("이 테스트는 서버를 호출하지 않습니다.");
     },
     XLSX: { utils: { book_new: () => ({ SheetNames: [], Sheets: {} }), aoa_to_sheet: () => ({}) }, writeFile: () => {} },
+    // 저장 성공 신호(다른 탭 깨우기)를 확인하려고 둔다.
+    localStorage: (() => {
+      const store: Record<string, string> = {};
+      return { store, setItem: (k: string, v: string) => { store[k] = v; }, getItem: (k: string) => store[k] ?? null };
+    })(),
     document: {
       getElementById: () => null,
       createElement: () => ({}),
@@ -339,6 +344,54 @@ async function main() {
       () => app.levelTestApi("/api/level-tests"),
       /EduSyncPro 에서 열어야/,
       "file:// 로 열었을 때 원인을 알려 주지 않는다"
+    );
+  });
+
+  // ── 저장 직후 다른 탭을 깨우는 신호 ──────────────────────────────────
+  //
+  // 고정하려는 사고 (2026-10): 저장은 성공했는데 EduSyncPro 목록 화면은
+  // "아직 기록이 없습니다" 를 계속 보여 줬다. 저장 버튼은 레벨테스트 앱 탭에
+  // 있고 목록은 관리 화면 탭에 있는데, 이 앱의 조회 캐시가 한 번 받아온 뒤로는
+  // 다시 묻지 않도록 설정돼 있었기 때문이다. 원장 눈에는 저장 실패로 보인다.
+  //
+  // 두 탭을 잇는 끈은 localStorage 키 문자열 하나뿐이다. 양쪽이 같은 문자열을
+  // 쓰는지는 타입 검사가 봐 주지 못하므로 여기서 직접 맞춰 본다.
+  const SAVED_SIGNAL_KEY = "edusync-level-test-saved";
+
+  await test("저장에 성공하면 다른 탭이 알아들을 표시를 남긴다", async () => {
+    const app = runSaveBlock(makeState());
+    app.fetch = async () => ({ ok: true, status: 200, json: async () => ({ id: "saved" }) });
+    await app.saveStudentToServer();
+    assert.ok(
+      app.localStorage.store[SAVED_SIGNAL_KEY],
+      "저장 신호가 없으면 목록 탭이 갱신되지 않아 '저장이 안 된다' 는 신고가 다시 들어온다"
+    );
+  });
+
+  await test("저장에 실패하면 표시를 남기지 않는다", async () => {
+    const app = runSaveBlock(makeState());
+    app.fetch = async () => ({ ok: false, status: 500, json: async () => ({ error: "서버 오류" }) });
+    await app.saveStudentToServer();
+    assert.equal(
+      app.localStorage.store[SAVED_SIGNAL_KEY],
+      undefined,
+      "실패했는데 저장 신호를 보내면 목록이 헛돌고 원장이 저장된 줄 안다"
+    );
+  });
+
+  await test("목록 화면이 앱과 같은 신호 키를 듣는다", () => {
+    const page = readFileSync(
+      path.resolve(here, "..", "client", "src", "pages", "LevelTests.tsx"),
+      "utf8"
+    );
+    assert.ok(page.includes(SAVED_SIGNAL_KEY), "목록 화면의 신호 키가 앱과 다릅니다");
+    assert.ok(
+      /refetchOnWindowFocus:\s*true/.test(page),
+      "다른 탭에서 저장하고 돌아왔을 때 목록을 다시 불러오지 않습니다"
+    );
+    assert.ok(
+      /refetchOnMount:\s*"always"/.test(page),
+      "메뉴를 다시 눌러 들어와도 예전 목록이 그대로 보입니다"
     );
   });
 

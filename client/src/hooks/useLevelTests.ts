@@ -64,3 +64,32 @@ export function openLevelTestApp(recordId?: string) {
   // noopener: 새 탭이 window.opener 로 이 화면을 조작하지 못하게 한다.
   window.open(url, "_blank", "noopener");
 }
+
+/**
+ * 상담 건에서 레벨테스트를 시작한다.
+ *
+ * ── 왜 이름만으로 두지 않는가 ──
+ *   레벨테스트 앱은 기록의 주인을 브라우저 안에서 만든 번호로 기억한다. 그래서
+ *   같은 학생을 다른 PC 에서 채점하면 같은 회차인데도 줄이 두 개 생기고, 상담
+ *   기록과의 연결은 이름·전화번호 짐작에 맡겨진다(shared/levelTestMatch.ts).
+ *
+ *   이 함수로 열면 상담 건의 id 가 그대로 기록의 신원이 된다. 어느 PC 에서
+ *   열어도 같은 줄에 덮어써지고, 상담 카드에는 짐작 없이 확실하게 붙는다.
+ *   이름·학교·학년·연락처는 비어 있는 칸만 채우는 참고값이다 — 선생님이 앱에서
+ *   고친 값을 덮어쓰지 않는다.
+ */
+export function openLevelTestForConsultation(info: {
+  id: string;
+  studentName?: string | null;
+  grade?: string | null;
+  phone?: string | null;
+  school?: string | null;
+}) {
+  const params = new URLSearchParams();
+  params.set("consultation", info.id);
+  if (info.studentName) params.set("name", info.studentName);
+  if (info.grade) params.set("grade", info.grade);
+  if (info.phone) params.set("phone", info.phone);
+  if (info.school) params.set("school", info.school);
+  window.open(`/level-test/app?${params.toString()}`, "_blank", "noopener");
+}

@@ -330,6 +330,46 @@ export const levelTests = pgTable("level_tests", {
    */
   clientRecordId: text("client_record_id").notNull(),
 
+  /**
+   * ── 학부모용 결과지 링크 (3층) ─────────────────────────────────────────
+   *
+   * 로그인 없이 열리는 주소다. 원장이 카카오톡으로 보내고 학부모가 그냥 누른다.
+   * 규칙과 "왜 이렇게 했는지" 는 server/lib/shareLink.ts 에 모아 뒀다.
+   *
+   * ── 왜 토큰을 해시하지 않고 원문으로 두는가 (중요) ──
+   *   단말기 키(toss-front/deviceAuth.ts)는 해시해서 저장한다. 그 키는 **결제를
+   *   일으킬 수 있는** 권한이고, DB 가 유출되면 키 자체가 새 피해를 만든다.
+   *
+   *   이 토큰은 성격이 다르다. 토큰이 지키는 것은 **같은 행에 있는 점수** 뿐이다.
+   *   이 칸을 읽을 수 있는 사람은 바로 옆 total_score 도 읽을 수 있으므로,
+   *   해시해도 DB 유출에 대해 지켜 주는 것이 하나도 없다. 대신 해시로 두면
+   *   원장이 이미 보낸 링크를 다시 복사할 수 없어, "링크 다시 보기" 를 누를 때마다
+   *   학부모가 받은 링크가 조용히 죽는다. 지키는 것 없이 사고만 만드는 선택이라
+   *   원문으로 둔다.
+   */
+  shareToken: text("share_token"),
+  /**
+   * 링크를 만든 시각.
+   *
+   * 파기(토큰 값 삭제)의 기준 시계다. 이 시각으로부터 6개월이 지나면
+   * share_token 을 NULL 로 지운다(server/lib/shareLink.ts 의 SHARE_PURGE_DAYS).
+   * **이 칸 자체는 지우지 않는다** — "그 학생에게 결과지를 보냈다" 는
+   * 상담 이력이고, 비밀이 아니다.
+   */
+  shareCreatedAt: timestamp("share_created_at"),
+  /** 이 시각이 지나면 링크가 안 열린다. 발급할 때 정한다(기본 5일). */
+  shareExpiresAt: timestamp("share_expires_at"),
+  /** 원장이 직접 끈 시각. 값이 있으면 만료 전이라도 안 열린다. */
+  shareRevokedAt: timestamp("share_revoked_at"),
+  /**
+   * 학부모가 링크를 연 횟수·마지막 시각.
+   *
+   * 이 두 칸이 이 기능의 절반이다. "보냈는데 봤는지 모르겠다" 가 사라진다 —
+   * 0회면 아직 안 본 것이고, 그 사실이 전화할 이유가 된다.
+   */
+  shareViewCount: integer("share_view_count").default(0).notNull(),
+  shareLastViewedAt: timestamp("share_last_viewed_at"),
+
   createdBy: varchar("created_by").references(() => users.id),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
@@ -921,7 +961,37 @@ const score100 = z.number().int().min(0).max(100).nullable().optional();
 const countField = z.number().int().min(0).max(1000).nullable().optional();
 
 export const saveLevelTestBodySchema = insertLevelTestSchema
-  .omit({ tenantId: true, createdBy: true })
+  /**
+   * studentId 는 본문으로 받지 않는다.
+   *
+   * 앱은 이 값을 보내지 않고, 외래키는 "그 학생이 존재하는가" 만 보므로
+   * 어느 학원 학생인지 확인해 주지 않는다. 받아 두면 남의 학원 학생에게
+   * 성적을 붙일 수 있는 입구가 열린 채로 남는다. 학생 연결은 나중에
+   * 서버가 직접 채울 때 열면 된다.
+   *
+   * consultationId 는 받되, 라우터에서 같은 학원 상담인지 확인한다
+   * (server/level-test/routes.ts 의 POST 핸들러 주석 참조).
+   *
+   * ── share* 칸을 전부 막는 이유 (보안) ──
+   *   학부모용 링크(3층)의 칸들이다. 본문으로 받으면 저장 요청 한 번으로
+   *   · 토큰을 공격자가 고른 값으로 바꾸거나(= 링크 주소를 미리 알아낸다)
+   *   · 만료 시각을 100년 뒤로 밀거나
+   *   · 끊어 둔 링크(revoked)를 되살리거나
+   *   · 열어 본 횟수를 0 으로 되돌려 "학부모가 봤는지" 기록을 지울 수 있다.
+   *   이 칸들은 전용 라우터(server/level-test/shareRoutes.ts)만 건드린다.
+   *   레벨테스트 앱은 이 값을 보내지도 않는다.
+   */
+  .omit({
+    tenantId: true,
+    createdBy: true,
+    studentId: true,
+    shareToken: true,
+    shareCreatedAt: true,
+    shareExpiresAt: true,
+    shareRevokedAt: true,
+    shareViewCount: true,
+    shareLastViewedAt: true,
+  })
   .extend({
     studentName: z.string().trim().min(1, "학생 이름이 필요합니다.").max(60),
     school: z.string().trim().max(60).nullable().optional(),

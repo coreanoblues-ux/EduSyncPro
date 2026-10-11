@@ -39,7 +39,7 @@ import {
   aiAuditLogs,
   levelTests,
 } from "@shared/schema";
-import { eq, and, sql, desc, isNull, gt, ilike } from "drizzle-orm";
+import { eq, and, sql, desc, isNull, isNotNull, gt, lt, ilike } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { db } from "./db";
 
@@ -130,6 +130,19 @@ export interface IStorage {
   /** 같은 (tenantId, clientRecordId) 면 새 행이 아니라 덮어쓴다 */
   upsertLevelTest(levelTest: InsertLevelTest): Promise<LevelTest>;
   deleteLevelTest(id: string, tenantId: string): Promise<void>;
+
+  // 학부모용 결과지 링크 (3층). 규칙은 server/lib/shareLink.ts 참조.
+  issueLevelTestShare(
+    id: string,
+    tenantId: string,
+    share: { token: string; expiresAt: Date }
+  ): Promise<LevelTest | undefined>;
+  revokeLevelTestShare(id: string, tenantId: string): Promise<LevelTest | undefined>;
+  /** 공개 주소 전용. 토큰이 신원이므로 tenantId 를 받지 않는다. */
+  getLevelTestByShareToken(token: string): Promise<LevelTest | undefined>;
+  recordLevelTestShareView(id: string): Promise<void>;
+  /** 발급일이 before 보다 오래된 링크의 토큰 값을 지운다. 지운 건수를 돌려준다. */
+  purgeExpiredShareTokens(before: Date): Promise<number>;
 
   // Task methods (퇴근전 할 일)
   getTasksByTenant(tenantId: string): Promise<Task[]>;
@@ -653,6 +666,15 @@ export class DbStorage implements IStorage {
         teacherName: levelTests.teacherName,
         notes: levelTests.notes,
         clientRecordId: levelTests.clientRecordId,
+        // 학부모용 링크 상태. 원장 화면이 "링크 있음 / 몇 번 열어 봄 / 끊김" 을
+        // 추가 요청 없이 그리려고 목록에 같이 싣는다. 이 응답은 로그인한
+        // 원장·강사에게만 간다(roleGuard). 공개 주소는 이 칼럼을 쓰지 않는다.
+        shareToken: levelTests.shareToken,
+        shareCreatedAt: levelTests.shareCreatedAt,
+        shareExpiresAt: levelTests.shareExpiresAt,
+        shareRevokedAt: levelTests.shareRevokedAt,
+        shareViewCount: levelTests.shareViewCount,
+        shareLastViewedAt: levelTests.shareLastViewedAt,
         createdBy: levelTests.createdBy,
         createdAt: levelTests.createdAt,
         updatedAt: levelTests.updatedAt,
@@ -683,6 +705,14 @@ export class DbStorage implements IStorage {
    * level_tests_tenant_client_record_uniq 다.
    *
    * createdAt / createdBy 는 덮어쓰지 않는다 — 처음 치른 시각이 사실이다.
+   *
+   * ⚠️ 아래 set 을 `...insert` 로 줄이지 말 것.
+   *   칼럼을 하나하나 적는 것이 이 함수의 안전장치다. 특히 share* (학부모용
+   *   링크) 칸이 빠져 있는 것은 의도된 것이다 — 선생님이 미채점 문항을 채워
+   *   다시 저장할 때마다 이미 보낸 학부모 링크가 죽으면 안 되고, 열어 본 횟수
+   *   기록도 0 으로 돌아가면 안 된다. `...insert` 로 바꾸면 그 사고가 조용히
+   *   생긴다 (링크 칸은 본문으로 받지도 않으므로 전부 null 로 덮인다).
+   *   테스트가 이 사실을 고정하고 있다: npm run test:share
    */
   async upsertLevelTest(insert: InsertLevelTest): Promise<LevelTest> {
     const now = new Date();
@@ -729,6 +759,127 @@ export class DbStorage implements IStorage {
     await db
       .delete(levelTests)
       .where(and(eq(levelTests.id, id), eq(levelTests.tenantId, tenantId)));
+  }
+
+  // ─── 학부모용 결과지 링크 (3층) ──────────────────────────────────────────
+  // 규칙과 판단 근거는 server/lib/shareLink.ts 에 모아 뒀다.
+
+  /**
+   * 링크 발급(또는 재발급). tenantId 를 WHERE 에 넣어 남의 학원 기록에
+   * 링크를 달 수 없게 한다.
+   *
+   * 재발급하면 이전 토큰은 그 즉시 못 쓰게 된다(칼럼을 덮어쓰므로).
+   * 그래서 화면은 "이미 링크가 있으면 새로 만들지 않고 그대로 보여 준다" —
+   * 원장이 복사하려고 누른 것 때문에 학부모가 받은 링크가 죽으면 안 된다.
+   */
+  async issueLevelTestShare(
+    id: string,
+    tenantId: string,
+    share: { token: string; expiresAt: Date }
+  ): Promise<LevelTest | undefined> {
+    const now = new Date();
+    const result = await db
+      .update(levelTests)
+      .set({
+        shareToken: share.token,
+        shareCreatedAt: now,
+        shareExpiresAt: share.expiresAt,
+        // 새로 발급하면 "끊긴 상태" 를 푼다. 열어 본 횟수는 0 으로 돌린다 —
+        // 새 링크에 대한 횟수여야 "아직 안 봤다" 가 사실이 된다.
+        shareRevokedAt: null,
+        shareViewCount: 0,
+        shareLastViewedAt: null,
+      })
+      .where(and(eq(levelTests.id, id), eq(levelTests.tenantId, tenantId)))
+      .returning();
+    return result[0];
+  }
+
+  /**
+   * 링크 끊기.
+   *
+   * 토큰 칼럼을 null 로 비우지 않고 끊은 시각만 적는다. 그래야 원장이
+   * "끊어 둔 링크였다" 를 나중에도 구별할 수 있고, 같은 토큰이 되살아나는
+   * 일도 없다(되살리려면 재발급 = 새 토큰).
+   */
+  async revokeLevelTestShare(id: string, tenantId: string): Promise<LevelTest | undefined> {
+    const result = await db
+      .update(levelTests)
+      .set({ shareRevokedAt: new Date() })
+      .where(and(eq(levelTests.id, id), eq(levelTests.tenantId, tenantId)))
+      .returning();
+    return result[0];
+  }
+
+  /**
+   * 토큰으로 한 건 찾기. **공개 주소(/r/:token)가 쓰는 유일한 조회다.**
+   *
+   * tenantId 를 받지 않는다 — 받을 수가 없다. 학부모는 로그인하지 않으므로
+   * 어느 학원인지 말해 줄 주체가 없고, 주소에서 받으면 그 값을 공격자가 고른다.
+   * 토큰 자체가 32바이트 난수라 그것이 곧 신원이다.
+   *
+   * 만료·해지 판단은 여기서 하지 않고 라우터가 한다. 그래야 "만료됐다" 와
+   * "그런 링크 없다" 를 구별해 학부모에게 다른 안내를 보여 줄 수 있다.
+   */
+  async getLevelTestByShareToken(token: string): Promise<LevelTest | undefined> {
+    // 빈 문자열을 그냥 넘기면 share_token 이 NULL 이 아닌 아무 행에나 걸릴
+    // 위험을 코드 읽는 사람이 매번 확인해야 한다. 여기서 끊는다.
+    if (!token) return undefined;
+    const result = await db
+      .select()
+      .from(levelTests)
+      .where(eq(levelTests.shareToken, token))
+      .limit(1);
+    return result[0];
+  }
+
+  /**
+   * 학부모가 열어 본 사실을 적는다.
+   *
+   * id 로만 찾는다(토큰 조회로 이미 그 행을 특정했다). 횟수는 DB 안에서
+   * +1 한다 — 읽어서 더해 쓰면 학부모가 두 기기에서 동시에 열 때 하나가 묻힌다.
+   */
+  async recordLevelTestShareView(id: string): Promise<void> {
+    await db
+      .update(levelTests)
+      .set({
+        shareViewCount: sql`${levelTests.shareViewCount} + 1`,
+        shareLastViewedAt: new Date(),
+      })
+      .where(eq(levelTests.id, id));
+  }
+
+  /**
+   * 오래된 링크 토큰을 지운다(파기). 지운 건수를 돌려준다.
+   *
+   * ════════════════════════════════════════════════════════════════════════
+   * ⚠️ 이 함수는 **스스로 자료를 지우는** 유일한 레벨테스트 코드다.
+   *    고치기 전에 아래 네 줄을 반드시 읽을 것.
+   * ════════════════════════════════════════════════════════════════════════
+   *   1) **UPDATE 다.** db.delete 를 쓰지 않는다. 행을 지우는 일은 절대 없다.
+   *   2) **단 한 칸만 NULL 로 만든다** — share_token. 점수·이름·메모·발급일·
+   *      열어 본 횟수는 건드리지 않는다. set 에 칸을 더하지 말 것.
+   *   3) **이미 토큰이 있는 행만** 고른다(isNotNull). 토큰이 없는 행은
+   *      조건에서 빠지므로 아무 일도 일어나지 않는다.
+   *   4) **발급일이 적혀 있고, 그게 기준보다 오래된 행만** 고른다.
+   *      share_created_at 이 NULL 이면 비교가 NULL 이 되어 안 걸린다 —
+   *      즉 "모르겠으면 지우지 않는다" 쪽으로 실패한다. 의도한 것이다.
+   *
+   *   테스트가 이 네 가지를 글자로 확인한다: npm run test:share
+   */
+  async purgeExpiredShareTokens(before: Date): Promise<number> {
+    const result = await db
+      .update(levelTests)
+      .set({ shareToken: null })
+      .where(
+        and(
+          isNotNull(levelTests.shareToken),
+          isNotNull(levelTests.shareCreatedAt),
+          lt(levelTests.shareCreatedAt, before)
+        )
+      )
+      .returning({ id: levelTests.id });
+    return result.length;
   }
 
   // Task methods (퇴근전 할 일)

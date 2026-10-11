@@ -143,10 +143,36 @@ router.post(
       });
     }
     try {
+      const tenantId = req.user!.tenantId!;
+
+      /**
+       * 상담 기록 연결은 **같은 학원 것인지 확인한 뒤에만** 받는다.
+       *
+       * consultationId 는 본문으로 들어오는 값이고, DB 의 외래키는 "그 id 가
+       * consultations 에 있는가" 만 본다 — 어느 학원 것인지는 묶어 주지 않는다.
+       * 그래서 확인 없이 넣으면 남의 학원 상담 건에 우리 학원 성적을 붙일 수
+       * 있다. 반대로 우리 성적이 남의 화면에 뜰 수도 있다.
+       *
+       * 확인에 실패하면 저장을 통째로 막지 않고 **연결만 비운다.** 채점을
+       * 마친 선생님 입장에서 "성적이 저장되지 않는" 것이 가장 나쁜 결과이고,
+       * 연결은 나중에 이름으로도 맞춰진다(shared/levelTestMatch.ts).
+       */
+      let consultationId = parsed.data.consultationId ?? null;
+      if (consultationId) {
+        const consultation = await storage.getConsultation(consultationId);
+        if (!consultation || consultation.tenantId !== tenantId) {
+          console.warn(
+            `레벨테스트 저장: 상담 연결을 무시했습니다 (consultationId=${consultationId}, tenant=${tenantId})`
+          );
+          consultationId = null;
+        }
+      }
+
       // tenantId / createdBy 는 토큰에서만 온다. 본문 값은 무시한다.
       const saved = await storage.upsertLevelTest({
         ...parsed.data,
-        tenantId: req.user!.tenantId!,
+        consultationId,
+        tenantId,
         createdBy: req.user!.id,
       });
       res.status(200).json(saved);

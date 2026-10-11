@@ -19,6 +19,7 @@ import {
   FileText,
   Printer,
   MessageSquarePlus,
+  Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -43,14 +44,23 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { LevelTestShare } from "@/components/LevelTestShare";
 import { labelClassesByTeacher } from "@shared/classLabel";
 import { groupLevelTestsByConsultation } from "@shared/levelTestMatch";
 import {
   openLevelTestApp,
+  openLevelTestForConsultation,
   useLevelTests,
   type LevelTestRow,
 } from "@/hooks/useLevelTests";
-import type { Consultation, Class, Teacher } from "@shared/schema";
+import {
+  recommendClasses,
+  topCandidates,
+  type ClassCandidate,
+  type RecommendClass,
+  type RecommendMember,
+} from "@shared/classRecommend";
+import type { Consultation, Class, Teacher, Student, Enrollment } from "@shared/schema";
 
 /**
  * 원장이 이 다이얼로그에서 반을 고르는 순서. 개수순 대신 이 순서를 우선한다.
@@ -185,6 +195,15 @@ function LevelTestResult({ row }: { row: LevelTestRow }) {
         </Button>
       </div>
 
+      {/*
+        학부모에게 보낼 링크·메시지. 결과지 줄 안에 두는 이유: 원장이
+        "이 결과를 보내야겠다" 고 판단하는 순간은 점수를 보고 있는 순간이다.
+        규칙은 client/src/components/LevelTestShare.tsx 참조.
+      */}
+      <div className="flex flex-wrap items-center gap-2 border-t pt-2">
+        <LevelTestShare row={row} />
+      </div>
+
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
         {scores.map(([label, value]) => (
           <span key={label}>
@@ -208,6 +227,105 @@ function levelTestSearchText(row: LevelTestRow): string {
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
+}
+
+/**
+ * 반배정 후보 칸.
+ *
+ * ── 왜 "추천" 이 아니라 "근거" 를 보여 주는가 ──
+ *   반배정은 학생의 1년을 좌우하고, 숫자에 안 잡히는 사정(형제가 같은 반,
+ *   셔틀 시간, 성격)이 늘 끼어든다. 그래서 규칙이 단정하지 않고, 왜 그렇게
+ *   봤는지를 한국어로 적어 원장이 뒤집을 수 있게 둔다. 판단 규칙은
+ *   shared/classRecommend.ts 에 있다.
+ *
+ * ── 정원이 여기 같이 나오는 이유 ──
+ *   "추천했는데 자리가 없다" 가 생기지 않게 하려면 추천과 정원을 같은 자리에서
+ *   봐야 한다. 자리가 없는 반도 목록에 남긴다 — 자리만 나면 그 반인 경우가
+ *   있고, 그게 대기 등록을 결정하는 근거가 된다.
+ */
+function ClassFitPanel({
+  candidates,
+  recommendedClassId,
+  onPick,
+  onWaitlist,
+  busy,
+}: {
+  candidates: ClassCandidate[];
+  recommendedClassId: string | null;
+  onPick: (classId: string) => void;
+  onWaitlist: (candidate: ClassCandidate) => void;
+  busy: boolean;
+}) {
+  if (!candidates.length) return null;
+  return (
+    <div className="rounded-md border px-3 py-2 space-y-2">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <Users className="h-3.5 w-3.5" />
+        반배정 후보 (근거를 보고 원장이 정합니다)
+      </div>
+      {candidates.map((c) => {
+        const picked = c.classId === recommendedClassId;
+        const full = c.fit === "정원초과";
+        return (
+          <div
+            key={c.classId}
+            className={`rounded border px-2 py-2 text-sm space-y-1 ${
+              picked ? "border-primary bg-primary/5" : ""
+            }`}
+            data-testid={`class-candidate-${c.classId}`}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium">{c.name}</span>
+              {c.schedule && <Badge variant="outline">{c.schedule}</Badge>}
+              <Badge variant={full ? "destructive" : c.fit === "추천" ? "default" : "secondary"}>
+                {c.fit}
+              </Badge>
+              {c.seats.max != null && (
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {c.seats.taken}/{c.seats.max}명
+                </span>
+              )}
+              {picked && <Badge variant="outline">현재 추천반</Badge>}
+              <span className="ml-auto flex items-center gap-1">
+                {!picked && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => onPick(c.classId)}
+                    data-testid={`button-pick-class-${c.classId}`}
+                  >
+                    이 반으로
+                  </Button>
+                )}
+                {full && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => onWaitlist(c)}
+                    data-testid={`button-waitlist-${c.classId}`}
+                  >
+                    대기 등록
+                  </Button>
+                )}
+              </span>
+            </div>
+            {c.reasons.map((r) => (
+              <div key={r} className="text-xs text-muted-foreground">
+                · {r}
+              </div>
+            ))}
+            {c.cautions.map((r) => (
+              <div key={r} className="text-xs text-amber-700 dark:text-amber-500">
+                ! {r}
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 interface ConsultationsProps {
@@ -248,6 +366,47 @@ export default function Consultations({ userRole }: ConsultationsProps) {
   const { data: teachers = [] } = useQuery<Teacher[]>({ queryKey: ["/api/teachers"] });
 
   /**
+   * 반배정 추천·정원을 계산하려고 읽는다.
+   *
+   * 왜 학생·수강 목록까지 읽는가: "그 반에 지금 몇 명이 있고 몇 학년인가" 를
+   * 알아야 정원과 학년을 말할 수 있다. maxStudents 칸은 지금까지 화면에
+   * "(최대 20명)" 으로 적히기만 했고 실제 인원과 비교된 적이 없었다.
+   *
+   * 두 목록은 학생 관리 화면이 이미 쓰는 것과 같은 캐시 키라, 대부분의 경우
+   * 추가 요청 없이 캐시에서 온다.
+   */
+  const { data: students = [] } = useQuery<Student[]>({ queryKey: ["/api/students"] });
+  const { data: enrollments = [] } = useQuery<Enrollment[]>({ queryKey: ["/api/enrollments"] });
+
+  /** 반별 재원생(학년 포함). 추천 규칙이 "이 반은 몇 학년 반인가" 를 읽는 근거다. */
+  const classMembers = useMemo<RecommendMember[]>(() => {
+    const gradeOf = new Map(students.map((s) => [s.id, s] as const));
+    return enrollments.map((e) => {
+      const s = gradeOf.get(e.studentId);
+      return {
+        classId: e.classId,
+        grade: s?.grade ?? null,
+        school: s?.school ?? null,
+        // 퇴원생·종료된 수강은 자리를 차지하지 않는다.
+        isActive: e.isActive !== false && s?.isActive !== false,
+      };
+    });
+  }, [students, enrollments]);
+
+  const recommendInputClasses = useMemo<RecommendClass[]>(
+    () =>
+      classes.map((c) => ({
+        id: c.id,
+        name: c.name,
+        subject: c.subject,
+        schedule: c.schedule,
+        maxStudents: c.maxStudents,
+        isActive: c.isActive !== false,
+      })),
+    [classes]
+  );
+
+  /**
    * 레벨테스트 앱이 저장한 결과지.
    *
    * 조회가 실패해도 상담 목록은 그대로 보여야 한다. 그래서 isError 를 화면에
@@ -265,6 +424,48 @@ export default function Consultations({ userRole }: ConsultationsProps) {
     () => groupLevelTestsByConsultation(consultations, levelTests),
     [consultations, levelTests]
   );
+
+  /**
+   * 상담 건별 반배정 후보. 판단 규칙은 shared/classRecommend.ts 에 있다.
+   *
+   * ── 어느 건에만 계산하는가 ──
+   *   아직 학생이 아닌(studentId 없는) 건 중에서 레벨테스트완료 · 반배정상담 ·
+   *   대기등록 단계만. 상담문의/레벨테스트예정 단계에 띄우면 아직 아무 근거도
+   *   없는 추천을 들이대는 셈이고, 최종등록은 이미 반이 정해진 건이다.
+   *
+   * ── 점수는 어느 결과지에서 가져오는가 ──
+   *   그 상담에 붙은 결과지 중 "채점이 끝난 가장 최근 것" 하나. 재테스트를 봤으면
+   *   옛 점수로 반을 고르면 안 되고, 채점이 덜 끝난 결과지의 숫자는 아직 숫자가
+   *   아니다. 결과지가 없으면 학년만으로 줄을 세운다 — 그래도 정원은 맞게 보인다.
+   */
+  const candidatesByConsultation = useMemo(() => {
+    const out = new Map<string, ClassCandidate[]>();
+    for (const c of consultations) {
+      if (c.studentId) continue;
+      if (c.status !== "레벨테스트완료" && c.status !== "반배정상담" && c.status !== "대기등록") continue;
+
+      const graded = (byConsultation[c.id] ?? [])
+        .filter((r) => r.totalScore != null && (r.pendingCount ?? 0) === 0)
+        .sort((a, b) => String(b.testDate).localeCompare(String(a.testDate)));
+      const newest = graded[0];
+
+      const all = recommendClasses({
+        student: {
+          grade: c.studentGrade ?? newest?.grade ?? null,
+          school: newest?.school ?? null,
+          totalScore: newest?.totalScore ?? null,
+          readingScore: newest?.readingScore ?? null,
+          grammarScore: newest?.grammarScore ?? null,
+          vocabScore: newest?.vocabScore ?? null,
+          writingScore: newest?.writingScore ?? null,
+        },
+        classes: recommendInputClasses,
+        members: classMembers,
+      });
+      out.set(c.id, topCandidates(all, 3));
+    }
+    return out;
+  }, [consultations, byConsultation, recommendInputClasses, classMembers]);
 
   // 학생 전환·추천반 드롭다운에서 쓸 반 목록.
   // 강사 표기([김], [정], [고] 등)를 자동으로 붙이고, 원장이 자주 고르는 강사·요일 순으로 정렬한다.
@@ -343,6 +544,66 @@ export default function Consultations({ userRole }: ConsultationsProps) {
     },
     onError: (err: Error) => {
       toast({ title: "상태 변경 실패", description: err.message.replace(/^\d+:\s*/, ""), variant: "destructive" });
+    },
+  });
+
+  /**
+   * 반배정 후보에서 "이 반으로" 를 누를 때.
+   *
+   * 상태도 같이 반배정상담으로 옮긴다. 추천반만 적어 두고 상태가 레벨테스트완료에
+   * 남아 있으면, 자동 할 일(놓친 자리 찾기)이 "반배정 상담을 잡으세요" 를 계속
+   * 적게 된다 — 이미 한 일을 재촉하는 소음이 된다.
+   */
+  const pickClassMutation = useMutation({
+    mutationFn: async ({ id, classId, status }: { id: string; classId: string; status: Status }) => {
+      await apiRequest("PATCH", `/api/consultations/${id}`, {
+        recommendedClassId: classId,
+        ...(status === "레벨테스트완료" ? { status: "반배정상담" as Status } : {}),
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/consultations"] });
+      toast({ title: "추천반을 적었습니다" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "추천반 지정 실패", description: err.message.replace(/^\d+:\s*/, ""), variant: "destructive" });
+    },
+  });
+
+  /**
+   * 자리가 없는 반에 "대기 등록".
+   *
+   * 대기자 표(waiters)는 지금까지 적어 두기만 하고 아무도 다시 보지 않았다.
+   * 이제 자리가 나면 자동 할 일이 알려 주므로(server/lib/funnelWatch.ts 규칙 7),
+   * 여기에 적는 것이 실제로 연락으로 이어진다.
+   */
+  const waitlistMutation = useMutation({
+    mutationFn: async ({
+      consultation,
+      candidate,
+    }: {
+      consultation: Consultation;
+      candidate: ClassCandidate;
+    }) => {
+      await apiRequest("POST", "/api/waiters", {
+        classId: candidate.classId,
+        name: consultation.studentName || consultation.guardianName || "이름 미기재",
+        phone: consultation.phone ?? null,
+        notes: `상담 기록에서 등록 (${candidate.name})`,
+      });
+      // 상담 상태도 대기등록으로 옮긴다. 두 곳이 어긋나면 어느 쪽이 맞는지 알 수 없다.
+      await apiRequest("PATCH", `/api/consultations/${consultation.id}`, {
+        status: "대기등록" as Status,
+        recommendedClassId: candidate.classId,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/consultations"] });
+      qc.invalidateQueries({ queryKey: ["/api/waiters"] });
+      toast({ title: "대기자로 등록했습니다", description: "자리가 나면 할 일 목록에 알려 드립니다." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "대기 등록 실패", description: err.message.replace(/^\d+:\s*/, ""), variant: "destructive" });
     },
   });
 
@@ -736,6 +997,23 @@ export default function Consultations({ userRole }: ConsultationsProps) {
                   </div>
                 )}
 
+                {/*
+                  반배정 후보. 어느 단계에만 나오는지는 candidatesByConsultation
+                  주석에 적어 두었다. 수정 권한이 없는 사람에게는 띄우지 않는다 —
+                  누를 수 없는 버튼만 보이면 혼란만 준다.
+                */}
+                {canEdit && (
+                  <ClassFitPanel
+                    candidates={candidatesByConsultation.get(c.id) ?? []}
+                    recommendedClassId={c.recommendedClassId ?? null}
+                    onPick={(classId) =>
+                      pickClassMutation.mutate({ id: c.id, classId, status: c.status as Status })
+                    }
+                    onWaitlist={(candidate) => waitlistMutation.mutate({ consultation: c, candidate })}
+                    busy={pickClassMutation.isPending || waitlistMutation.isPending}
+                  />
+                )}
+
                 {c.sourceText && (
                   <p className="text-xs text-muted-foreground/70 border-l-2 pl-2">입력: {c.sourceText}</p>
                 )}
@@ -743,9 +1021,41 @@ export default function Consultations({ userRole }: ConsultationsProps) {
                 {canEdit && (() => {
                   const showLevelTest = c.status === "상담문의" || c.status === "레벨테스트예정";
                   const showEnroll = !c.studentId;
-                  if (!showLevelTest && !showEnroll) return null;
+                  /*
+                    앱으로 채점을 시작하는 버튼.
+
+                    이 버튼으로 열면 상담 건의 id 가 그대로 결과지의 신원이 된다.
+                    그래서 (1) 어느 PC 에서 채점해도 같은 줄에 덮어써지고, (2) 결과가
+                    이름 짐작 없이 이 카드에 확실히 붙는다. 반대로 앱을 따로 열어
+                    채점하면 연결은 이름·전화번호 짐작에 맡겨진다.
+
+                    등록이 끝난 건(최종등록)과 멈춘 건(보류)에는 띄우지 않는다 —
+                    재테스트는 학생 관리에서 다룰 일이고, 여기서는 "지금 등록을
+                    결정하는 중인 사람" 에게만 보이는 게 덜 헷갈린다.
+                  */
+                  const showGrading = c.status !== "최종등록" && c.status !== "보류";
+                  if (!showLevelTest && !showEnroll && !showGrading) return null;
+                  const graded = (byConsultation[c.id] ?? []).length > 0;
                   return (
                     <div className="pt-3 border-t flex flex-wrap gap-2">
+                      {showGrading && (
+                        <Button
+                          size="sm"
+                          variant={graded ? "outline" : "default"}
+                          onClick={() =>
+                            openLevelTestForConsultation({
+                              id: c.id,
+                              studentName: c.studentName,
+                              grade: c.studentGrade,
+                              phone: c.phone,
+                            })
+                          }
+                          data-testid={`button-grade-level-test-${c.id}`}
+                        >
+                          <FileText className="h-4 w-4 mr-2" />
+                          {graded ? "레벨테스트 다시 채점" : "레벨테스트 채점 시작"}
+                        </Button>
+                      )}
                       {showLevelTest && (
                         <Button
                           size="sm"

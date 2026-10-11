@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { LevelTestShare } from "@/components/LevelTestShare";
 import {
   openLevelTestApp as openApp,
   useLevelTests,
@@ -215,6 +216,8 @@ export default function LevelTests({ userRole }: { userRole: "owner" | "teacher"
                   {r.teacherName && (
                     <span className="text-xs text-muted-foreground">{r.teacherName}</span>
                   )}
+                  {/* 학부모용 결과지 링크·메시지. 상담 화면과 같은 컴포넌트를 쓴다. */}
+                  <LevelTestShare row={r} />
                   <Button
                     variant="outline"
                     size="sm"

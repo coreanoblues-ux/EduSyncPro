@@ -108,6 +108,8 @@ function makeState() {
     notes: "어휘가 약함",
     focus: "1",
     consultationId: "",
+    // EduSyncPro 상담 카드에서 열렸을 때만 채워지는 칸 (0층: 신원 고정).
+    linkedConsultationId: "",
     trackOverride: "",
     startMonth: "",
     noExamSemester: "",
@@ -123,13 +125,26 @@ function makeState() {
  * 가짜로 넣는다. 우리가 보려는 것은 "payload 를 어떻게 만드는가" 뿐이고,
  * 채점 계산과 화면 그리기는 이 테스트의 대상이 아니다.
  */
-function runSaveBlock(state: ReturnType<typeof makeState>) {
+function runSaveBlock(
+  state: ReturnType<typeof makeState>,
+  opts: { search?: string; confirmAnswer?: boolean } = {}
+) {
+  // 묻는 창(confirm)은 "앞 학생 채점을 비울지" 를 묻는 자리다. 몇 번 물었는지와
+  // 어떻게 답했는지가 그대로 결과를 바꾸므로 기록해 둔다.
+  const confirmCalls: string[] = [];
   const sandbox: any = {
     state,
     console,
     URLSearchParams,
     crypto: globalThis.crypto,
-    location: { protocol: "https:", search: "" },
+    location: { protocol: "https:", search: opts.search ?? "" },
+    confirmCalls,
+    confirm: (msg: string) => {
+      confirmCalls.push(String(msg));
+      return opts.confirmAnswer ?? false;
+    },
+    // 학년에 맞는 시험지 추천. 실제 함수는 다른 <script> 블록에 있어 가짜로 둔다.
+    recommend: () => "recommended",
     // 채점 결과 (고정값). 총점 50, 정답 1 / 평가 2, 미채점 3, 미응시 4.
     summary: () => ({ qs: [], valid: [{}, {}], right: 1, wrong: 1, pending: 3, skip: 4, score: 50 }),
     // 영역별 점수. 서술형은 일부러 null (미평가) 로 둔다.
@@ -221,6 +236,158 @@ async function main() {
     const m5 = app.levelTestPayload().clientRecordId;
     assert.notEqual(m3, m5);
     assert.ok(m5.endsWith(":m5"));
+  });
+
+  // ── 1-2) 상담 건에서 열었을 때 기록의 신원이 상담 id 로 고정된다 ─────
+  //
+  // 왜 이걸 테스트하는가: 이 앱은 기록의 주인을 브라우저가 만든 번호로 기억했다.
+  // 그래서 같은 학생을 다른 PC 에서 채점하면 줄이 두 개 생겼고, 상담 기록과의
+  // 연결은 이름 짐작에 맡겨졌다(동명이인 위험). 상담 id 로 고정되는지, 그리고
+  // 고정하는 과정에서 **앞 학생의 점수가 넘어가지 않는지** 를 확인한다.
+  const CID = "11111111-2222-3333-4444-555555555555";
+
+  await test("상담 링크 없이 열면 저장 본문의 상담 연결은 비어 있다", () => {
+    const app = runSaveBlock(makeState());
+    assert.equal(app.levelTestPayload().consultationId, null, "연결이 없으면 null 이어야 한다");
+  });
+
+  await test("상담 링크로 열면 기록 ID 가 상담 id 로 고정된다 (다른 PC 에서도 같은 줄)", () => {
+    const state = makeState();
+    state.student = "";
+    state.parentPhone = "";
+    state.marks = {} as any;
+    const app = runSaveBlock(state, { search: `?consultation=${CID}&name=김민준&grade=중2&phone=010-9999-8888` });
+    assert.equal(state.linkedConsultationId, CID);
+    assert.equal(state.consultationId, CID, "기록 신원이 상담 id 로 바뀌어야 한다");
+    const p = app.levelTestPayload();
+    assert.equal(p.consultationId, CID, "저장 본문에 상담 연결이 실려야 한다");
+    assert.equal(p.clientRecordId, `${CID}:${state.exam}`, "덮어쓰기 키가 상담 id 기준이어야 한다");
+    assert.equal(state.student, "김민준", "빈 이름 칸은 주소의 이름으로 채운다");
+    assert.equal(state.parentPhone, "010-9999-8888");
+    assert.equal(app.confirmCalls.length, 0, "비어 있는 상태에서는 묻지 않아야 한다");
+  });
+
+  await test("이미 입력한 값은 주소값이 덮어쓰지 않는다", () => {
+    const state = makeState();
+    state.student = "김민준";
+    state.marks = {} as any;
+    runSaveBlock(state, { search: `?consultation=${CID}&name=김민준&school=다른중학교&phone=010-0000-0000` });
+    assert.equal(state.school, "숭의중학교", "선생님이 앱에서 고친 학교가 유지돼야 한다");
+    assert.equal(state.parentPhone, "010-1234-1234", "이미 있는 연락처를 덮어쓰면 안 된다");
+    assert.equal(state.linkedConsultationId, CID, "이름이 같으면 묻지 않고 연결한다");
+  });
+
+  await test("앞 학생 채점이 열려 있으면 묻고, 아니라고 하면 연결하지 않는다", () => {
+    const state = makeState(); // student "홍길동" + marks 3개
+    const app = runSaveBlock(state, {
+      search: `?consultation=${CID}&name=김민준`,
+      confirmAnswer: false,
+    });
+    assert.equal(app.confirmCalls.length, 1, "반드시 한 번 물어야 한다");
+    assert.equal(state.linkedConsultationId, "", "거절했으면 연결하지 않는다");
+    assert.equal(state.student.trim(), "홍길동", "거절했으면 앞 학생 작업이 그대로 남아야 한다");
+    assert.equal(
+      app.levelTestPayload().consultationId,
+      null,
+      "앞 학생 점수가 새 상담 건에 붙으면 안 된다"
+    );
+  });
+
+  await test("묻는 창에서 그렇다고 하면 앞 학생 채점을 비우고 연결한다", () => {
+    const state = makeState();
+    const app = runSaveBlock(state, {
+      search: `?consultation=${CID}&name=김민준&grade=중3`,
+      confirmAnswer: true,
+    });
+    assert.equal(app.confirmCalls.length, 1);
+    assert.equal(state.student, "김민준");
+    // vm 안에서 만든 객체라 deepEqual 로는 못 비교한다 (프로토타입이 다르다).
+    assert.equal(Object.keys(state.marks).length, 0, "앞 학생의 채점이 남아 있으면 점수가 섞인다");
+    assert.equal(state.grade, "중3", "학년이 새 학생 기준으로 바뀌어야 한다");
+    assert.equal(state.linkedConsultationId, CID);
+  });
+
+  await test("채점을 시작한 뒤에는 주소의 학년이 시험지를 바꾸지 않는다", () => {
+    const state = makeState();
+    state.student = "홍길동";
+    runSaveBlock(state, { search: `?consultation=${CID}&name=홍길동&grade=고1` });
+    assert.equal(state.exam, "m3", "풀던 시험지가 바뀌면 채점한 답이 날아간다");
+    assert.equal(state.grade, "중2");
+  });
+
+  await test("기록 복원(?record=)은 상담 링크보다 우선한다", () => {
+    const state = makeState();
+    state.student = "";
+    state.marks = {} as any;
+    runSaveBlock(state, { search: `?record=abc&consultation=${CID}` });
+    assert.equal(state.linkedConsultationId, "", "복원 요청일 때는 부팅 블록이 손대지 않아야 한다");
+  });
+
+  await test("복원된 기록은 서버가 들고 있던 상담 연결을 유지한다", () => {
+    // 복원 함수 전체를 돌리려면 fetch·DOM 이 필요하다. 여기서는 "연결을 되살리는
+    // 줄이 실제로 있는지" 만 본다 — 이 줄이 빠지면 다시 저장할 때 연결이 끊긴다.
+    const restore = extractFunction("restoreRecordFromServer");
+    assert.ok(
+      /linkedConsultationId:\s*r\.consultationId/.test(restore),
+      "복원 시 상담 연결이 비워지면 재저장에서 연결이 끊긴다"
+    );
+  });
+
+  await test("앱 안에서 새 상담을 시작하면 이전 상담 연결도 비워진다", () => {
+    // 이 줄이 빠지면 '새 상담 시작' 뒤 저장한 **다른 학생 점수**가 앞 상담 건에 붙는다.
+    const fn = extractFunction("newConsultation");
+    assert.ok(/linkedConsultationId:\s*''/.test(fn), "새 상담 시작에서 상담 연결을 비워야 한다");
+  });
+
+  await test("서버는 학생 id 를 본문으로 받지 않는다", () => {
+    // studentId 를 본문으로 받으면 남의 학원 학생 번호를 붙일 수 있다.
+    // 스키마에서 빼 두면 Zod 가 조용히 떼어 낸다.
+    const state = makeState();
+    const app = runSaveBlock(state);
+    const payload = { ...app.levelTestPayload(), studentId: "99999999-9999-9999-9999-999999999999" };
+    const parsed = saveLevelTestBodySchema.safeParse(payload);
+    assert.ok(parsed.success, "본문 자체는 통과해야 한다");
+    assert.ok(
+      parsed.success && !("studentId" in parsed.data),
+      "studentId 가 본문으로 들어오면 안 된다"
+    );
+  });
+
+  await test("라우터가 남의 학원 상담 연결을 확인 없이 저장하지 않는다", () => {
+    // 외래키는 '그 id 가 있는가' 만 본다 — 어느 학원 것인지는 보지 않는다.
+    // 그래서 라우터가 직접 tenantId 를 맞춰 봐야 한다.
+    const routes = readFileSync(
+      path.resolve(here, "..", "server", "level-test", "routes.ts"),
+      "utf8"
+    );
+    assert.ok(/getConsultation\(consultationId\)/.test(routes), "상담 건을 확인하지 않는다");
+    assert.ok(
+      /consultation\.tenantId\s*!==\s*tenantId/.test(routes),
+      "상담 건이 같은 학원 것인지 확인하지 않는다"
+    );
+    assert.ok(
+      /consultationId\s*=\s*null/.test(routes),
+      "확인에 실패했을 때 연결을 비우지 않는다 (채점 결과는 저장돼야 한다)"
+    );
+  });
+
+  await test("상담 화면이 상담 id 를 실어 앱을 연다", () => {
+    const hook = readFileSync(
+      path.resolve(here, "..", "client", "src", "hooks", "useLevelTests.ts"),
+      "utf8"
+    );
+    assert.ok(
+      /openLevelTestForConsultation/.test(hook) && /params\.set\("consultation"/.test(hook),
+      "상담 id 를 실어 주는 열기 함수가 없다"
+    );
+    const page = readFileSync(
+      path.resolve(here, "..", "client", "src", "pages", "Consultations.tsx"),
+      "utf8"
+    );
+    assert.ok(
+      /openLevelTestForConsultation\(\{/.test(page),
+      "상담 카드가 상담 id 를 실어 앱을 열지 않는다"
+    );
   });
 
   // ── 2) 로고·이미지가 결과지 원본에 섞이지 않는다 ────────────────────

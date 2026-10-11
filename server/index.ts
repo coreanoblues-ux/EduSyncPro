@@ -9,6 +9,8 @@ import { pluginCors } from "./lib/pluginCors";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { startGradePromotionScheduler } from "./lib/gradePromotion";
+import { startFunnelWatchScheduler } from "./lib/funnelWatch";
+import { startSharePurgeScheduler } from "./lib/sharePurge";
 
 // ─── 최후의 방어선 ─────────────────────────────────────────────────────────
 // lib/asyncErrors 가 라우트 핸들러를 감싸지만, 전역 미들웨어·타이머·백그라운드
@@ -146,5 +148,11 @@ app.use((req, res, next) => {
     // 3월이 지났으면 학년을 올린다. 서버가 뜬 뒤에 걸어야 DB가 느릴 때도
     // 응답 대기가 포트 열림을 막지 않는다.
     startGradePromotionScheduler();
+    // 상담·레벨테스트 흐름에서 멈춰 있는 건을 찾아 "퇴근 전 할 일" 에 적어 둔다.
+    // 아무것도 발송하지 않는다 — 적어 두는 것까지만 한다(server/lib/funnelWatch.ts).
+    startFunnelWatchScheduler();
+    // 발급 후 6개월이 지난 학부모 링크 주소를 지운다. 점수 기록은 그대로 두고
+    // 주소 한 칸만 비운다(server/lib/sharePurge.ts 의 경고문 참고).
+    startSharePurgeScheduler();
   });
 })();

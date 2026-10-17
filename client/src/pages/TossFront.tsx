@@ -346,6 +346,11 @@ export default function TossFront() {
   const [approvalNumber, setApprovalNumber] = useState("");
   const [reconcileNote, setReconcileNote] = useState("");
 
+  // ─── 최근 결제 이름 검색 ─────────────────────────────────────────────
+  // 화면에서 거르기만 한다 — 서버나 결제 흐름에는 아무것도 보내지 않는다.
+  // 서버가 내려주는 최근 100건 안에서 찾고, 표에는 최대 50건을 보여 준다.
+  const [intentSearch, setIntentSearch] = useState("");
+
   const reconcileMutation = useMutation({
     mutationFn: async (input: { paymentKey: string; approvalNumber: string; note: string }) =>
       (await apiRequest("POST", "/api/toss-front/admin/reconcile", input)).json(),
@@ -376,6 +381,45 @@ export default function TossFront() {
   function needsReconcile(it: Intent) {
     return !it.ledgered && it.status !== "CREATED" && it.status !== "PROCESSING";
   }
+
+  /**
+   * "장부" 칸 하나 — 데스크톱 표와 모바일 목록 두 군데에 똑같이 들어간다.
+   * 한 함수로 뽑아 둔 이유: 장부 반영 버튼이 뜨는 조건(needsReconcile)이
+   * 두 화면에서 조금이라도 다르면, 폰으로 볼 때만 반영 버튼이 없거나
+   * 진행 중 결제에 버튼이 뜨는 사고가 난다.
+   */
+  function ledgerCell(it: Intent) {
+    return it.ledgered ? (
+      <Badge className="bg-emerald-100 text-emerald-800">반영됨</Badge>
+    ) : needsReconcile(it) ? (
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => {
+          setReconcileTarget(it);
+          setApprovalNumber("");
+          setReconcileNote("");
+        }}
+        data-testid={`reconcile-button-${it.id}`}
+      >
+        장부 반영
+      </Button>
+    ) : (
+      <span className="text-xs text-muted-foreground">—</span>
+    );
+  }
+
+  // 이름·반·기타결제 내용으로 거른다. 원장이 찾는 방식은 대개 "그 학생 이름"이다.
+  const intentKeyword = intentSearch.trim().toLowerCase();
+  const visibleIntents = (
+    intentKeyword
+      ? intents.filter((it) =>
+          [it.studentName, it.className, it.customLabel]
+            .filter(Boolean)
+            .some((v) => String(v).toLowerCase().includes(intentKeyword))
+        )
+      : intents
+  ).slice(0, 50);
 
   const refundAmountNum = Number(refundAmount);
   const refundAmountValid =
@@ -708,74 +752,113 @@ export default function TossFront() {
 
       {/* intent 목록 */}
       <Card>
-        <CardHeader>
+        <CardHeader className="space-y-3">
           <CardTitle>최근 결제 (payment intents)</CardTitle>
+          <div>
+            <Input
+              value={intentSearch}
+              onChange={(e) => setIntentSearch(e.target.value)}
+              placeholder="학생 이름으로 검색 (반 이름도 됩니다)"
+              className="max-w-xs"
+              data-testid="input-intent-search"
+            />
+            {intentKeyword && (
+              <p className="text-xs text-muted-foreground mt-1">
+                최근 결제 {intents.length}건 안에서 {visibleIntents.length}건이 찾아졌습니다.
+                더 오래된 결제는 수납 화면에서 확인하세요.
+              </p>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           {intents.length === 0 ? (
             <div className="text-sm text-muted-foreground">아직 결제 시도가 없습니다.</div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="text-left text-muted-foreground">
-                  <tr>
-                    <th className="py-2">시각</th>
-                    <th>학생</th>
-                    <th>반</th>
-                    <th>월</th>
-                    <th className="text-right">금액</th>
-                    <th>상태</th>
-                    <th>장부</th>
-                    <th>비고</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {intents.slice(0, 50).map((it) => (
-                    <tr key={it.id} className="border-t">
-                      <td className="py-2 whitespace-nowrap">
-                        {new Date(it.createdAt).toLocaleString("ko-KR")}
-                      </td>
-                      {/* 기타 결제는 학생·반이 없다. 입력해 둔 내용으로 대신 식별한다. */}
-                      <td>{it.studentName ?? (it.customLabel ? "기타 결제" : "—")}</td>
-                      <td>{it.className ?? (it.customLabel ?? "—")}</td>
-                      <td>{it.paymentMonth}</td>
-                      <td className="text-right">{it.amount.toLocaleString()}</td>
-                      <td>{statusBadge(it.status)}</td>
-                      {/*
-                        상태와 장부를 나란히 두는 것이 이 표의 핵심이다.
-                        TIMEOUT 인데 실제로는 카드가 승인된 건이 있고, 화면상
-                        진짜 실패와 구분되지 않는다. 두 칸을 같이 보여 주면
-                        "실패로 보이는데 장부에도 없네 → 판매자센터 확인" 이라는
-                        다음 행동이 원장에게 보인다.
-                      */}
-                      <td>
-                        {it.ledgered ? (
-                          <Badge className="bg-emerald-100 text-emerald-800">반영됨</Badge>
-                        ) : needsReconcile(it) ? (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => {
-                              setReconcileTarget(it);
-                              setApprovalNumber("");
-                              setReconcileNote("");
-                            }}
-                            data-testid={`reconcile-button-${it.id}`}
-                          >
-                            장부 반영
-                          </Button>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        )}
-                      </td>
-                      <td className="text-xs text-muted-foreground">
-                        {it.failureReason ?? ""}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          ) : visibleIntents.length === 0 ? (
+            <div className="text-sm text-muted-foreground">
+              "{intentSearch.trim()}" 에 해당하는 결제가 최근 목록에 없습니다.
             </div>
+          ) : (
+            <>
+              {/* 데스크톱: 표. 모바일(sm 미만)에서는 숨기고 아래 목록으로 대신한다. */}
+              <div className="overflow-x-auto hidden sm:block">
+                <table className="w-full text-sm">
+                  <thead className="text-left text-muted-foreground">
+                    <tr>
+                      <th className="py-2">시각</th>
+                      <th>학생</th>
+                      <th>반</th>
+                      <th>월</th>
+                      <th className="text-right">금액</th>
+                      <th>상태</th>
+                      <th>장부</th>
+                      <th>비고</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleIntents.map((it) => (
+                      <tr key={it.id} className="border-t">
+                        <td className="py-2 whitespace-nowrap">
+                          {new Date(it.createdAt).toLocaleString("ko-KR")}
+                        </td>
+                        {/* 기타 결제는 학생·반이 없다. 입력해 둔 내용으로 대신 식별한다. */}
+                        <td className="whitespace-nowrap">
+                          {it.studentName ?? (it.customLabel ? "기타 결제" : "—")}
+                        </td>
+                        <td>{it.className ?? (it.customLabel ?? "—")}</td>
+                        <td className="whitespace-nowrap">{it.paymentMonth}</td>
+                        <td className="text-right whitespace-nowrap">{it.amount.toLocaleString()}</td>
+                        <td>{statusBadge(it.status)}</td>
+                        {/*
+                          상태와 장부를 나란히 두는 것이 이 표의 핵심이다.
+                          TIMEOUT 인데 실제로는 카드가 승인된 건이 있고, 화면상
+                          진짜 실패와 구분되지 않는다. 두 칸을 같이 보여 주면
+                          "실패로 보이는데 장부에도 없네 → 판매자센터 확인" 이라는
+                          다음 행동이 원장에게 보인다.
+                        */}
+                        <td>{ledgerCell(it)}</td>
+                        <td className="text-xs text-muted-foreground">
+                          {it.failureReason ?? ""}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/*
+                모바일: 한 건을 두세 줄짜리 묶음으로 보여 준다.
+                좁은 화면에서 8칸짜리 표를 그대로 구겨 넣으면 이름이 한 글자씩
+                세로로 꺾여서 읽을 수 없었다. 내용·조건은 위 표와 완전히 같고
+                (장부 칸은 같은 ledgerCell 함수), 배치만 다르다.
+              */}
+              <div className="sm:hidden">
+                {visibleIntents.map((it) => (
+                  <div key={it.id} className="border-t py-3 space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium">
+                        {it.studentName ?? (it.customLabel ? "기타 결제" : "—")}
+                      </span>
+                      <span className="font-semibold tabular-nums whitespace-nowrap">
+                        {it.amount.toLocaleString()}원
+                      </span>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {it.className ?? (it.customLabel ?? "—")} · {it.paymentMonth}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {new Date(it.createdAt).toLocaleString("ko-KR")}
+                    </div>
+                    <div className="flex items-center gap-2 pt-1">
+                      {statusBadge(it.status)}
+                      {ledgerCell(it)}
+                    </div>
+                    {it.failureReason && (
+                      <div className="text-xs text-muted-foreground">{it.failureReason}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

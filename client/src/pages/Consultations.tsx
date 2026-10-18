@@ -49,6 +49,7 @@ import { labelClassesByTeacher } from "@shared/classLabel";
 import { groupLevelTestsByConsultation } from "@shared/levelTestMatch";
 import {
   openLevelTestApp,
+  openLevelTestEdit,
   openLevelTestForConsultation,
   openLevelTestPrintForConsultation,
   useLevelTests,
@@ -1036,7 +1037,18 @@ export default function Consultations({ userRole }: ConsultationsProps) {
                   */
                   const showGrading = c.status !== "최종등록" && c.status !== "보류";
                   if (!showLevelTest && !showEnroll && !showGrading) return null;
+                  /*
+                    이미 채점된 건은 "다시 채점"이 서버에 저장된 그 기록을
+                    복원해서 연다 (가장 최근 회차 — byConsultation 은 최근순).
+
+                    예전에는 상담 id 만 실어 앱을 열었는데, 다른 PC 에서 열거나
+                    브라우저 기록이 비워져 있으면 채점이 전부 빈 채로 시작됐다.
+                    원장에게는 그게 "한번 저장하면 수정이 안 된다"로 보였다.
+                    기록을 복원해서 열면 틀린 표시만 고치고 다시 저장하면 되고,
+                    같은 회차라 새 줄 없이 그 기록이 갱신된다.
+                  */
                   const graded = (byConsultation[c.id] ?? []).length > 0;
+                  const latestRecord = graded ? byConsultation[c.id][0] : null;
                   return (
                     <div className="pt-3 border-t flex flex-wrap gap-2">
                       {/*
@@ -1068,17 +1080,19 @@ export default function Consultations({ userRole }: ConsultationsProps) {
                           size="sm"
                           variant={graded ? "outline" : "default"}
                           onClick={() =>
-                            openLevelTestForConsultation({
-                              id: c.id,
-                              studentName: c.studentName,
-                              grade: c.studentGrade,
-                              phone: c.phone,
-                            })
+                            latestRecord
+                              ? openLevelTestEdit(latestRecord.id)
+                              : openLevelTestForConsultation({
+                                  id: c.id,
+                                  studentName: c.studentName,
+                                  grade: c.studentGrade,
+                                  phone: c.phone,
+                                })
                           }
                           data-testid={`button-grade-level-test-${c.id}`}
                         >
                           <FileText className="h-4 w-4 mr-2" />
-                          {graded ? "레벨테스트 다시 채점" : "레벨테스트 채점 시작"}
+                          {graded ? "채점 수정 / 다시 채점" : "레벨테스트 채점 시작"}
                         </Button>
                       )}
                       {showLevelTest && (

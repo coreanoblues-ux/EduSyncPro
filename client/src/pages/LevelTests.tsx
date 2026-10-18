@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, FileText, Printer, RefreshCw, Search, Trash2 } from "lucide-react";
+import { ExternalLink, FileText, Pencil, Printer, RefreshCw, Search, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +11,7 @@ import { LevelTestShare } from "@/components/LevelTestShare";
 import { AcademyProfileCard } from "@/components/AcademyProfileCard";
 import {
   openLevelTestApp as openApp,
+  openLevelTestEdit,
   useLevelTests,
   LEVEL_TESTS_QUERY_KEY,
   type LevelTestRow,
@@ -228,6 +229,20 @@ export default function LevelTests({ userRole }: { userRole: "owner" | "teacher"
                   )}
                   {/* 학부모용 결과지 링크·메시지. 상담 화면과 같은 컴포넌트를 쓴다. */}
                   <LevelTestShare row={r} />
+                  {/*
+                    채점을 잘못 입력했을 때 고치는 입구. 서버의 채점 원본을
+                    복원해 채점 화면으로 바로 내려 주고, 다시 저장하면 같은
+                    회차라 새 줄 없이 이 기록이 갱신된다.
+                  */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => openLevelTestEdit(r.id)}
+                    data-testid={`button-edit-grading-${r.id}`}
+                  >
+                    <Pencil className="w-4 h-4 mr-1" />
+                    채점 수정
+                  </Button>
                   <Button
                     variant="outline"
                     size="sm"

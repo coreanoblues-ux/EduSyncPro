@@ -1446,7 +1446,12 @@ async function restoreRecordFromServer(id){
    consultationId:String(r.clientRecordId||'').split(':')[0],
    // 서버가 들고 있던 상담 연결을 그대로 유지한다. 비우면 다시 저장할 때 연결이 끊긴다.
    linkedConsultationId:r.consultationId||'',
-   tab:'report',
+   /* 어느 화면으로 복원하는가 — 기본은 결과지(재출력 용도).
+      관리 화면의 "채점 수정" 버튼은 &tab=grade 를 실어 보낸다: 채점을 잘못
+      입력한 것을 고치러 오는 길이므로 STEP 02(채점)로 바로 내려 준다.
+      고친 뒤 "학생 기록 저장 → 현재 학생 저장 / 갱신" 을 누르면 같은 회차라
+      새 줄이 생기지 않고 서버의 그 기록이 갱신된다(clientRecordId upsert). */
+   tab:new URLSearchParams(location.search).get('tab')==='grade'?'grade':'report',
   });
   save();render();
   lastSavedAt=r.updatedAt?new Date(r.updatedAt).toLocaleString('ko-KR'):'';

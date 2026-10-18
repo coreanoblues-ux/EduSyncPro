@@ -421,6 +421,44 @@ async function main() {
     );
   });
 
+  await test("저장된 채점을 다시 열어 고칠 수 있다", () => {
+    // "한번 저장하면 수정이 안 된다" 신고의 재발 방지.
+    // 입구(채점 수정 버튼) → 복원(&tab=grade 로 채점 화면) → 갱신(upsert)이
+    // 한 줄로 이어져야 한다. 어느 하나가 빠지면 원장에게는 수정 불가로 보인다.
+    const hook = readFileSync(
+      path.resolve(here, "..", "client", "src", "hooks", "useLevelTests.ts"),
+      "utf8"
+    );
+    assert.ok(
+      /openLevelTestEdit/.test(hook) && /record=\$\{encodeURIComponent\(recordId\)\}&tab=grade/.test(hook),
+      "채점 수정용 열기 함수(record + tab=grade)가 없다"
+    );
+    const app = readFileSync(
+      path.resolve(here, "..", "apps", "level-test", "index.html"),
+      "utf8"
+    );
+    assert.ok(
+      /get\('tab'\)==='grade'\?'grade':'report'/.test(app),
+      "앱이 tab=grade 복원 요청에서 채점 화면으로 내려 주지 않는다"
+    );
+    const history = readFileSync(
+      path.resolve(here, "..", "client", "src", "pages", "LevelTests.tsx"),
+      "utf8"
+    );
+    assert.ok(
+      /openLevelTestEdit\(r\.id\)/.test(history) && history.includes("채점 수정"),
+      "레벨테스트 history 에 채점 수정 버튼이 없다"
+    );
+    const consult = readFileSync(
+      path.resolve(here, "..", "client", "src", "pages", "Consultations.tsx"),
+      "utf8"
+    );
+    assert.ok(
+      /openLevelTestEdit\(latestRecord\.id\)/.test(consult),
+      "상담 카드의 다시 채점이 저장된 기록을 복원해서 열지 않는다"
+    );
+  });
+
   // ── 2) 로고·이미지가 결과지 원본에 섞이지 않는다 ────────────────────
   await test("결과지 원본에 로고 base64 가 들어가지 않는다", () => {
     const app = runSaveBlock(makeState());

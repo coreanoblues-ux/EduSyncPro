@@ -66,6 +66,23 @@ export function openLevelTestApp(recordId?: string) {
 }
 
 /**
+ * 저장된 기록의 **채점을 고치러** 앱을 연다.
+ *
+ * ?record= 로 서버에 보관된 채점 원본(rawState)을 복원하고, &tab=grade 로
+ * 결과지 대신 채점 화면(STEP 02)에 내려 준다. 거기서 틀린 표시를 고친 뒤
+ * "학생 기록 저장 → 현재 학생 저장 / 갱신" 을 누르면 같은 회차라서 새 줄이
+ * 생기지 않고 그 기록이 갱신된다 — 서버가 clientRecordId 로 upsert 한다.
+ * 상담 연결도 서버 값 그대로 복원되므로 다시 저장해도 끊기지 않는다.
+ */
+export function openLevelTestEdit(recordId: string) {
+  window.open(
+    `/level-test/app?record=${encodeURIComponent(recordId)}&tab=grade`,
+    "_blank",
+    "noopener"
+  );
+}
+
+/**
  * 상담 건에서 레벨테스트를 시작한다.
  *
  * ── 왜 이름만으로 두지 않는가 ──

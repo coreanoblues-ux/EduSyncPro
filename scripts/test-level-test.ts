@@ -470,8 +470,25 @@ async function main() {
     assert.ok(/printAnswerSheet\(\)">답안지 출력/.test(app), "답안지 출력 버튼이 없다");
     assert.ok(/시험지 코드/.test(app), "스캔 판독용 시험지 코드 칸이 없다");
 
-    // 높이 예산 검산 — 문항 수가 바뀌어도 한 장을 넘지 않아야 한다.
-    // (아래 수치는 answerSheetHTML 의 레이아웃 상수와 같아야 한다.)
+    // ── 한 장 보장은 구조로 한다 ──
+    // 처음에는 서술형 줄 높이를 mm 로 계산해 맞췄는데, 머리글 높이를 실제보다
+    // 작게 잡아서 중등종합 답안지의 21번이 종이 밖으로 밀렸다. 지금은 본문을
+    // 위 12mm·아래 22mm 사이의 고정 틀에 넣고 서술형 줄이 남는 공간을 flex 로
+    // 나눠 갖는다 — 계산이 틀려도 한 장을 넘을 수 없다. 그 틀이 있는지 본다.
+    assert.ok(
+      /position:absolute;top:12mm;left:12mm;right:12mm;bottom:22mm;display:flex;flex-direction:column;overflow:hidden/.test(app),
+      "답안지 본문의 한-장 고정 틀(absolute+flex)이 사라졌다 — 서술형이 다시 넘칠 수 있다"
+    );
+    assert.ok(
+      /flex:1 1 0;min-height:0;max-height:16mm/.test(app),
+      "서술형 줄이 flex 로 공간을 나눠 갖지 않는다 — 긴 시험에서 넘친다"
+    );
+
+    // ── 줄이 너무 좁아지지 않는지 검산 ──
+    // flex 가 한 장은 보장하지만, 문항이 너무 많으면 서술형 줄이 짓눌린다.
+    // 영어 문장을 손으로 쓰려면 공책 줄(약 7mm)은 되어야 한다.
+    // (아래 수치는 answerSheetHTML 의 레이아웃 상수와 같아야 한다:
+    //  틀 236mm, 머리글 23, 정보칸 ~12.5, 안내문 ~6, 객관식 줄 5.5, 어휘 줄 6.4, 영역 제목 5)
     const idx = app.indexOf("EXAMS = [");
     let depth = 0, end = 0;
     for (let j = idx + 8; j < app.length; j++) {
@@ -487,13 +504,18 @@ async function main() {
       const obj = e.questions.filter((q) => q.domain === "문법" || q.domain === "독해").length;
       const vocab = e.questions.filter((q) => q.domain === "어휘").length;
       const writing = e.questions.filter((q) => q.domain === "서술형").length;
-      let used = 10 + 4.5;
-      if (obj) used += 5 + Math.ceil(obj / 3) * 5.8;
-      if (vocab) used += 5 + Math.ceil(vocab / 2) * 7;
-      const wAvail = 232 - used - (writing ? 5 : 0);
-      const wH = writing ? Math.max(8.5, Math.min(16, wAvail / writing)) : 0;
-      const total = used + (writing ? 5 + wH * writing : 0);
-      assert.ok(total <= 233, `${e.id} 답안지가 한 장을 넘는다 (${total.toFixed(1)}mm)`);
+      let fixed = 23 + 12.5 + 6; // 머리글 + 정보칸 + 안내문
+      if (obj) fixed += 5 + Math.ceil(obj / 3) * 5.5;
+      if (vocab) fixed += 5 + Math.ceil(vocab / 2) * 6.4;
+      if (writing) fixed += 5;
+      assert.ok(fixed <= 236, `${e.id} 고정 영역만으로 한 장을 넘는다 (${fixed.toFixed(1)}mm)`);
+      if (writing) {
+        const rowH = (236 - fixed) / writing;
+        assert.ok(
+          rowH >= 7,
+          `${e.id} 서술형 줄이 공책 줄보다 좁다 (${rowH.toFixed(1)}mm) — 객관식·어휘 줄을 줄이거나 양식을 손봐야 한다`
+        );
+      }
     }
   });
 

@@ -1189,8 +1189,13 @@ printExam=async function(){
      서술형 13칸이 들어가지 않는다. 그래서 양식(디자인)은 하나, 번호만 시험을
      따라간다. 4종 어느 시험이든 버튼 하나로 맞는 답안지가 나온다.
    영역별 칸: 문법·독해는 ①~⑤ 마킹, 어휘는 뜻 쓰기 줄, 서술형은 문장 줄.
-   서술형 줄 높이는 남는 공간을 문항 수로 나눠 정한다(최소 8.5mm, 최대 16mm) —
-   서술형 3개인 기본반은 넉넉하게, 13개인 중3 심화도 한 장에 들어가게. */
+   ── 한 장 보장 ──
+   처음에는 서술형 줄 높이를 mm 계산으로 맞췄는데, 머리글·학생정보 칸이
+   실제로 차지하는 높이를 작게 잡아서 중등종합 답안지의 서술형이 바닥글
+   아래로 삐져나갔다(21번이 종이 밖으로). 지금은 본문 전체를 위 12mm ·
+   아래 22mm 사이의 고정 틀에 넣고, 서술형 줄들이 그 안에 남는 공간을
+   나눠 갖는다(flex). 계산이 틀려도 구조상 한 장을 넘을 수 없다.
+   줄이 공책 줄(약 7mm)보다 좁아지지 않는지는 회귀 테스트가 검산한다. */
 function answerSheetHTML(){
  const ex=exam();
  const byNum=(a,b)=>((a.number||parseInt(a.id,10)||0)-(b.number||parseInt(b.id,10)||0));
@@ -1201,33 +1206,33 @@ function answerSheetHTML(){
  const bubble=n=>`<span style="display:inline-block;width:4.6mm;height:4.6mm;border:.3mm solid #8a8a8a;border-radius:50%;text-align:center;line-height:4.2mm;font-size:7.5pt;color:#8a8a8a;margin:0 .7mm;vertical-align:middle">${n}</span>`;
  const bubbles=[1,2,3,4,5].map(bubble).join('');
  const objRows=Math.ceil(obj.length/3);
- const vocabRows=Math.ceil(vocab.length/2);
- // 높이 예산(mm). 머리글·바닥글을 뺀 본문 약 232mm 안에 전부 들어가야 한다.
- let used=10+4.5;
- if(obj.length)used+=5+objRows*5.8;
- if(vocab.length)used+=5+vocabRows*7;
- const wAvail=232-used-(writing.length?5:0);
- const wH=writing.length?Math.max(8.5,Math.min(16,wAvail/writing.length)):0;
  const corner=pos=>`<div style="position:absolute;width:4mm;height:4mm;background:#000;${pos}"></div>`;
  const box=(label,value,flex,strong)=>`<div style="flex:${flex};border:${strong?'.45mm solid #000':'.3mm solid #999'};border-radius:1mm;padding:.8mm 1.6mm"><span style="font-size:7pt;color:#777">${label}</span><div style="font-size:${strong?'11pt':'10pt'};font-weight:${strong?'800':'600'};min-height:4.4mm;${strong?'letter-spacing:.5mm':''}">${esc(value||'')}</div></div>`;
- const title=(t,hint)=>`<div style="display:flex;align-items:baseline;gap:2mm;border-bottom:.4mm solid #333;margin:2.5mm 0 1.5mm;padding-bottom:.6mm"><b style="font-size:10pt">${t}</b><span style="font-size:7.5pt;color:#777">${hint}</span></div>`;
+ const title=(t,hint)=>`<div style="flex:none;display:flex;align-items:baseline;gap:2mm;border-bottom:.4mm solid #333;margin:2.5mm 0 1.5mm;padding-bottom:.6mm"><b style="font-size:10pt">${t}</b><span style="font-size:7.5pt;color:#777">${hint}</span></div>`;
  // 객관식 3열: 1열을 위에서 아래로 채우고 다음 열로 — 번호가 세로로 이어져 눈으로 따라가기 쉽다.
  const objCols=[[],[],[]];obj.forEach((q,i)=>objCols[Math.min(2,Math.floor(i/objRows))].push(q));
  const objHTML=obj.length?title('객관식 (문법·독해)','보기 번호 하나를 ●처럼 까맣게 칠하세요')
-  +`<div style="display:flex;gap:4mm">`+objCols.map(col=>`<div style="flex:1">`+col.map(q=>`<div style="display:flex;align-items:center;height:5.8mm"><b style="width:7mm;font-size:9pt;text-align:right;margin-right:1.5mm">${esc(q.id)}</b>${bubbles}</div>`).join('')+`</div>`).join('')+`</div>`:'';
+  +`<div style="flex:none;display:flex;gap:4mm">`+objCols.map(col=>`<div style="flex:1">`+col.map(q=>`<div style="display:flex;align-items:center;height:5.5mm"><b style="width:7mm;font-size:9pt;text-align:right;margin-right:1.5mm">${esc(q.id)}</b>${bubbles}</div>`).join('')+`</div>`).join('')+`</div>`:'';
  const vocabHTML=vocab.length?title('어휘','단어·숙어의 뜻을 우리말로 쓰세요')
-  +`<div style="display:grid;grid-template-columns:1fr 1fr;column-gap:6mm">`+vocab.map(q=>`<div style="display:flex;align-items:flex-end;height:7mm;border-bottom:.25mm solid #aaa"><b style="width:7mm;font-size:9pt">${esc(q.id)}.</b></div>`).join('')+`</div>`:'';
+  +`<div style="flex:none;display:grid;grid-template-columns:1fr 1fr;column-gap:6mm">`+vocab.map(q=>`<div style="display:flex;align-items:flex-end;height:6.4mm;border-bottom:.25mm solid #aaa"><b style="width:7mm;font-size:9pt">${esc(q.id)}.</b></div>`).join('')+`</div>`:'';
+ // 서술형 줄: flex:1 로 남는 공간을 똑같이 나눠 갖는다. 적으면 16mm 까지
+ // 넉넉하게, 중3 심화(13개)처럼 많으면 공책 줄 수준까지 줄어든다.
  const writingHTML=writing.length?title('서술형','문장을 또박또박 쓰세요')
-  +writing.map(q=>`<div style="display:flex;align-items:flex-end;height:${wH.toFixed(1)}mm;border-bottom:.25mm solid #aaa"><b style="width:8mm;font-size:9pt">${esc(q.id)}.</b></div>`).join(''):'';
+  +`<div style="flex:1 1 0;min-height:0;display:flex;flex-direction:column">`
+  +writing.map(q=>`<div style="flex:1 1 0;min-height:0;max-height:16mm;display:flex;align-items:flex-end;border-bottom:.25mm solid #aaa"><b style="width:8mm;font-size:9pt">${esc(q.id)}.</b></div>`).join('')
+  +`</div>`:'';
  return `<section class="printsheet text-sheet">`
   +corner('top:4mm;left:4mm')+corner('top:4mm;right:4mm')+corner('bottom:4mm;left:4mm')+corner('bottom:4mm;right:4mm')
+  +`<div style="position:absolute;top:12mm;left:12mm;right:12mm;bottom:22mm;display:flex;flex-direction:column;overflow:hidden">`
   +brandHeader(('Level '+ex.level+' '+ex.title)+' 답안지')
-  +`<div style="display:flex;gap:2.5mm;margin-top:2.5mm">`
+  +`<div style="flex:none;display:flex;gap:2.5mm;margin-top:2.5mm">`
    +box('이름',state.student,2)+box('학교',state.school,2)+box('학년',state.grade,1)+box('응시일',state.date,2)
    +box('시험지 코드',String(ex.id).toUpperCase(),1.4,true)
   +`</div>`
-  +`<p style="margin:1.6mm 0 0;font-size:7.5pt;color:#555">답은 전부 이 답안지에만 씁니다. 객관식은 보기 하나만 까맣게 칠하고, 고칠 때는 × 표시 후 옆에 번호를 다시 쓰세요.</p>`
-  +objHTML+vocabHTML+writingHTML+printFoot(1,1)
+  +`<p style="flex:none;margin:1.6mm 0 0;font-size:7.5pt;color:#555">답은 전부 이 답안지에만 씁니다. 객관식은 보기 하나만 까맣게 칠하고, 고칠 때는 × 표시 후 옆에 번호를 다시 쓰세요.</p>`
+  +objHTML+vocabHTML+writingHTML
+  +`</div>`
+  +printFoot(1,1)
   +`</section>`;
 }
 async function printAnswerSheet(){await printContent(answerSheetHTML())}

@@ -78,18 +78,38 @@ export function openLevelTestApp(recordId?: string) {
  *   이름·학교·학년·연락처는 비어 있는 칸만 채우는 참고값이다 — 선생님이 앱에서
  *   고친 값을 덮어쓰지 않는다.
  */
-export function openLevelTestForConsultation(info: {
+export function openLevelTestForConsultation(info: ConsultationLinkInfo) {
+  const params = consultationParams(info);
+  window.open(`/level-test/app?${params.toString()}`, "_blank", "noopener");
+}
+
+/**
+ * 상담 건에서 레벨테스트 **시험지 인쇄**를 시작한다.
+ *
+ * openLevelTestForConsultation 과 연결 규칙은 똑같고(상담 id·이름·학년 전달),
+ * print=exam 만 더 싣는다. 앱은 이 표시를 보고 학년에 맞는 시험지의
+ * 인쇄 미리보기를 바로 띄운다 — 실제 인쇄는 미리보기에서 원장이 누른다.
+ */
+export function openLevelTestPrintForConsultation(info: ConsultationLinkInfo) {
+  const params = consultationParams(info);
+  params.set("print", "exam");
+  window.open(`/level-test/app?${params.toString()}`, "_blank", "noopener");
+}
+
+interface ConsultationLinkInfo {
   id: string;
   studentName?: string | null;
   grade?: string | null;
   phone?: string | null;
   school?: string | null;
-}) {
+}
+
+function consultationParams(info: ConsultationLinkInfo): URLSearchParams {
   const params = new URLSearchParams();
   params.set("consultation", info.id);
   if (info.studentName) params.set("name", info.studentName);
   if (info.grade) params.set("grade", info.grade);
   if (info.phone) params.set("phone", info.phone);
   if (info.school) params.set("school", info.school);
-  window.open(`/level-test/app?${params.toString()}`, "_blank", "noopener");
+  return params;
 }

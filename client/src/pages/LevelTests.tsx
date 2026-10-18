@@ -101,7 +101,7 @@ export default function LevelTests({ userRole }: { userRole: "owner" | "teacher"
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <FileText className="w-6 h-6 text-primary" />
-            레벨테스트 기록
+            레벨테스트 history
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
             채점과 결과지 인쇄는 레벨테스트 앱에서 합니다. 저장된 기록이 여기에 쌓입니다.

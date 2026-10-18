@@ -1499,6 +1499,19 @@ render();
 // 주소에 ?record=<기록ID> 가 있으면 그 기록을 복원한다 (위 함수 주석 참조).
 const requestedRecord=new URLSearchParams(location.search).get('record');
 if(requestedRecord)restoreRecordFromServer(requestedRecord);
+
+/* 주소에 ?print=exam 이 있으면 (관리 화면 상담 카드의 "레벨테스트지 인쇄" 버튼)
+   시험지 인쇄 미리보기를 바로 띄운다.
+
+   학생 이름·학년은 위 linkFromEduSyncPro 가 이미 채웠고, 학년에 맞는 시험지도
+   recommend() 로 골라져 있다. 여기서는 STEP 01 로 이동해 미리보기만 연다 —
+   실제 인쇄(또는 PDF 저장)는 미리보기 안의 버튼으로 원장이 직접 누른다.
+   채점·결과지·인쇄 로직 자체는 건드리지 않는다 (printExam 을 그대로 부를 뿐). */
+if(new URLSearchParams(location.search).get('print')==='exam'&&!requestedRecord){
+ state.tab='select';save();render();
+ // render 가 끝난 다음 호출해야 문항 폭 측정(print-measure)이 안정적이다.
+ setTimeout(()=>{printExam()},200);
+}
 </script></body></html>
 
 

@@ -50,6 +50,7 @@ import { groupLevelTestsByConsultation } from "@shared/levelTestMatch";
 import {
   openLevelTestApp,
   openLevelTestForConsultation,
+  openLevelTestPrintForConsultation,
   useLevelTests,
   type LevelTestRow,
 } from "@/hooks/useLevelTests";
@@ -804,7 +805,7 @@ export default function Consultations({ userRole }: ConsultationsProps) {
   if (isLoading) {
     return (
       <div className="space-y-6 p-6">
-        <h1 className="text-2xl font-bold">상담 관리</h1>
+        <h1 className="text-2xl font-bold">상담 및 테스트 예약</h1>
         <div className="text-center py-8 text-muted-foreground">상담 기록을 불러오는 중...</div>
       </div>
     );
@@ -813,7 +814,7 @@ export default function Consultations({ userRole }: ConsultationsProps) {
   return (
     <div className="space-y-6 p-6" data-testid="consultations-page">
       <div>
-        <h1 className="text-2xl font-bold">상담 관리</h1>
+        <h1 className="text-2xl font-bold">상담 및 테스트 예약</h1>
         <p className="text-muted-foreground">
           AI 입력으로 저장한 상담·문의 {consultations.length}건
           {levelTests.length > 0 && ` · 레벨테스트 결과지 ${levelTests.length}건`}
@@ -1038,6 +1039,30 @@ export default function Consultations({ userRole }: ConsultationsProps) {
                   const graded = (byConsultation[c.id] ?? []).length > 0;
                   return (
                     <div className="pt-3 border-t flex flex-wrap gap-2">
+                      {/*
+                        시험지 인쇄. 채점 시작과 같은 연결(상담 id·이름·학년)로 앱을
+                        열되 print=exam 을 실어, 학년에 맞는 시험지의 인쇄 미리보기가
+                        바로 뜬다. 테스트 당일 원장이 "인쇄 → 시험 → 채점" 순서로
+                        쓰므로 채점 버튼 바로 왼쪽에 둔다.
+                      */}
+                      {showGrading && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            openLevelTestPrintForConsultation({
+                              id: c.id,
+                              studentName: c.studentName,
+                              grade: c.studentGrade,
+                              phone: c.phone,
+                            })
+                          }
+                          data-testid={`button-print-level-test-${c.id}`}
+                        >
+                          <Printer className="h-4 w-4 mr-2" />
+                          레벨테스트지 인쇄
+                        </Button>
+                      )}
                       {showGrading && (
                         <Button
                           size="sm"

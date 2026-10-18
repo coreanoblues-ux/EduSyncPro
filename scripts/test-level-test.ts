@@ -390,6 +390,37 @@ async function main() {
     );
   });
 
+  await test("상담 카드에서 시험지 인쇄를 바로 시작할 수 있다", () => {
+    // 테스트 당일 순서는 "인쇄 → 시험 → 채점". 인쇄 버튼은 채점 버튼과 같은
+    // 연결(상담 id·이름·학년)로 앱을 열고 print=exam 을 실어, 앱이 학년에
+    // 맞는 시험지의 인쇄 미리보기를 바로 띄운다.
+    const hook = readFileSync(
+      path.resolve(here, "..", "client", "src", "hooks", "useLevelTests.ts"),
+      "utf8"
+    );
+    assert.ok(
+      /openLevelTestPrintForConsultation/.test(hook) &&
+        /params\.set\("print",\s*"exam"\)/.test(hook),
+      "print=exam 을 실어 주는 열기 함수가 없다"
+    );
+    const page = readFileSync(
+      path.resolve(here, "..", "client", "src", "pages", "Consultations.tsx"),
+      "utf8"
+    );
+    assert.ok(
+      /openLevelTestPrintForConsultation\(\{/.test(page) && page.includes("레벨테스트지 인쇄"),
+      "상담 카드에 레벨테스트지 인쇄 버튼이 없다"
+    );
+    const app = readFileSync(
+      path.resolve(here, "..", "apps", "level-test", "index.html"),
+      "utf8"
+    );
+    assert.ok(
+      /get\('print'\)==='exam'/.test(app) && /printExam\(\)/.test(app),
+      "앱이 print=exam 요청에서 시험지 인쇄 미리보기를 열지 않는다"
+    );
+  });
+
   // ── 2) 로고·이미지가 결과지 원본에 섞이지 않는다 ────────────────────
   await test("결과지 원본에 로고 base64 가 들어가지 않는다", () => {
     const app = runSaveBlock(makeState());

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, User, BookOpen, CheckCircle, XCircle, CreditCard, Calendar, AlertTriangle, PauseCircle } from "lucide-react";
+import { ChevronDown, ChevronRight, User, BookOpen, CheckCircle, XCircle, CreditCard, Calendar, AlertTriangle, PauseCircle, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -106,6 +106,14 @@ export default function Payments({ userRole }: PaymentsProps) {
   }>({ isOpen: false });
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
+  /**
+   * 학생 이름 검색. 전화 받으면서 "○○이 10월분 결제할게요"를 처리하려면
+   * 선생님→반을 눌러 내려가는 길이 너무 길다. 검색하면 그 학생이 있는
+   * 반만 남기고 자동으로 펼쳐서, 원래 그 자리에 있던 "납부하기" 버튼을
+   * 바로 누를 수 있게 한다. 거르고 펼치는 것뿐 — 수납 등록 경로(다이얼로그,
+   * 금액 계산, 서버 요청)는 평소와 완전히 같은 코드를 지난다.
+   */
+  const [studentSearch, setStudentSearch] = useState("");
   
   const { toast } = useToast();
 
@@ -411,6 +419,33 @@ export default function Payments({ userRole }: PaymentsProps) {
   const teacherData = processTeacherData();
   const currentMonth = new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long' });
 
+  // 검색 중이면 트리(선생님→반→학생)의 구조는 그대로 두고 가지만 쳐낸다.
+  // 휴원 학생도 이름이 맞으면 남긴다 — "얘 어디 갔지"를 검색으로도 찾을 수 있어야 한다.
+  // 아래 수납 요약은 걸러진 displayData 가 아니라 전체 teacherData 로 계산한다.
+  const searchKeyword = studentSearch.trim().toLowerCase();
+  const isSearching = searchKeyword.length > 0;
+  const displayData = !isSearching
+    ? teacherData
+    : teacherData
+        .map((t) => ({
+          ...t,
+          classes: t.classes
+            .map((c) => ({
+              ...c,
+              students: c.students.filter((s) => s.name.toLowerCase().includes(searchKeyword)),
+              onLeave: c.onLeave.filter((s) => s.name.toLowerCase().includes(searchKeyword)),
+            }))
+            .filter((c) => c.students.length > 0 || c.onLeave.length > 0),
+        }))
+        .filter((t) => t.classes.length > 0);
+  const matchCount = isSearching
+    ? displayData.reduce(
+        (sum, t) =>
+          sum + t.classes.reduce((cs, c) => cs + c.students.length + c.onLeave.length, 0),
+        0
+      )
+    : 0;
+
   const calculateFinancials = () => {
     const currentMonthString = new Date().toISOString().slice(0, 7);
     
@@ -450,16 +485,54 @@ export default function Payments({ userRole }: PaymentsProps) {
         </div>
       </div>
 
+      {/* 학생 이름 검색 — 찾은 학생의 반이 자동으로 펼쳐지고, 평소의 납부하기 버튼이 그대로 있다. */}
+      {teacherData.length > 0 && (
+        <div className="relative max-w-sm">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={studentSearch}
+            onChange={(e) => setStudentSearch(e.target.value)}
+            placeholder="학생 이름으로 검색해 바로 수납"
+            className="pl-9 pr-9"
+            data-testid="input-payment-student-search"
+          />
+          {studentSearch && (
+            <button
+              type="button"
+              onClick={() => setStudentSearch("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              data-testid="button-clear-payment-student-search"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+          {isSearching && matchCount > 0 && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {matchCount}명 찾음 — 반이 자동으로 펼쳐졌습니다. 평소처럼 납부하기를 누르면 됩니다.
+            </p>
+          )}
+        </div>
+      )}
+
       {teacherData.length === 0 ? (
         <div className="text-center py-12 border-2 border-dashed border-muted-foreground/25 rounded-lg">
           <User className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
           <div className="text-lg font-medium">등록된 선생님이 없습니다</div>
           <p className="text-muted-foreground mt-2">선생님을 먼저 등록하고 수업을 개설해주세요.</p>
         </div>
+      ) : isSearching && displayData.length === 0 ? (
+        <div className="text-center py-12 border-2 border-dashed border-muted-foreground/25 rounded-lg">
+          <Search className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+          <div className="text-lg font-medium">"{studentSearch.trim()}" 학생을 찾지 못했습니다</div>
+          <p className="text-muted-foreground mt-2">
+            수강 등록된 학생만 여기 나옵니다. 이름 일부만 쳐도 검색됩니다.
+          </p>
+        </div>
       ) : (
         <div className="space-y-4">
-          {teacherData.map((teacher: TeacherWithClasses) => {
-            const isTeacherExpanded = expandedTeachers.has(teacher.id);
+          {displayData.map((teacher: TeacherWithClasses) => {
+            // 검색 중에는 전부 펼친다 — 찾아 놓고 또 누르게 하지 않는다.
+            const isTeacherExpanded = isSearching || expandedTeachers.has(teacher.id);
             
             return (
               <Card key={teacher.id} className="overflow-hidden">
@@ -505,8 +578,10 @@ export default function Payments({ userRole }: PaymentsProps) {
                 {isTeacherExpanded && (
                   <CardContent className="pt-0 space-y-3">
                     {teacher.classes.map((classItem: ClassWithStudents) => {
-                      const isExpanded = expandedClasses.has(classItem.id);
-                      const isOnLeaveExpanded = expandedOnLeave.has(classItem.id);
+                      const isExpanded = isSearching || expandedClasses.has(classItem.id);
+                      const isOnLeaveExpanded =
+                        (isSearching && classItem.onLeave.length > 0) ||
+                        expandedOnLeave.has(classItem.id);
                       const paidCount = classItem.students.filter((s: StudentWithPaymentStatus) => s.isPaid).length;
                       const totalCount = classItem.students.length;
                       

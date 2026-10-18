@@ -16,7 +16,7 @@ const menuItems = [
   { title: "대시보드", url: "/", icon: Home },
   { title: "교사", url: "/teachers", icon: GraduationCap },
   { title: "반", url: "/classes", icon: BookOpen },
-  { title: "학생", url: "/students", icon: Users },
+  { title: "학생정보관리", url: "/students", icon: Users },
   { title: "상담", url: "/consultations", icon: MessageSquare },
   { title: "레벨테스트", url: "/level-tests", icon: FileText },
   { title: "퇴근전 할일", url: "/todos", icon: ListChecks },

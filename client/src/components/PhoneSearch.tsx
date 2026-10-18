@@ -1,9 +1,14 @@
 /**
- * 전화번호 빠른 검색
+ * 수신 전화 빠른 검색 — 전화번호 뒷자리 또는 학생 이름.
  *
  * 전화가 오면 번호 뒷자리 4자리만 치면 학생 정보가 즉시 뜬다.
+ * 숫자가 아닌 글자(한글 등)가 섞이면 자동으로 **이름 검색**으로 바뀐다 —
+ * 전화번호가 다른 번호로 걸려 왔거나("어머니 폰이 아니라 아버지 폰"),
+ * 원장이 이름만 아는 경우를 위해서다. 칸은 하나고, 입력을 보고 알아서 고른다.
+ *
  * 대시보드에 이미 올라와 있는 students·enrollments·classes·payments·
  * consultations·teachers 데이터를 클라이언트에서 필터하므로 API 호출 없이 즉시 반응한다.
+ * (납부완료/미납 계산은 결제 장부를 읽기만 한다 — 여기서 바꾸는 것은 없다.)
  */
 
 import { useMemo, useRef, useState } from "react";
@@ -50,19 +55,27 @@ export default function PhoneSearch({
   const inputRef = useRef<HTMLInputElement>(null);
 
   const digits = normalizePhone(query);
+  // 숫자·공백·전화기호(- ( ) +)만 있으면 번호 검색, 그 외 글자가 있으면 이름 검색.
+  const nameKeyword = /[^\d\s\-()+.]/.test(query) ? query.trim().toLowerCase() : "";
+  const isNameMode = nameKeyword.length > 0;
 
   const results = useMemo(() => {
-    if (digits.length < 4) return null;
+    // 이름은 2글자부터 (한 글자 성씨는 반 학원이 다 걸린다), 번호는 4자리부터.
+    if (isNameMode ? nameKeyword.length < 2 : digits.length < 4) return null;
 
     const currentMonth = new Date().toISOString().slice(0, 7);
     const classById = new Map(classes.map((c) => [c.id, c]));
     const teacherById = new Map(teachers.map((t) => [t.id, t]));
 
-    // 학생 검색 — parentPhone 뒷자리 매칭
+    // 학생 검색 — 번호 모드: parentPhone 뒷자리 / 이름 모드: 학생 이름 포함
     const matchedStudents: MatchedStudent[] = [];
     for (const s of students) {
-      const phone = normalizePhone(s.parentPhone || "");
-      if (!phone || !phone.endsWith(digits)) continue;
+      if (isNameMode) {
+        if (!(s.name || "").toLowerCase().includes(nameKeyword)) continue;
+      } else {
+        const phone = normalizePhone(s.parentPhone || "");
+        if (!phone || !phone.endsWith(digits)) continue;
+      }
 
       const studentEnrollments = enrollments.filter(
         (e) => e.studentId === s.id && e.isActive
@@ -109,18 +122,24 @@ export default function PhoneSearch({
       matchedStudents.push({ student: s, classList, consultationCount });
     }
 
-    // 상담 기록 중 아직 학생이 되지 않은 것 — phone 뒷자리 매칭
+    // 상담 기록 중 아직 학생이 되지 않은 것 — 번호 모드: phone 뒷자리 /
+    // 이름 모드: 상담에 적힌 학생·보호자 이름 포함
     const matchedConsultations: MatchedConsultation[] = [];
     for (const c of consultations) {
-      const phone = normalizePhone(c.phone || "");
-      if (!phone || !phone.endsWith(digits)) continue;
+      if (isNameMode) {
+        const names = `${c.studentName || ""} ${c.guardianName || ""}`.toLowerCase();
+        if (!names.includes(nameKeyword)) continue;
+      } else {
+        const phone = normalizePhone(c.phone || "");
+        if (!phone || !phone.endsWith(digits)) continue;
+      }
       // 이미 학생으로 매칭된 상담은 제외
       if (c.studentId && matchedStudents.some((m) => m.student.id === c.studentId)) continue;
       matchedConsultations.push({ consultation: c });
     }
 
     return { matchedStudents, matchedConsultations };
-  }, [digits, students, enrollments, classes, payments, consultations, teachers]);
+  }, [digits, isNameMode, nameKeyword, students, enrollments, classes, payments, consultations, teachers]);
 
   const hasResults =
     results &&
@@ -135,9 +154,8 @@ export default function PhoneSearch({
           <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             ref={inputRef}
-            type="tel"
-            inputMode="numeric"
-            placeholder="전화번호 뒷자리 4자리 입력 (수신 전화 빠른 조회)"
+            type="text"
+            placeholder="전화번호 뒷자리 4자리 또는 학생 이름 (수신 전화 빠른 조회)"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             className="pl-9 pr-9 text-base"
@@ -154,18 +172,22 @@ export default function PhoneSearch({
           )}
         </div>
 
-        {/* 4자리 미만이면 안내 */}
-        {digits.length > 0 && digits.length < 4 && (
+        {/* 아직 글자가 모자라면 안내 — 번호는 4자리, 이름은 2글자부터 */}
+        {query.trim().length > 0 && !results && (
           <p className="mt-2 text-xs text-muted-foreground">
             <Search className="mr-1 inline h-3 w-3" />
-            4자리 이상 입력하면 검색합니다
+            {isNameMode
+              ? "이름은 2글자 이상 입력하면 검색합니다"
+              : "번호는 4자리 이상 입력하면 검색합니다"}
           </p>
         )}
 
         {/* 결과 없음 */}
         {noResults && (
           <p className="mt-3 text-center text-sm text-muted-foreground">
-            "{digits}" 뒷자리와 일치하는 연락처가 없습니다
+            {isNameMode
+              ? `"${query.trim()}" 이름과 일치하는 학생·상담이 없습니다`
+              : `"${digits}" 뒷자리와 일치하는 연락처가 없습니다`}
           </p>
         )}
 

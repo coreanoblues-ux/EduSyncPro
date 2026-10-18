@@ -459,6 +459,44 @@ async function main() {
     );
   });
 
+  await test("OMR 답안지가 4종 시험 모두 A4 한 장에 들어간다", () => {
+    // 스캔 자동 채점의 1단계. 답을 이 한 장에만 쓰게 해야 나중에 스캔
+    // 판독이 한 장만 읽으면 된다. 양식은 하나, 문항 번호는 시험을 따라간다.
+    const app = readFileSync(
+      path.resolve(here, "..", "apps", "level-test", "index.html"),
+      "utf8"
+    );
+    assert.ok(/function answerSheetHTML/.test(app), "답안지 생성 함수가 없다");
+    assert.ok(/printAnswerSheet\(\)">답안지 출력/.test(app), "답안지 출력 버튼이 없다");
+    assert.ok(/시험지 코드/.test(app), "스캔 판독용 시험지 코드 칸이 없다");
+
+    // 높이 예산 검산 — 문항 수가 바뀌어도 한 장을 넘지 않아야 한다.
+    // (아래 수치는 answerSheetHTML 의 레이아웃 상수와 같아야 한다.)
+    const idx = app.indexOf("EXAMS = [");
+    let depth = 0, end = 0;
+    for (let j = idx + 8; j < app.length; j++) {
+      if (app[j] === "[") depth++;
+      else if (app[j] === "]") { depth--; if (depth === 0) { end = j + 1; break; } }
+    }
+    const exams = JSON.parse(app.slice(idx + 8, end)) as {
+      id: string;
+      questions: { domain: string }[];
+    }[];
+    assert.ok(exams.length >= 4, "시험지가 4종보다 적다");
+    for (const e of exams) {
+      const obj = e.questions.filter((q) => q.domain === "문법" || q.domain === "독해").length;
+      const vocab = e.questions.filter((q) => q.domain === "어휘").length;
+      const writing = e.questions.filter((q) => q.domain === "서술형").length;
+      let used = 10 + 4.5;
+      if (obj) used += 5 + Math.ceil(obj / 3) * 5.8;
+      if (vocab) used += 5 + Math.ceil(vocab / 2) * 7;
+      const wAvail = 232 - used - (writing ? 5 : 0);
+      const wH = writing ? Math.max(8.5, Math.min(16, wAvail / writing)) : 0;
+      const total = used + (writing ? 5 + wH * writing : 0);
+      assert.ok(total <= 233, `${e.id} 답안지가 한 장을 넘는다 (${total.toFixed(1)}mm)`);
+    }
+  });
+
   // ── 2) 로고·이미지가 결과지 원본에 섞이지 않는다 ────────────────────
   await test("결과지 원본에 로고 base64 가 들어가지 않는다", () => {
     const app = runSaveBlock(makeState());

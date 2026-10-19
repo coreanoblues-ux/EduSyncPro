@@ -261,6 +261,7 @@ export const consultations = pgTable("consultations", {
   phone: text("phone"),
   guardianName: text("guardian_name"), // 보호자명
   studentName: text("student_name"),
+  school: text("school"),              // "숭의중" 등 — 통화 자동등록 또는 수동 입력
   studentGrade: text("student_grade"), // "중1", "고2" 등
   status: consultationStatusEnum("status").default("상담문의").notNull(),
   subject: text("subject"), // 문의 과목

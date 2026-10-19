@@ -49,6 +49,7 @@ import { ensureCustomPaymentSchema } from "./toss-front/customPaymentSchema";
 import tossPluginLogRouter from "./toss-front/pluginLogs";
 import levelTestRouter from "./level-test/routes";
 import levelTestShareRouter from "./level-test/shareRoutes";
+import callIntakeRouter from "./call-intake/routes";
 import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
 import { parseDays, parseSchedule } from "@shared/timetable";
@@ -1838,6 +1839,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
    *    테스트: npm run test:share
    */
   app.use(levelTestShareRouter);
+  /**
+   * 통화 녹음 자동 상담등록 (/api/call-intake).
+   * 휴대폰(MacroDroid)이 X-Intake-Token 헤더로 올리거나, 로그인된 웹앱이
+   * 쿠키 인증으로 올린다. 녹음은 메모리에서만 처리하고 절대 저장하지 않는다.
+   * 테스트: npm run test:call-intake
+   */
+  app.use(callIntakeRouter);
   // 학생용 태블릿 웹앱 전용 API. 완전히 별도 인증(kioskGuard) 경로.
   app.use("/api/toss-kiosk", tossKioskRouter);
   // 결제 단말기 모드 dispatch. 두 라우터는 인증 미들웨어가 서로 달라서

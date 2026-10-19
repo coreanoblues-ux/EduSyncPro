@@ -274,6 +274,10 @@ export const consultations = pgTable("consultations", {
   levelTestScore: text("level_test_score"),    // 점수 또는 등급 문자열 (예: "85점", "B+")
   levelTestNotes: text("level_test_notes"),    // 레벨테스트 결과 메모
   recommendedClassId: varchar("recommended_class_id").references(() => classes.id, { onDelete: "set null" }), // 반배정상담 단계에서 추천된 반
+  // 통화 자동 등록(/api/call-intake)이 만든 건은 AI가 쓴 초안이라 원장 확인이 필요하다.
+  // 상태(status)에 섞지 않고 플래그로 둔다 — 퍼널 7단계에 의존하는 대시보드·퇴근전
+  // 할일·상담 필터를 건드리지 않기 위해서다. 원장이 내용을 확인하면 false 로 끈다.
+  needsReview: boolean("needs_review").default(false).notNull(),
   sourceText: text("source_text"),
   createdBy: varchar("created_by").references(() => users.id).notNull(),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),

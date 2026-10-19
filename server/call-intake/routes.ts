@@ -166,6 +166,71 @@ const LOCAL_SCHOOLS =
   "봉선중, 주월중, 숭의중, 문성중, 동아여중, 서광중, 대성여중, 동성여중, 동성중, " +
   "문성고, 인성고, 석산고, 광덕고, 서석고, 동아여고, 수피아여고, 조대부고, 조대여고, 살레시오여고, 대성여고, 동성고, 대동고, 설월여고";
 
+const LOCAL_SCHOOL_LIST = LOCAL_SCHOOLS.split(", ");
+
+/* 음성인식이 학교명을 비슷한 발음으로 틀리게 적는 일이 잦다 (예: "승인중학교"→"숭의중").
+   AI 교정만으로는 놓치는 경우가 있어, 서버에서 자모(ㅅㅜㅇ…) 단위 편집거리로
+   목록의 학교와 충분히 비슷하면 목록 이름으로 바꿔 준다. */
+const CHO = "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ";
+const JUNG = "ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ";
+const JONG = "\0ㄱㄲㄳㄴㄵㄶㄷㄹㄺㄻㄼㄽㄾㄿㅀㅁㅂㅄㅅㅆㅇㅈㅊㅋㅌㅍㅎ";
+
+function toJamo(s: string): string {
+  let out = "";
+  for (const ch of s) {
+    const code = ch.charCodeAt(0) - 0xac00;
+    if (code < 0 || code > 11171) {
+      out += ch;
+      continue;
+    }
+    out += CHO[Math.floor(code / 588)] + JUNG[Math.floor((code % 588) / 28)];
+    const jong = JONG[code % 28];
+    if (jong !== "\0") out += jong;
+  }
+  return out;
+}
+
+function editDistance(a: string, b: string): number {
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => i);
+  for (let j = 1; j <= b.length; j++) {
+    let prev = dp[0];
+    dp[0] = j;
+    for (let i = 1; i <= a.length; i++) {
+      const cur = dp[i];
+      dp[i] = Math.min(dp[i] + 1, dp[i - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+  }
+  return dp[a.length];
+}
+
+export function correctSchoolName(raw: string | null): string | null {
+  if (!raw) return null;
+  const base = raw
+    .replace(/\s+/g, "")
+    .replace(/초등학교$/, "초")
+    .replace(/중학교$/, "중")
+    .replace(/고등학교$/, "고")
+    .replace(/학교$/, "");
+  if (!base) return raw;
+  if (LOCAL_SCHOOL_LIST.includes(base)) return base;
+
+  const jamo = toJamo(base);
+  let bestName: string | null = null;
+  let bestDist = Infinity;
+  for (const cand of LOCAL_SCHOOL_LIST) {
+    if (cand.slice(-1) !== base.slice(-1)) continue; // 초/중/고 급이 같은 것만 비교
+    const d = editDistance(jamo, toJamo(cand));
+    if (d < bestDist) {
+      bestDist = d;
+      bestName = cand;
+    }
+  }
+  // 자모 3개 이내 차이(짧은 이름은 2개)면 같은 학교의 발음 오인으로 본다
+  const limit = Math.min(3, Math.max(2, Math.floor(jamo.length / 3)));
+  return bestName && bestDist <= limit ? bestName : raw;
+}
+
 export function buildExtractionPrompt(nowLabel: string): string {
   return `당신은 영어학원 원장의 통화 녹음 전사 텍스트에서 상담 정보를 추출합니다.
 
@@ -175,7 +240,7 @@ export function buildExtractionPrompt(nowLabel: string): string {
 1. is_consultation: 학원 상담·문의·등록 관련 통화면 true. 택배, 지인, 광고, 스팸, 업무와 무관한 통화면 false.
 2. student_name/school/grade: 확실히 들린 것만. 불확실하면 null. 절대 추측하지 마십시오.
    - 학교명은 이 지역 학교일 가능성이 높습니다: ${LOCAL_SCHOOLS}.
-     발음이 비슷하게 잘못 전사됐으면 (예: "성의중"→"숭의중") 목록의 이름으로 교정하십시오.
+     발음이 비슷하게 잘못 전사됐으면 (예: "성의중"→"숭의중", "승인중학교"→"숭의중") 목록의 이름으로 교정하십시오.
    - grade 는 "중1", "고2" 같은 꼴로.
 3. follow_up: 통화에서 약속한 후속 조치. 상대 날짜는 지금 시각 기준으로 절대 날짜로 바꿔
    "YYYY-MM-DD (요일) HH:MM" 을 포함해 적으십시오.
@@ -248,7 +313,8 @@ async function saveConsultation(
   nowLabel: string
 ): Promise<SaveResult> {
   const tenantId = user.tenantId!;
-  const school = expandSchoolName(ai.school) || ai.school || null;
+  const correctedSchool = correctSchoolName(ai.school);
+  const school = expandSchoolName(correctedSchool) || correctedSchool || null;
   const grade = canonicalGrade(ai.grade, school) ?? ai.grade ?? null;
   const name = ai.student_name?.trim() || null;
 

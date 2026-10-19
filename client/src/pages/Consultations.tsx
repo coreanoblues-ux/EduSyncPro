@@ -481,7 +481,7 @@ export default function Consultations({ userRole }: ConsultationsProps) {
   // 메모/후속조치/과목/연락처 수정 다이얼로그. 원장이 각 단계에서 상담 내용을 직접 다듬을 수 있게 한다.
   // phone: 급하게 입력하느라 사전에 못 넣은 보호자 연락처를 나중에 추가할 수 있게 한다.
   const [editTarget, setEditTarget] = useState<Consultation | null>(null);
-  const [editForm, setEditForm] = useState({ subject: "", followUp: "", memo: "", phone: "" });
+  const [editForm, setEditForm] = useState({ studentName: "", subject: "", followUp: "", memo: "", phone: "" });
 
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -849,6 +849,7 @@ export default function Consultations({ userRole }: ConsultationsProps) {
     mutationFn: async (id: string) => {
       // 빈 문자열은 null로 보내 원본이 지워지도록 한다. 원장이 의도적으로 비우는 경우가 있음.
       await apiRequest("PATCH", `/api/consultations/${id}`, {
+        studentName: editForm.studentName.trim() || null,
         subject: editForm.subject.trim() || null,
         followUp: editForm.followUp.trim() || null,
         memo: editForm.memo.trim() || null,
@@ -867,6 +868,7 @@ export default function Consultations({ userRole }: ConsultationsProps) {
 
   const openEdit = (c: Consultation) => {
     setEditForm({
+      studentName: c.studentName ?? "",
       subject: c.subject ?? "",
       followUp: c.followUp ?? "",
       memo: c.memo ?? "",
@@ -1537,6 +1539,18 @@ export default function Consultations({ userRole }: ConsultationsProps) {
           </DialogHeader>
 
           <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>학생 이름</Label>
+              <Input
+                value={editForm.studentName}
+                onChange={(e) => setEditForm({ ...editForm, studentName: e.target.value })}
+                placeholder="예: 윤희엘"
+                data-testid="input-edit-student-name"
+              />
+              <p className="text-xs text-muted-foreground">
+                통화 자동등록이 이름을 잘못 알아들었다면 여기서 바로잡으세요.
+              </p>
+            </div>
             <div className="space-y-2">
               <Label>보호자 연락처</Label>
               <Input

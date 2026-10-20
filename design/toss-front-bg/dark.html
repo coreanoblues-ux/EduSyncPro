@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 800px; height: 1280px; overflow: hidden; }
+  body {
+    position: relative;
+    font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+    background:
+      radial-gradient(900px 700px at 50% 22%, rgba(249,115,22,0.16) 0%, rgba(249,115,22,0) 60%),
+      linear-gradient(170deg, #2b2b30 0%, #202024 55%, #1a1a1e 100%);
+  }
+  /* 미세한 도트 그리드 */
+  .grid {
+    position: absolute; inset: 0;
+    background-image: radial-gradient(rgba(255,255,255,0.05) 1.2px, transparent 1.2px);
+    background-size: 46px 46px;
+  }
+  /* 얇은 주황 링 */
+  .ring {
+    position: absolute; top: -170px; right: -170px;
+    width: 460px; height: 460px; border-radius: 50%;
+    border: 2px solid rgba(249,115,22,0.35);
+  }
+  .ring2 {
+    position: absolute; bottom: -200px; left: -220px;
+    width: 520px; height: 520px; border-radius: 50%;
+    border: 14px solid rgba(255,255,255,0.035);
+  }
+  /* 로고 */
+  .logo {
+    position: absolute; left: 50%; top: 388px; transform: translateX(-50%);
+    width: 620px;
+  }
+  .logo img { display: block; width: 100%; height: auto;
+    filter: drop-shadow(0 14px 34px rgba(0,0,0,0.45)); }
+  .eyebrow {
+    position: absolute; left: 0; right: 0; top: 318px;
+    text-align: center;
+    font-size: 17px; font-weight: 600; color: #f97316;
+    letter-spacing: 0.55em; text-indent: 0.55em;
+  }
+  .tagline {
+    position: absolute; left: 0; right: 0; top: 560px;
+    text-align: center;
+    font-size: 30px; font-weight: 500; color: #d8d4cf;
+    letter-spacing: 0.02em;
+  }
+  .tagline .accent { color: #fb923c; font-weight: 700; }
+  .divider {
+    position: absolute; left: 50%; top: 528px; transform: translateX(-50%);
+    width: 64px; height: 3px; border-radius: 2px;
+    background: linear-gradient(90deg, #f97316, #fdba74);
+  }
+  .bottombar {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 16px;
+    background: linear-gradient(90deg, #f97316 0%, #fb923c 60%, #fdba74 100%);
+  }
+</style>
+</head>
+<body>
+  <div class="grid"></div>
+  <div class="ring"></div>
+  <div class="ring2"></div>
+  <div class="eyebrow">ENGLISH ACADEMY</div>
+  <div class="logo"><img src="pageone-logo-dark.png" alt=""></div>
+  <div class="divider"></div>
+  <div class="tagline">더 큰 <span class="accent">첫 페이지</span>를 엽니다</div>
+  <div class="bottombar"></div>
+</body>
+</html>

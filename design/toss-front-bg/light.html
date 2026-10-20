@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 800px; height: 1280px; overflow: hidden; }
+  body {
+    position: relative;
+    font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+    background: linear-gradient(165deg, #ffffff 0%, #faf6f1 45%, #f3ede6 100%);
+  }
+  /* 은은한 주황 광원 (좌상단) */
+  .glow {
+    position: absolute; top: -220px; left: -220px;
+    width: 640px; height: 640px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(255,138,26,0.12) 0%, rgba(255,138,26,0) 68%);
+  }
+  /* 우측 상단 얇은 링 */
+  .ring {
+    position: absolute; top: 96px; right: -150px;
+    width: 380px; height: 380px; border-radius: 50%;
+    border: 2px solid rgba(255,138,26,0.28);
+  }
+  .ring2 {
+    position: absolute; top: 156px; right: -90px;
+    width: 260px; height: 260px; border-radius: 50%;
+    border: 10px solid rgba(38,38,42,0.05);
+  }
+  /* 로고 카드 */
+  .card {
+    position: absolute; left: 50%; top: 108px; transform: translateX(-50%);
+    width: 440px;
+    border-radius: 36px;
+    box-shadow: 0 30px 70px rgba(38, 30, 20, 0.13), 0 6px 18px rgba(38, 30, 20, 0.07);
+    overflow: hidden;
+    background: #fbf7f2;
+  }
+  .card img { display: block; width: 100%; height: auto; }
+  /* 태그라인 */
+  .tagline {
+    position: absolute; left: 0; right: 0; top: 620px;
+    text-align: center;
+    font-size: 30px; font-weight: 600; color: #4a4540;
+    letter-spacing: 0.02em;
+  }
+  .tagline .accent { color: #f97316; }
+  .sub {
+    position: absolute; left: 0; right: 0; top: 674px;
+    text-align: center;
+    font-size: 17px; font-weight: 500; color: #a89f94;
+    letter-spacing: 0.42em; text-indent: 0.42em;
+  }
+  /* 하단 장식 — SDK 안내 박스에 대부분 가려지는 영역 */
+  .arc {
+    position: absolute; left: -120px; bottom: -320px;
+    width: 1040px; height: 560px; border-radius: 50%;
+    background: linear-gradient(180deg, rgba(38,38,42,0.045) 0%, rgba(38,38,42,0.02) 100%);
+  }
+  .bottombar {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 18px;
+    background: linear-gradient(90deg, #f97316 0%, #fb923c 60%, #fdba74 100%);
+  }
+  .dot { position: absolute; border-radius: 50%; background: rgba(249,115,22,0.55); }
+</style>
+</head>
+<body>
+  <div class="glow"></div>
+  <div class="ring"></div>
+  <div class="ring2"></div>
+  <div class="arc"></div>
+  <div class="card"><img src="logo_patch.png" alt=""></div>
+  <div class="tagline">더 큰 <span class="accent">첫 페이지</span>를 엽니다</div>
+  <div class="sub">PAGEONE ENGLISH ACADEMY</div>
+  <div class="dot" style="width:10px;height:10px;left:120px;top:960px;opacity:.5"></div>
+  <div class="dot" style="width:6px;height:6px;left:660px;top:900px;opacity:.4"></div>
+  <div class="dot" style="width:8px;height:8px;left:600px;top:1060px;opacity:.35"></div>
+  <div class="bottombar"></div>
+</body>
+</html>

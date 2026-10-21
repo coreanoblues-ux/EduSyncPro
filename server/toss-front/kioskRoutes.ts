@@ -142,15 +142,25 @@ router.post("/session", async (req: Request, res: Response) => {
 });
 
 // ─── 학생 검색 (태블릿) ────────────────────────────────────────────────
-const searchBodySchema = z.object({
-  phoneSuffix: z.string().regex(/^\d{4}$/, "뒤 4자리 숫자여야 합니다."),
-});
+// 보호자 번호 뒤 4자리 또는 학생 이름 중 하나로 찾는다.
+// 이름 검색은 부분 일치 — "김"만 쳐도 김씨 학생이 다 나오지만 limit 20 이라 과하지 않다.
+const searchBodySchema = z
+  .object({
+    phoneSuffix: z.string().regex(/^\d{4}$/, "뒤 4자리 숫자여야 합니다.").optional(),
+    studentName: z.string().trim().min(1).max(30).optional(),
+  })
+  .refine((d) => d.phoneSuffix || d.studentName, {
+    message: "전화번호 뒤 4자리 또는 학생 이름이 필요합니다.",
+  });
 
 router.post("/students/search", kioskGuard, async (req: Request, res: Response) => {
   const parsed = searchBodySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message });
-  const suffix = parsed.data.phoneSuffix;
   const tenantId = req.kiosk!.tenantId;
+
+  const matchCond = parsed.data.phoneSuffix
+    ? sql`regexp_replace(coalesce(${students.parentPhone}, ''), '[^0-9]', '', 'g') LIKE ${"%" + parsed.data.phoneSuffix}`
+    : sql`${students.name} LIKE ${"%" + parsed.data.studentName + "%"}`;
 
   const rows = await db
     .select({
@@ -161,27 +171,21 @@ router.post("/students/search", kioskGuard, async (req: Request, res: Response) 
       parentPhone: students.parentPhone,
     })
     .from(students)
-    .where(
-      and(
-        eq(students.tenantId, tenantId),
-        eq(students.isActive, true),
-        sql`regexp_replace(coalesce(${students.parentPhone}, ''), '[^0-9]', '', 'g') LIKE ${"%" + suffix}`
-      )
-    )
+    .where(and(eq(students.tenantId, tenantId), eq(students.isActive, true), matchCond))
     .limit(20);
 
-  // 개인정보 최소화: 이름은 첫 글자만 남기고 마스킹, 전화는 뒷자리만 남긴다.
-  // 태블릿 화면에는 다수가 지나가므로 노출을 줄인다. 원장·강사 화면(관리자)은 마스킹하지 않는다.
-  const masked = rows.map((r) => ({
+  // 이름은 가리지 않는다 — 원장 요청. 가리니 동명이인·형제를 본인이 구분 못 해
+  // 엉뚱한 학생을 골랐다. 전화번호는 뒷자리만 남겨 노출을 줄인다.
+  const result = rows.map((r) => ({
     id: r.id,
-    nameMasked: r.name.length <= 1 ? r.name : r.name.charAt(0) + "○".repeat(r.name.length - 1),
+    name: r.name,
     school: r.school,
     grade: r.grade,
     parentPhoneMasked: r.parentPhone
       ? r.parentPhone.replace(/(\d{2,3})[-\s]?(\d{3,4})[-\s]?(\d{4})/, "***-****-$3")
       : null,
   }));
-  return res.json(masked);
+  return res.json(result);
 });
 
 // ─── 미납 청구서 조회 (태블릿) ────────────────────────────────────────

@@ -41,7 +41,7 @@ type Stage = "phone" | "students" | "invoices" | "amount" | "custom" | "paying" 
 
 interface StudentHit {
   id: string;
-  nameMasked: string;
+  name: string;
   school: string | null;
   grade: string | null;
   parentPhoneMasked: string | null;
@@ -108,6 +108,9 @@ export default function StudentKiosk() {
   const [, setLocation] = useLocation();
   const [stage, setStage] = useState<Stage>("phone");
   const [phoneSuffix, setPhoneSuffix] = useState("");
+  // 번호 모드(기본) / 이름 모드. 이름 모드는 보호자 번호를 모르는 학생이 쓴다.
+  const [searchMode, setSearchMode] = useState<"phone" | "name">("phone");
+  const [searchName, setSearchName] = useState("");
   const [candidates, setCandidates] = useState<StudentHit[]>([]);
   const [selectedStudent, setSelectedStudent] = useState<StudentHit | null>(null);
   const [studentName, setStudentName] = useState<string>("");
@@ -135,6 +138,8 @@ export default function StudentKiosk() {
     pollTimer.current = null;
     doneTimer.current = null;
     setPhoneSuffix("");
+    setSearchMode("phone");
+    setSearchName("");
     setCandidates([]);
     setSelectedStudent(null);
     setStudentName("");
@@ -156,12 +161,18 @@ export default function StudentKiosk() {
     try {
       const r = await authedFetch("/api/toss-kiosk/students/search", {
         method: "POST",
-        body: JSON.stringify({ phoneSuffix }),
+        body: JSON.stringify(
+          searchMode === "phone" ? { phoneSuffix } : { studentName: searchName.trim() }
+        ),
       });
       if (!r.ok) throw new Error((await r.json()).error);
       const rows: StudentHit[] = await r.json();
       if (rows.length === 0) {
-        setError("해당 번호로 등록된 학생이 없습니다. 원장님께 문의하세요.");
+        setError(
+          searchMode === "phone"
+            ? "해당 번호로 등록된 학생이 없습니다. 원장님께 문의하세요."
+            : "해당 이름으로 등록된 학생이 없습니다. 원장님께 문의하세요."
+        );
         return;
       }
       setCandidates(rows);
@@ -342,6 +353,13 @@ export default function StudentKiosk() {
             <PhoneStage
               value={phoneSuffix}
               onChange={setPhoneSuffix}
+              mode={searchMode}
+              onModeChange={(m) => {
+                setSearchMode(m);
+                setError(null);
+              }}
+              nameValue={searchName}
+              onNameChange={setSearchName}
               onSubmit={searchStudents}
               onCustom={() => {
                 setError(null);
@@ -411,55 +429,130 @@ export default function StudentKiosk() {
 function PhoneStage(props: {
   value: string;
   onChange: (v: string) => void;
+  mode: "phone" | "name";
+  onModeChange: (m: "phone" | "name") => void;
+  nameValue: string;
+  onNameChange: (v: string) => void;
   onSubmit: () => void;
   onCustom: () => void;
   error: string | null;
 }) {
   const keypad = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "지움", "0", "확인"];
+  const nameReady = props.nameValue.trim().length >= 1;
   return (
     <div className="space-y-8" data-testid="stage-phone">
       <div className="text-center">
-        <h1 className="text-3xl font-bold">보호자 전화번호 뒤 4자리</h1>
-        <p className="text-slate-400 mt-3">등록된 부모님 번호의 뒤 4자리를 입력하세요.</p>
+        <h1 className="text-3xl font-bold">
+          {props.mode === "phone" ? "보호자 전화번호 뒤 4자리" : "학생 이름으로 찾기"}
+        </h1>
+        <p className="text-slate-400 mt-3">
+          {props.mode === "phone"
+            ? "등록된 부모님 번호의 뒤 4자리를 입력하세요."
+            : "학생 이름을 입력하세요. 성만 입력해도 찾을 수 있습니다."}
+        </p>
       </div>
-      <div className="flex justify-center gap-3 text-4xl font-mono tracking-widest">
-        {[0, 1, 2, 3].map((i) => (
-          <div
-            key={i}
-            className={`w-16 h-20 rounded-lg flex items-center justify-center border ${
-              props.value.length > i ? "border-orange-500 bg-slate-800" : "border-slate-700 bg-slate-900"
-            }`}
-          >
-            {props.value[i] ? "●" : ""}
+
+      {/* 번호 ↔ 이름 전환 탭 */}
+      <div className="flex justify-center gap-2" data-testid="search-mode-tabs">
+        <button
+          onClick={() => props.onModeChange("phone")}
+          className={`px-6 py-3 rounded-full text-base font-semibold ${
+            props.mode === "phone"
+              ? "bg-orange-500 text-white"
+              : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+          }`}
+          data-testid="tab-mode-phone"
+        >
+          번호 뒤 4자리
+        </button>
+        <button
+          onClick={() => props.onModeChange("name")}
+          className={`px-6 py-3 rounded-full text-base font-semibold ${
+            props.mode === "name"
+              ? "bg-orange-500 text-white"
+              : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+          }`}
+          data-testid="tab-mode-name"
+        >
+          이름으로 찾기
+        </button>
+      </div>
+
+      {props.mode === "phone" && (
+        <>
+          <div className="flex justify-center gap-3 text-4xl font-mono tracking-widest">
+            {[0, 1, 2, 3].map((i) => (
+              <div
+                key={i}
+                className={`w-16 h-20 rounded-lg flex items-center justify-center border ${
+                  props.value.length > i ? "border-orange-500 bg-slate-800" : "border-slate-700 bg-slate-900"
+                }`}
+              >
+                {props.value[i] ? "●" : ""}
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
-      {props.error && <div className="text-red-400 text-center">{props.error}</div>}
-      <div className="grid grid-cols-3 gap-3 max-w-md mx-auto">
-        {keypad.map((k) => (
-          <button
-            key={k}
-            onClick={() => {
-              if (k === "지움") props.onChange(props.value.slice(0, -1));
-              else if (k === "확인") {
-                if (props.value.length === 4) props.onSubmit();
-              } else if (props.value.length < 4) props.onChange(props.value + k);
-            }}
-            className={`py-6 rounded-lg text-2xl font-semibold ${
-              k === "확인"
-                ? props.value.length === 4
+          {props.error && <div className="text-red-400 text-center">{props.error}</div>}
+          <div className="grid grid-cols-3 gap-3 max-w-md mx-auto">
+            {keypad.map((k) => (
+              <button
+                key={k}
+                onClick={() => {
+                  if (k === "지움") props.onChange(props.value.slice(0, -1));
+                  else if (k === "확인") {
+                    if (props.value.length === 4) props.onSubmit();
+                  } else if (props.value.length < 4) props.onChange(props.value + k);
+                }}
+                className={`py-6 rounded-lg text-2xl font-semibold ${
+                  k === "확인"
+                    ? props.value.length === 4
+                      ? "bg-orange-500 hover:bg-orange-400 text-white"
+                      : "bg-slate-800 text-slate-600"
+                    : k === "지움"
+                    ? "bg-slate-800 hover:bg-slate-700"
+                    : "bg-slate-800 hover:bg-slate-700"
+                }`}
+                data-testid={`key-${k}`}
+              >
+                {k}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      {props.mode === "name" && (
+        <>
+          <div className="max-w-md mx-auto">
+            <input
+              type="text"
+              value={props.nameValue}
+              onChange={(e) => props.onNameChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && nameReady) props.onSubmit();
+              }}
+              placeholder="예: 홍길동"
+              autoFocus
+              className="w-full px-6 py-5 rounded-lg bg-slate-900 border border-slate-700 text-2xl text-center focus:border-orange-500 focus:outline-none placeholder:text-slate-600"
+              data-testid="input-search-name"
+            />
+          </div>
+          {props.error && <div className="text-red-400 text-center">{props.error}</div>}
+          <div className="max-w-md mx-auto">
+            <button
+              onClick={() => nameReady && props.onSubmit()}
+              className={`w-full py-6 rounded-lg text-2xl font-semibold ${
+                nameReady
                   ? "bg-orange-500 hover:bg-orange-400 text-white"
                   : "bg-slate-800 text-slate-600"
-                : k === "지움"
-                ? "bg-slate-800 hover:bg-slate-700"
-                : "bg-slate-800 hover:bg-slate-700"
-            }`}
-            data-testid={`key-${k}`}
-          >
-            {k}
-          </button>
-        ))}
-      </div>
+              }`}
+              data-testid="button-name-search"
+            >
+              확인
+            </button>
+          </div>
+        </>
+      )}
       {/*
         기타 결제 입구.
 
@@ -470,13 +563,16 @@ function PhoneStage(props: {
         (눌러도 카드를 대야 승인이 나므로 사고가 되진 않지만, 그 사이 진짜 결제는
         단말기가 막혀서 못 한다. 그게 실제 피해다.)
       */}
-      <div className="text-center">
+      {/* 원장 요청으로 작은 링크 → 테두리 있는 네모 카드로 키웠다.
+          단, 주 흐름이 아님이 보이게 오렌지를 쓰지 않고 회색 테두리·회색 글자로 둔다. */}
+      <div className="flex justify-end max-w-md mx-auto">
         <button
           onClick={props.onCustom}
-          className="text-sm text-slate-500 hover:text-slate-300 underline underline-offset-4"
+          className="px-5 py-4 rounded-lg border border-slate-600 bg-slate-900 hover:bg-slate-800 hover:border-slate-400 text-left"
           data-testid="button-custom-payment"
         >
-          등록되지 않은 결제 (미등록 학생·교재 등)
+          <div className="text-base font-semibold text-slate-300">기타 결제</div>
+          <div className="text-xs text-slate-500 mt-1">미등록 학생 · 교재 등</div>
         </button>
       </div>
     </div>
@@ -689,7 +785,7 @@ function StudentPickStage(props: {
             className="p-6 rounded-lg bg-slate-800 hover:bg-slate-700 text-left"
             data-testid={`student-${c.id}`}
           >
-            <div className="text-xl font-semibold">{c.nameMasked}</div>
+            <div className="text-xl font-semibold">{c.name}</div>
             <div className="text-sm text-slate-400 mt-1">
               {[c.school, c.grade, c.parentPhoneMasked].filter(Boolean).join(" · ")}
             </div>

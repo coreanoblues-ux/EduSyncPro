@@ -64,6 +64,8 @@ import {
 } from "@shared/learningReport";
 import { generateShareToken } from "../lib/shareLink";
 import { savePhoto, readPhoto, deletePhoto, detectImageMime, MAX_PHOTO_BYTES } from "./photoStore";
+import { buildParentView } from "../parent-report/data";
+import { renderHome, renderHomework, renderExam, renderNotes } from "../parent-report/render";
 
 const router = Router();
 const P = "/api/learning-report";
@@ -992,5 +994,50 @@ router.post(
     }
   })
 );
+
+// ─── 부모님 화면 미리보기 ─────────────────────────────────────────────────
+
+/**
+ * 선생님이 보는 "부모님 화면 그대로". 부모님 화면과 **같은 그리기 함수**를 쓴다 —
+ * 미리보기와 실제가 어긋나면 미리보기를 믿을 수 없다. 다른 점은 둘뿐이다:
+ * 공개 전 주도 보인다(맨 위 띠로 알린다), 사진은 선생님 경로로 불러온다.
+ */
+router.get(
+  `${P}/students/:studentId/preview`,
+  ...guards,
+  handle("미리보기", async (req, res) => {
+    try {
+      const view = (["home", "homework", "exam", "notes"] as const).find((v) => v === req.query.view) ?? "home";
+      if (!idParam.safeParse(req.params.studentId).success) return res.status(400).json({ error: "유효하지 않은 학생 ID 입니다." });
+      const v = await buildParentView({
+        tenantId: tenantOf(req),
+        studentId: req.params.studentId,
+        classId: typeof req.query.c === "string" ? req.query.c : undefined,
+        weekStart: typeof req.query.w === "string" ? req.query.w : undefined,
+        preview: true,
+      });
+      if (!v) return res.status(404).json({ error: "학생을 찾을 수 없습니다." });
+      const base = `${P}/students/${req.params.studentId}/preview`;
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'");
+      res.type("html").send(
+        RENDER_PARENT[view](v, {
+          preview: true,
+          href: (to, q) => {
+            const params = new URLSearchParams({ view: to });
+            if (q?.w) params.set("w", q.w);
+            if (q?.c) params.set("c", q.c);
+            return `${base}?${params}`;
+          },
+          photo: (id) => `${P}/photos/${id}/image`,
+        })
+      );
+    } catch (err) {
+      if (!sendHttpError(res, err)) throw err;
+    }
+  })
+);
+
+const RENDER_PARENT = { home: renderHome, homework: renderHomework, exam: renderExam, notes: renderNotes };
 
 export default router;

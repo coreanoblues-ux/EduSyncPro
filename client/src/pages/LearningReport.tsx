@@ -14,7 +14,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import type { Class } from "@shared/schema";
+import type { Class, Teacher } from "@shared/schema";
 import { addDays, todayKst } from "@shared/day";
 import { mondayOf, weekLabel } from "@shared/learningReport";
 import { API, bundleKey, useDebounced, useSaveTracker, type WeekBundle } from "@/components/learning-report/shared";
@@ -35,9 +35,21 @@ import ProgressHomeworkTab from "@/components/learning-report/ProgressHomeworkTa
 import ExamTab from "@/components/learning-report/ExamTab";
 import MakeupTab from "@/components/learning-report/MakeupTab";
 import PhotoTab from "@/components/learning-report/PhotoTab";
-import LinksTab from "@/components/learning-report/LinksTab";
+import LinksTab, { previewUrl } from "@/components/learning-report/LinksTab";
 
 const LAST_CLASS_KEY = "learning-report:last-class";
+
+/**
+ * 학부모 리포트는 영어 반만 쓴다(원장 지시 2026-11-07 — 국어 반은 목록에서 뺀다).
+ * 수학을 붙일 때 여기에 "수학" 을 더한다(docs/PARENT_REPORT_PLAN.md §8).
+ */
+const REPORT_SUBJECTS = ["영어"];
+
+/**
+ * 반 목록의 선생님 순서(원장 지시 2026-11-07). 여기 없는 선생님은 그 아래에 이름순으로 붙는다.
+ * 학원마다 다른 값이라 다른 학원을 받게 되면 설정 화면으로 옮겨야 한다(지금은 페이지원 전용).
+ */
+const TEACHER_ORDER = ["정우석", "고은채", "김명근"];
 
 /** 마지막으로 연 반을 기억한다. 저장소가 막힌 브라우저에서도 화면은 그대로 떠야 한다. */
 function readLastClass(): string | null {
@@ -72,10 +84,26 @@ export default function LearningReport() {
   const schedule = useDebounced(700);
 
   const { data: allClasses = [] } = useQuery<Class[]>({ queryKey: ["/api/classes"] });
-  const classes = useMemo(
-    () => allClasses.filter((c) => c.isActive).sort((a, b) => a.name.localeCompare(b.name, "ko")),
-    [allClasses]
-  );
+  const { data: teachers = [] } = useQuery<Teacher[]>({ queryKey: ["/api/teachers"] });
+  const teacherName = useMemo(() => Object.fromEntries(teachers.map((t) => [t.id, t.name])), [teachers]);
+
+  /** 선생님별로 묶고, 묶음 순서는 TEACHER_ORDER → 나머지는 이름순. 묶음 안에서는 반 이름순. */
+  const groups = useMemo(() => {
+    const rank = (name: string) => {
+      const i = TEACHER_ORDER.indexOf(name);
+      return i === -1 ? TEACHER_ORDER.length : i;
+    };
+    const visible = allClasses.filter((c) => c.isActive && REPORT_SUBJECTS.includes(c.subject));
+    const byTeacher = new Map<string, Class[]>();
+    for (const c of visible) {
+      const name = teacherName[c.teacherId] ?? "담당 미정";
+      byTeacher.set(name, [...(byTeacher.get(name) ?? []), c]);
+    }
+    return Array.from(byTeacher.entries())
+      .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b, "ko"))
+      .map(([teacher, list]) => ({ teacher, classes: list.sort((x, y) => x.name.localeCompare(y.name, "ko")) }));
+  }, [allClasses, teacherName]);
+  const classes = useMemo(() => groups.flatMap((g) => g.classes), [groups]);
 
   useEffect(() => {
     if (classId || classes.length === 0) return;
@@ -120,10 +148,15 @@ export default function LearningReport() {
             <SelectValue placeholder="반 선택" />
           </SelectTrigger>
           <SelectContent>
-            {classes.map((c) => (
-              <SelectItem key={c.id} value={c.id}>
-                {c.name} <span className="text-muted-foreground">· {c.subject}</span>
-              </SelectItem>
+            {groups.map((g) => (
+              <SelectGroup key={g.teacher}>
+                <SelectLabel className="text-xs text-orange-600">{g.teacher} 선생님</SelectLabel>
+                {g.classes.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.name}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
             ))}
           </SelectContent>
         </Select>
@@ -220,6 +253,13 @@ export default function LearningReport() {
         <div className="sticky bottom-0 flex items-center gap-3 border-t bg-background px-6 py-3">
           <SaveLine state={saveState} />
           <div className="flex-1" />
+          {bundle.students.length > 0 && (
+            <Button variant="outline" asChild data-testid="button-preview">
+              <a href={previewUrl(bundle.students[0].id, weekStart, classId!)} target="_blank" rel="noreferrer">
+                부모님 화면 미리보기
+              </a>
+            </Button>
+          )}
           {published ? (
             <Button variant="outline" onClick={() => doPublish(false)} disabled={saveState.pending > 0} data-testid="button-unpublish">
               공개 취소

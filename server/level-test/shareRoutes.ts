@@ -281,7 +281,8 @@ router.delete(
  * 페이지를 **열기도 전에** 막는 층이다. 둘 다 둔다.
  */
 router.get("/robots.txt", (_req: Request, res: Response) => {
-  res.type("text/plain").send("User-agent: *\nDisallow: /r/\nDisallow: /level-test/\nDisallow: /api/\n");
+  // /p/ 는 학부모 학습 리포트(server/parent-report/routes.ts). 같은 이유로 막는다.
+  res.type("text/plain").send("User-agent: *\nDisallow: /r/\nDisallow: /p/\nDisallow: /level-test/\nDisallow: /api/\n");
 });
 
 // ─── 학부모용 결과지 (로그인 없음) ⚠️ ────────────────────────────────────

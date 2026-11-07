@@ -9,7 +9,7 @@
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, Link2, Lock, RefreshCw } from "lucide-react";
+import { Copy, Eye, Link2, Lock, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
@@ -17,10 +17,18 @@ import { apiRequest } from "@/lib/queryClient";
 import { API, type Track, type WeekBundle } from "./shared";
 
 /**
- * 부모님 화면(/p/:token)이 생기기 전에는 복사를 막는다. 지금 보내면 부모님이 빈 화면을 본다.
- * 5단계에서 부모님 화면을 붙일 때 true 로 바꾼다.
+ * 부모님 화면(/p/:token)이 생기기 전에는 복사를 막아 두었다(4단계). 5단계에서 화면이 생겨 연다.
+ * 부모님 화면을 내려야 할 일이 생기면 false 로 돌리면 선생님이 링크를 못 보낸다.
  */
-export const PARENT_PAGE_READY = false;
+export const PARENT_PAGE_READY = true;
+
+/** 선생님 미리보기 주소. 부모님 화면과 같은 그리기 함수를 쓰고, 공개 전 주도 보인다. */
+export function previewUrl(studentId: string, weekStart?: string, classId?: string) {
+  const q = new URLSearchParams();
+  if (weekStart) q.set("w", weekStart);
+  if (classId) q.set("c", classId);
+  return `${API}/students/${studentId}/preview?${q}`;
+}
 
 type LinkRow = {
   studentId: string;
@@ -162,6 +170,12 @@ export default function LinksTab({ bundle, track }: { bundle: WeekBundle; track:
                           >
                             <Copy className="mr-1 h-3.5 w-3.5" />
                             복사
+                          </Button>
+                          <Button size="sm" variant="ghost" asChild>
+                            <a href={previewUrl(r.studentId, bundle.weekStart, classId)} target="_blank" rel="noreferrer" data-testid={`button-preview-${r.studentId}`}>
+                              <Eye className="mr-1 h-3.5 w-3.5" />
+                              미리보기
+                            </a>
                           </Button>
                           <Button size="sm" variant="ghost" className="text-muted-foreground" onClick={() => reissue(r)} data-testid={`button-reissue-${r.studentId}`}>
                             <RefreshCw className="mr-1 h-3.5 w-3.5" />

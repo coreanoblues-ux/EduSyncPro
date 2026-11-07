@@ -40,7 +40,7 @@
 - 교사 계정 3개, 원장 계정 6개
 - DB 전체 11MB
 
-## 3. 데이터 모델 — 새 테이블 9개, 기존 테이블 변경 0개
+## 3. 데이터 모델 — 새 테이블 10개, 기존 테이블 변경 0개
 
 **기존 테이블에 칼럼을 하나도 더하지 않는다.** `tenants.share_phone` 사고(railway.toml 주석 5)처럼
 기존 테이블에 칸 하나 더하다 로그인이 죽는 위험을 아예 만들지 않으려는 설계다.
@@ -212,8 +212,8 @@ Hobby 는 월 $5 사용량 포함.
 ⚠️ 시작 전에 **진행 중인 스케줄러 작업(미커밋)이 먼저 커밋·배포**돼야 한다. `shared/schema.ts`·`railway.toml` 을 같이 고치기 때문.
 
 ### 1단계 — 스키마 + 마이그레이션
-- `shared/schema.ts` 에 테이블 9개 + zod 검증 스키마
-- `scripts/migrate-add-learning-report.ts` (CREATE TABLE IF NOT EXISTS ×9, 부분 유니크 인덱스)
+- `shared/schema.ts` 에 테이블 10개 + zod 검증 스키마
+- `scripts/migrate-add-learning-report.ts` (CREATE TABLE IF NOT EXISTS ×10, 부분 유니크 인덱스)
 - `package.json` `db:migrate:learning-report`, `railway.toml` preDeployCommand **맨 끝**에 추가
 - **확인**: 두 번 연속 실행해도 에러 없음(멱등). 기존 테이블 행 수 변동 없음(결제·학생·상담 개수 전후 비교)
 

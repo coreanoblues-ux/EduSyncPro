@@ -53,6 +53,7 @@
     "db:migrate:card-cancel": "tsx scripts/migrate-add-card-cancel.ts",
     "db:migrate:call-intake": "tsx scripts/migrate-add-call-intake.ts",
     "db:migrate:projects": "tsx scripts/migrate-add-projects.ts",
+    "db:migrate:learning-report": "tsx scripts/migrate-add-learning-report.ts",
     "db:verify": "tsx scripts/db-verify.ts",
     "grades:preview": "tsx scripts/preview-grades.ts",
     "funnel:preview": "tsx scripts/preview-funnel.ts"

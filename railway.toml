@@ -37,7 +37,10 @@ buildCommand = "npm install && npm run build"
 #    맨 뒤에 둔다. project_attendees 가 consultations 를, projects 가 tenants/users 를
 #    외래키로 참조하므로 빈 DB 에서는 push 가 먼저 그 테이블들을 만들어 줘야 한다.
 #    tasks.project_id 는 위 5)의 교훈대로 push 에 맡기지 않고 이 스크립트가 직접 더한다.
-preDeployCommand = "npm run db:migrate:level-test && npm run db:migrate:toss-front && npm run db:migrate:toss-kiosk && npm run db:push && npm run db:migrate:level-test-records && npm run db:migrate:level-test-share && npm run db:migrate:tenant-share-phone && npm run db:migrate:projects"
+# 7) learning-report: 학부모 학습 리포트 10개 테이블. 기존 테이블은 ALTER 하지 않는다.
+#    맨 뒤에 둔다 — classes/students/users 를 외래키로 참조한다. 복합 유니크(반 × 주 등)와
+#    부분 유니크(학생당 살아 있는 링크 하나)는 push 가 표현하지 못해 이 스크립트가 소유한다.
+preDeployCommand = "npm run db:migrate:level-test && npm run db:migrate:toss-front && npm run db:migrate:toss-kiosk && npm run db:push && npm run db:migrate:level-test-records && npm run db:migrate:level-test-share && npm run db:migrate:tenant-share-phone && npm run db:migrate:projects && npm run db:migrate:learning-report"
 startCommand = "npm start"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3

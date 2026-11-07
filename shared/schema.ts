@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, integer, timestamp, decimal, boolean, pgEnum, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, timestamp, decimal, boolean, pgEnum, jsonb, customType } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -599,6 +599,201 @@ export const projectAttendees = pgTable("project_attendees", {
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
+// ─── 학부모 학습 리포트 ────────────────────────────────────────────────
+// 설계와 "왜" 는 docs/PARENT_REPORT_PLAN.md. 테이블은 scripts/migrate-add-learning-report.ts 가 만든다.
+//
+// 기존 테이블에는 칼럼을 하나도 더하지 않았다 (tenants.share_phone 사고, railway.toml 주석 5).
+// 복합·부분 유니크는 여기 적지 않고 마이그레이션 스크립트가 단독으로 소유한다 —
+// .unique() 로 적으면 drizzle-kit 이 테넌트·조건을 무시한 단일 유니크로 바꾸려 든다
+// (payments.externalPaymentKey, levelTests.clientRecordId 와 같은 이유).
+//
+// 상태값은 pgEnum 이 아니라 text + 아래 상수로 검증한다 (railway.toml 주석 1).
+
+export const HOMEWORK_STATUSES = ["done", "partial", "none", "pending"] as const;
+export type HomeworkStatus = (typeof HOMEWORK_STATUSES)[number];
+export const HOMEWORK_COUNT_UNITS = ["문항", "단어", "회", "쪽"] as const;
+
+export const EXAM_KINDS = ["weekly", "monthly", "unit", "retest"] as const;
+export type ExamKind = (typeof EXAM_KINDS)[number];
+
+export const MAKEUP_REASONS = ["retest", "homework", "absence", "other"] as const;
+export type MakeupReason = (typeof MAKEUP_REASONS)[number];
+export const MAKEUP_STUDENT_STATUSES = ["scheduled", "done", "noshow"] as const;
+export type MakeupStudentStatus = (typeof MAKEUP_STUDENT_STATUSES)[number];
+
+/**
+ * 과목별 시험 영역 기본값. classes.subject 로 고른다.
+ * 영역 이름은 시험마다 exams.areas 에 저장되므로, 여기는 "새 시험을 만들 때 미리 채워 줄 값" 일 뿐이다.
+ * 과목을 늘릴 때 테이블을 바꿀 필요가 없다.
+ */
+export const DEFAULT_EXAM_AREAS: Record<string, string[]> = {
+  영어: ["어휘", "문법", "독해"],
+  수학: ["연산", "개념이해", "문제해결"],
+  국어: ["문학", "비문학", "문법"],
+};
+
+/** 사진이 6개월 지나면 원본(note_photo_files)을 지운다. 원장 결정 2026-11-07. */
+export const NOTE_PHOTO_RETENTION_DAYS = 183;
+
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return "bytea";
+  },
+});
+
+// 반 × 주 하나. 진도와 "공개" 스위치를 가진다. 숙제·시험·사진은 전부 이 행에 매달린다.
+// 공개를 항목마다가 아니라 반의 한 주 전체에 한 번 거는 것이 선생님에게 실수가 적다.
+// UNIQUE (class_id, week_start) — 스크립트 소유.
+export const reportWeeks = pgTable("report_weeks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  classId: varchar("class_id").references(() => classes.id, { onDelete: "cascade" }).notNull(),
+  // 그 주 월요일 YYYY-MM-DD. timestamp 면 UTC 로 저장돼 한국 월요일 새벽이 전주로 넘어간다.
+  weekStart: text("week_start").notNull(),
+  textbook: text("textbook"),
+  unit: text("unit"),
+  topic: text("topic"),
+  progressPct: integer("progress_pct"),
+  // NULL = 작성 중. 부모님 화면은 이 값이 있는 주만 읽는다.
+  publishedAt: timestamp("published_at"),
+  publishedBy: varchar("published_by").references(() => users.id),
+  createdBy: varchar("created_by").references(() => users.id).notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// 반 전체에 낸 숙제. totalCount 가 NULL 이면 완료·일부·안함만 고르는 숙제다.
+export const homeworkItems = pgTable("homework_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  reportWeekId: varchar("report_week_id").references(() => reportWeeks.id, { onDelete: "cascade" }).notNull(),
+  title: text("title").notNull(),
+  totalCount: integer("total_count"),
+  countUnit: text("count_unit"),
+  dueDate: text("due_date"),
+  sortOrder: integer("sort_order").default(0).notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// 학생별 숙제 검사. "6문항 모자랍니다" 는 저장하지 않고 totalCount - doneCount 로 그때 계산한다.
+// UNIQUE (homework_item_id, student_id) — 스크립트 소유.
+export const homeworkChecks = pgTable("homework_checks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  homeworkItemId: varchar("homework_item_id").references(() => homeworkItems.id, { onDelete: "cascade" }).notNull(),
+  studentId: varchar("student_id").references(() => students.id, { onDelete: "cascade" }).notNull(),
+  status: text("status").default("pending").notNull(),
+  doneCount: integer("done_count"),
+  updatedBy: varchar("updated_by").references(() => users.id),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// 시험 한 번. 영역 이름을 시험마다 저장해 두면 과목이 늘어도 테이블을 바꿀 필요가 없다.
+export const exams = pgTable("exams", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  classId: varchar("class_id").references(() => classes.id, { onDelete: "cascade" }).notNull(),
+  reportWeekId: varchar("report_week_id").references(() => reportWeeks.id, { onDelete: "cascade" }).notNull(),
+  name: text("name").notNull(),
+  kind: text("kind").default("weekly").notNull(),
+  examDate: text("exam_date").notNull(),
+  passScore: integer("pass_score"),
+  areas: jsonb("areas").$type<string[]>().notNull(),
+  // 재시험이면 원래 시험. 원래 시험을 지워도 재시 기록은 남긴다.
+  retestOf: varchar("retest_of"),
+  createdBy: varchar("created_by").references(() => users.id).notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// 학생별 점수. 반 평균·상위 %·통과 여부는 저장하지 않는다 — 점수를 고치면 저절로 맞아야 해서
+// 읽을 때 계산한다. total 만 저장하는 이유는 정렬·평균 계산을 매번 jsonb 에서 꺼내지 않으려는 것.
+// UNIQUE (exam_id, student_id) — 스크립트 소유.
+export const examScores = pgTable("exam_scores", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  examId: varchar("exam_id").references(() => exams.id, { onDelete: "cascade" }).notNull(),
+  studentId: varchar("student_id").references(() => students.id, { onDelete: "cascade" }).notNull(),
+  areaScores: jsonb("area_scores").$type<Record<string, number>>().notNull(),
+  total: integer("total"),
+  absent: boolean("absent").default(false).notNull(),
+  // 부모님 화면에 그대로 나가는 글이다. 교사용 메모를 여기 적지 않도록 화면에서 안내한다.
+  comment: text("comment"),
+  updatedBy: varchar("updated_by").references(() => users.id),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// 보강·재시 일정. 학생 여럿이 붙으므로 학생은 makeup_students 에 따로 둔다.
+// 일정은 급한 정보라 report_weeks 공개를 기다리지 않고 등록 즉시 부모님께 보인다.
+export const makeupSessions = pgTable("makeup_sessions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  classId: varchar("class_id").references(() => classes.id, { onDelete: "set null" }),
+  date: text("date").notNull(),
+  startTime: text("start_time"),
+  minutes: integer("minutes"),
+  reason: text("reason").default("other").notNull(),
+  content: text("content").notNull(),
+  examId: varchar("exam_id").references(() => exams.id, { onDelete: "set null" }),
+  createdBy: varchar("created_by").references(() => users.id).notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// UNIQUE (makeup_id, student_id) — 스크립트 소유.
+export const makeupStudents = pgTable("makeup_students", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  makeupId: varchar("makeup_id").references(() => makeupSessions.id, { onDelete: "cascade" }).notNull(),
+  studentId: varchar("student_id").references(() => students.id, { onDelete: "cascade" }).notNull(),
+  status: text("status").default("scheduled").notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// 노트 사진 정보. 이미지 본체는 note_photo_files 에 따로 둔다 — 목록·리포트는 이 행만 읽고
+// 이미지는 <img> 가 따로 부르므로, 한 테이블에 두면 목록 한 번에 사진 수십 장이 딸려 온다.
+// studentId 가 NULL 이면 반 전체에게 보인다.
+export const notePhotos = pgTable("note_photos", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  reportWeekId: varchar("report_week_id").references(() => reportWeeks.id, { onDelete: "cascade" }).notNull(),
+  studentId: varchar("student_id").references(() => students.id, { onDelete: "cascade" }),
+  title: text("title").notNull(),
+  takenDate: text("taken_date").notNull(),
+  width: integer("width"),
+  height: integer("height"),
+  bytes: integer("bytes"),
+  // 보관 기간(NOTE_PHOTO_RETENTION_DAYS)이 지나 원본을 지운 시각. 행은 남겨 "보관 기간이 지난 사진" 으로 표시한다.
+  purgedAt: timestamp("purged_at"),
+  createdBy: varchar("created_by").references(() => users.id).notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const notePhotoFiles = pgTable("note_photo_files", {
+  photoId: varchar("photo_id").primaryKey().references(() => notePhotos.id, { onDelete: "cascade" }),
+  mime: text("mime").notNull(),
+  data: bytea("data").notNull(),
+});
+
+// 부모님 링크. 학생당 살아 있는 링크는 하나(revoked_at IS NULL) — 부분 유니크, 스크립트 소유.
+// 토큰 규칙은 server/lib/shareLink.ts 와 같다(12자). 확인 번호(보호자 번호 뒤 4자리)는 저장하지 않고
+// 그때그때 students.parent_phone 과 비교한다 — 보호자 번호를 고치면 확인 번호도 저절로 따라간다.
+// 레벨테스트 링크와 달리 기한이 없다. 대신 퇴원(students.is_active=false)·재발급으로 닫힌다.
+export const parentLinks = pgTable("parent_links", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  studentId: varchar("student_id").references(() => students.id, { onDelete: "cascade" }).notNull(),
+  token: text("token").notNull(),
+  revokedAt: timestamp("revoked_at"),
+  // 4자리는 1만 가지라 링크별 잠금이 핵심 방어선이다. IP 제한은 그 위의 한 겹.
+  failedAttempts: integer("failed_attempts").default(0).notNull(),
+  lockedUntil: timestamp("locked_until"),
+  lastViewedAt: timestamp("last_viewed_at"),
+  viewCount: integer("view_count").default(0).notNull(),
+  createdBy: varchar("created_by").references(() => users.id).notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
 // AI Audit Log table (AI 자연어 처리 감사 로그)
 export const aiAuditLogs = pgTable("ai_audit_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -1142,6 +1337,18 @@ export const insertProjectAttendeeSchema = createInsertSchema(projectAttendees).
   createdAt: true,
 });
 
+// ─── 학부모 학습 리포트 ──────────────────────────────────────────────────
+// 화면에서 오는 요청 본문 검증은 라우트를 만드는 2단계에서 더한다.
+export const insertReportWeekSchema = createInsertSchema(reportWeeks).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertHomeworkItemSchema = createInsertSchema(homeworkItems).omit({ id: true, createdAt: true });
+export const insertHomeworkCheckSchema = createInsertSchema(homeworkChecks).omit({ id: true, updatedAt: true });
+export const insertExamSchema = createInsertSchema(exams).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertExamScoreSchema = createInsertSchema(examScores).omit({ id: true, updatedAt: true });
+export const insertMakeupSessionSchema = createInsertSchema(makeupSessions).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertMakeupStudentSchema = createInsertSchema(makeupStudents).omit({ id: true, updatedAt: true });
+export const insertNotePhotoSchema = createInsertSchema(notePhotos).omit({ id: true, createdAt: true, purgedAt: true });
+export const insertParentLinkSchema = createInsertSchema(parentLinks).omit({ id: true, createdAt: true });
+
 const projectTemplateItemSchema = z.object({
   offsetDays: z.number().int().min(-365).max(365),
   title: z.string().trim().min(1, "할 일 내용이 필요합니다.").max(200),
@@ -1300,6 +1507,15 @@ export type TaskSlot = Task["slot"];
 export type Project = typeof projects.$inferSelect;
 export type ProjectTemplate = typeof projectTemplates.$inferSelect;
 export type ProjectAttendee = typeof projectAttendees.$inferSelect;
+export type ReportWeek = typeof reportWeeks.$inferSelect;
+export type HomeworkItem = typeof homeworkItems.$inferSelect;
+export type HomeworkCheck = typeof homeworkChecks.$inferSelect;
+export type Exam = typeof exams.$inferSelect;
+export type ExamScore = typeof examScores.$inferSelect;
+export type MakeupSession = typeof makeupSessions.$inferSelect;
+export type MakeupStudent = typeof makeupStudents.$inferSelect;
+export type NotePhoto = typeof notePhotos.$inferSelect;
+export type ParentLink = typeof parentLinks.$inferSelect;
 export type AiAuditLog = typeof aiAuditLogs.$inferSelect;
 export type LevelTest = typeof levelTests.$inferSelect;
 export type Attendance = typeof attendance.$inferSelect;
@@ -1326,6 +1542,15 @@ export type InsertTask = z.infer<typeof insertTaskSchema>;
 export type InsertProject = z.infer<typeof insertProjectSchema>;
 export type InsertProjectTemplate = z.infer<typeof insertProjectTemplateSchema>;
 export type InsertProjectAttendee = z.infer<typeof insertProjectAttendeeSchema>;
+export type InsertReportWeek = z.infer<typeof insertReportWeekSchema>;
+export type InsertHomeworkItem = z.infer<typeof insertHomeworkItemSchema>;
+export type InsertHomeworkCheck = z.infer<typeof insertHomeworkCheckSchema>;
+export type InsertExam = z.infer<typeof insertExamSchema>;
+export type InsertExamScore = z.infer<typeof insertExamScoreSchema>;
+export type InsertMakeupSession = z.infer<typeof insertMakeupSessionSchema>;
+export type InsertMakeupStudent = z.infer<typeof insertMakeupStudentSchema>;
+export type InsertNotePhoto = z.infer<typeof insertNotePhotoSchema>;
+export type InsertParentLink = z.infer<typeof insertParentLinkSchema>;
 export type InsertAiAuditLog = z.infer<typeof insertAiAuditLogSchema>;
 export type InsertLevelTest = z.infer<typeof insertLevelTestSchema>;
 export type SaveLevelTestBody = z.infer<typeof saveLevelTestBodySchema>;

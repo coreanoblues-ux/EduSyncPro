@@ -218,6 +218,19 @@ createdAt
   새 테이블 9개, **기존 테이블 변경 0개**(share_phone 사고 재발 방지). 링크 문지기는 `server/lib/shareLink.ts` 재사용,
   부모님 화면은 서버가 HTML 을 직접 그린다. 운영 DB 읽기 조회: 활성 학생 128 · 영어반 20 · 보호자 번호 없음 10 · DB 11MB.
   원장 결정 대기 3가지(사진 저장 위치·보관 기간·강사 권한). 스케줄러 미커밋 작업이 먼저 배포돼야 1단계 시작 가능.
+- **2026-11-07** — **스케줄러 3단계까지 배포** (8d9c5cd, 리포트 설계 c8a2628). 배포 전 운영 DB 칼럼 대조·tsc·build·
+  test:projects 15/15. 14:16 새 번들 확인, 로그인·태블릿 세션·/api/projects·/api/tasks 모두 401(정상, 500 없음),
+  /scheduler 200. 리포트 결정 3가지도 확정(DB 저장·6개월·강사/원장 모두 입력+공개).
+  다음: 원장 실제 로그인·태블릿 결제 확인 → 학부모 리포트 1단계. 스케줄러 4·5단계는 별도.
+- **2026-11-07** — **학부모 리포트 1단계 완료 (스키마 + 마이그레이션, 미푸시).** `shared/schema.ts` 에 10개 테이블
+  (report_weeks · homework_items · homework_checks · exams · exam_scores · makeup_sessions · makeup_students ·
+  note_photos · note_photo_files · parent_links) + 상수(숙제 상태·시험 종류·보강 사유·과목별 영역·사진 보관 183일).
+  `scripts/migrate-add-learning-report.ts`, `db:migrate:learning-report`, railway.toml 주석 7) + preDeployCommand 맨 끝.
+  복합·부분 유니크 6개는 스크립트 소유(스키마에 .unique() 안 씀). 운영 DB 에 2회 실행 → 둘 다 성공(멱등).
+  적용 전 "DB 에만 있는 테이블" 0개 확인 — push 가 '이름 바뀜?' 을 물으며 배포를 멈출 여지 없음.
+  전후 비교: 결제 893·합계 236,069,100·학생 153·상담 47·할 일 31 그대로. payment_intents 만 201→202 인데
+  15:31 태블릿 실결제(APPROVED)였다 — 배포 후 태블릿 결제 정상의 증거이기도 하다. tsc 통과.
+  다음: 원장 확인 → 2단계 선생님용 서버 API.
 
 ## 6. 작업 중 확인된 운영 환경 사실 (문서가 낡아 있었다)
 

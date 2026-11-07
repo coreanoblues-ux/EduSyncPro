@@ -21,6 +21,7 @@ import { EXAM_KINDS, type ExamKind } from "@shared/schema";
 import { examStats, examTotal, MIN_TAKERS_FOR_RANK } from "@shared/learningReport";
 import { addDays } from "@shared/day";
 import { API, bundleKey, orNull, toIntOrNull, usePatchBundle, type ExamRow, type ScoreRow, type Track, type WeekBundle } from "./shared";
+import LocalInput from "./LocalInput";
 
 type Props = {
   bundle: WeekBundle;
@@ -282,7 +283,7 @@ function ExamEditor({
           <div className="grid gap-3 md:grid-cols-[2fr_1fr_1fr_0.8fr]">
             <div className="space-y-1">
               <Label className="text-xs text-muted-foreground">시험 이름</Label>
-              <Input value={exam.name} onChange={(e) => updateExam({ name: e.target.value })} />
+              <LocalInput value={exam.name} onValueChange={(v) => updateExam({ name: v })} />
             </div>
             <div className="space-y-1">
               <Label className="text-xs text-muted-foreground">종류</Label>
@@ -301,11 +302,11 @@ function ExamEditor({
             </div>
             <div className="space-y-1">
               <Label className="text-xs text-muted-foreground">시험 날짜</Label>
-              <Input type="date" value={exam.examDate} onChange={(e) => e.target.value && updateExam({ examDate: e.target.value })} />
+              <LocalInput type="date" value={exam.examDate} onValueChange={(v) => v && updateExam({ examDate: v })} />
             </div>
             <div className="space-y-1">
               <Label className="text-xs text-muted-foreground">통과 기준</Label>
-              <Input inputMode="numeric" value={exam.passScore ?? ""} placeholder="없음" onChange={(e) => updateExam({ passScore: toIntOrNull(e.target.value) })} />
+              <LocalInput inputMode="numeric" value={exam.passScore} placeholder="없음" onValueChange={(v) => updateExam({ passScore: toIntOrNull(v) })} />
             </div>
           </div>
 
@@ -336,12 +337,12 @@ function ExamEditor({
                         <td className="whitespace-nowrap px-2 py-1.5 font-bold">{s.name}</td>
                         {exam.areas.map((a) => (
                           <td key={a} className="px-2 py-1.5">
-                            <Input
+                            <LocalInput
                               className="h-8 w-14 text-center font-bold"
                               inputMode="numeric"
                               disabled={row.absent}
-                              value={row.areaScores[a] ?? ""}
-                              onChange={(e) => setArea(s.id, a, toIntOrNull(e.target.value))}
+                              value={row.areaScores[a]}
+                              onValueChange={(v) => setArea(s.id, a, toIntOrNull(v))}
                             />
                           </td>
                         ))}
@@ -362,12 +363,12 @@ function ExamEditor({
                           </button>
                         </td>
                         <td className="px-2 py-1.5">
-                          <Input
+                          <LocalInput
                             className="h-8 min-w-[220px]"
                             placeholder="+ 한마디 쓰기"
-                            value={row.comment ?? ""}
+                            value={row.comment}
                             onFocus={() => (lastFocused.current = s.id)}
-                            onChange={(e) => setComment(s.id, e.target.value)}
+                            onValueChange={(v) => setComment(s.id, v)}
                           />
                         </td>
                       </tr>

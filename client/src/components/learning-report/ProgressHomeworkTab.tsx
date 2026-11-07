@@ -30,6 +30,7 @@ import {
   type Track,
   type WeekBundle,
 } from "./shared";
+import LocalInput from "./LocalInput";
 
 type Props = {
   bundle: WeekBundle;
@@ -205,16 +206,16 @@ export default function ProgressHomeworkTab({ bundle, track, schedule }: Props) 
             {bundle.homework.map((h, i) => (
               <div key={h.id} className="flex items-center gap-2" data-testid={`row-homework-${i}`}>
                 <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-orange-100 text-xs font-bold text-orange-600">{i + 1}</span>
-                <Input className="h-8 flex-1" value={h.title} onChange={(e) => updateHomework(h, { title: e.target.value })} />
-                <Input
+                <LocalInput className="h-8 flex-1" value={h.title} onValueChange={(v) => updateHomework(h, { title: v })} />
+                <LocalInput
                   className="h-8 w-16 text-right"
                   inputMode="numeric"
                   placeholder="개수"
-                  value={h.totalCount ?? ""}
-                  onChange={(e) => updateHomework(h, { totalCount: toIntOrNull(e.target.value) })}
+                  value={h.totalCount}
+                  onValueChange={(v) => updateHomework(h, { totalCount: toIntOrNull(v) })}
                 />
                 <span className="w-8 text-xs text-muted-foreground">{h.totalCount ? h.countUnit ?? "개" : ""}</span>
-                <Input className="h-8 w-36" type="date" value={h.dueDate ?? ""} onChange={(e) => updateHomework(h, { dueDate: e.target.value || null })} />
+                <LocalInput className="h-8 w-36" type="date" value={h.dueDate} onValueChange={(v) => updateHomework(h, { dueDate: v || null })} />
                 <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => deleteHomework(h)} aria-label="숙제 삭제">
                   <Trash2 className="h-4 w-4 text-muted-foreground" />
                 </Button>
@@ -227,7 +228,8 @@ export default function ProgressHomeworkTab({ bundle, track, schedule }: Props) 
                 placeholder="숙제 내용 (예: 워크북 p.32–35)"
                 value={draft.title}
                 onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-                onKeyDown={(e) => e.key === "Enter" && addHomework()}
+                // 한글 조합 중 Enter 는 무시한다. 안 그러면 마지막 글자가 빠진 채 추가되고 그 글자가 빈 칸에 남는다.
+                onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && addHomework()}
               />
               <Input
                 className="h-8 w-16 text-right"
@@ -308,12 +310,12 @@ export default function ProgressHomeworkTab({ bundle, track, schedule }: Props) 
                         <td key={h.id} className="px-2 py-1.5">
                           {h.totalCount != null ? (
                             <div className="flex items-center gap-1.5">
-                              <Input
+                              <LocalInput
                                 className="h-8 w-14 text-center font-bold"
                                 inputMode="numeric"
-                                value={c.doneCount ?? ""}
+                                value={c.doneCount}
                                 placeholder="-"
-                                onChange={(e) => setCheck(h, s.id, { doneCount: toIntOrNull(e.target.value) }, false)}
+                                onValueChange={(v) => setCheck(h, s.id, { doneCount: toIntOrNull(v) }, false)}
                               />
                               <span className="text-xs text-muted-foreground">/ {h.totalCount}</span>
                               <StatusTag status={c.status} shortfall={homeworkShortfall(h.totalCount, c.doneCount)} unit={h.countUnit} />

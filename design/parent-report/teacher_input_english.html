@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>선생님 입력 화면 — 영어</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --orange: #F96E00;
+    --coral: #FF9A4D;
+    --ink: #1C1E26;
+    --sub: #8A93A6;
+    --good: #1B9E5A;
+    --warn: #D94F00;
+    --blue: #44639E;
+    --line: #E8EBF1;
+    --bg: #F4F5F8;
+  }
+  body {
+    font-family: "Pretendard", "Noto Sans KR", -apple-system, sans-serif;
+    background: #E4E7EE; padding: 28px; letter-spacing: -0.2px; color: var(--ink);
+  }
+  .frame-wrap { margin-bottom: 40px; }
+  .frame-label { font-size: 17px; font-weight: 800; color: #3A4254; margin-bottom: 4px; }
+  .frame-sub { font-size: 12.5px; color: #8A93A6; font-weight: 600; margin-bottom: 12px; }
+  .frame {
+    width: 1200px; height: 800px; display: flex; overflow: hidden;
+    border-radius: 18px; background: var(--bg);
+    box-shadow: 0 20px 50px rgba(28,30,38,0.14); border: 1px solid rgba(28,30,38,0.06);
+  }
+  /* 한 장씩 캡처할 때 */
+  body.solo { padding: 0; background: var(--bg); }
+  body.solo .frame-wrap { display: none; margin: 0; }
+  body.solo .frame-wrap.show { display: block; }
+  body.solo .frame-label, body.solo .frame-sub { display: none; }
+  body.solo .frame { border-radius: 0; box-shadow: none; border: 0; }
+
+  /* ── 사이드바 ── */
+  .side { width: 200px; background: #fff; border-right: 1px solid var(--line); padding: 18px 12px; flex-shrink: 0; }
+  .side .logo { display: flex; align-items: center; gap: 8px; padding: 0 8px 18px; }
+  .side .logo .m {
+    width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, var(--coral), var(--orange));
+    color: #fff; font-weight: 800; font-size: 13px; display: flex; align-items: center; justify-content: center;
+  }
+  .side .logo .n { font-size: 13px; font-weight: 800; }
+  .side .menu { font-size: 12.5px; font-weight: 600; color: #5A6372; padding: 9px 10px; border-radius: 9px; margin-bottom: 2px; display: flex; align-items: center; gap: 8px; }
+  .side .menu .dot { width: 6px; height: 6px; border-radius: 2px; background: #C3CAD8; }
+  .side .menu.on { background: rgba(249,110,0,0.09); color: var(--orange); font-weight: 800; }
+  .side .menu.on .dot { background: var(--orange); }
+  .side .grp { font-size: 10px; font-weight: 700; color: #AEB6C4; letter-spacing: 0.08em; padding: 14px 10px 6px; }
+
+  /* ── 메인 ── */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .head { display: flex; align-items: center; gap: 12px; padding: 18px 26px 0; }
+  .head h1 { font-size: 19px; font-weight: 800; }
+  .chip-sel {
+    display: inline-flex; align-items: center; gap: 6px; background: #fff; border: 1px solid var(--line);
+    border-radius: 10px; padding: 7px 12px; font-size: 12.5px; font-weight: 700;
+  }
+  .chip-sel .caret { color: var(--sub); font-size: 10px; }
+  .chip-sel b { color: var(--orange); }
+  .week-nav { display: inline-flex; align-items: center; gap: 4px; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 4px; }
+  .week-nav span { font-size: 12.5px; font-weight: 700; padding: 3px 8px; }
+  .week-nav .a { width: 24px; height: 24px; border-radius: 7px; background: #F2F4F8; display: flex; align-items: center; justify-content: center; color: #5A6372; font-weight: 800; font-size: 12px; padding: 0; }
+  .status-badge {
+    margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11.5px; font-weight: 700; color: #8A6A00; background: #FFF6DA; border: 1px solid #F3E3A6;
+    padding: 6px 11px; border-radius: 999px;
+  }
+  .status-badge .d { width: 6px; height: 6px; border-radius: 50%; background: #E0B000; }
+
+  .tabs { display: flex; gap: 4px; padding: 14px 26px 0; border-bottom: 1px solid var(--line); }
+  .tabs div { font-size: 13px; font-weight: 700; color: var(--sub); padding: 9px 14px 11px; border-bottom: 2.5px solid transparent; display: flex; align-items: center; gap: 6px; }
+  .tabs div.on { color: var(--ink); border-bottom-color: var(--orange); }
+  .tabs .cnt { font-size: 10px; font-weight: 800; color: #fff; background: var(--orange); border-radius: 999px; padding: 1px 6px; }
+  .tabs .cnt.g { background: #C3CAD8; }
+
+  .body { flex: 1; padding: 18px 26px; overflow: hidden; display: flex; flex-direction: column; gap: 14px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; }
+  .card-h { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .card-h .t { font-size: 14px; font-weight: 800; white-space: nowrap; }
+  .card-h .s { font-size: 11px; color: var(--sub); font-weight: 600; }
+  .card-h .r { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+
+  .btn { font-size: 12px; font-weight: 700; padding: 7px 12px; border-radius: 9px; border: 1px solid var(--line); background: #fff; color: #3A4254; white-space: nowrap; }
+  .btn.pri { background: linear-gradient(135deg, var(--coral), var(--orange)); color: #fff; border: 0; box-shadow: 0 4px 12px rgba(249,110,0,0.28); }
+  .btn.soft { background: rgba(249,110,0,0.08); color: var(--orange); border-color: rgba(249,110,0,0.2); }
+  .btn.ghost { background: #F4F5F8; }
+  .hint { font-size: 11px; color: var(--sub); font-weight: 600; }
+  .hint b { color: var(--orange); }
+
+  /* 폼 */
+  .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+  .f label { display: block; font-size: 10.5px; font-weight: 700; color: var(--sub); margin-bottom: 4px; }
+  .f .in { border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; font-size: 12.5px; font-weight: 600; background: #FAFBFC; display: flex; justify-content: space-between; }
+  .f .in .caret { color: var(--sub); font-size: 10px; }
+  .f.full { grid-column: 1 / -1; }
+  .slider { display: flex; align-items: center; gap: 10px; }
+  .slider .tr { flex: 1; height: 6px; border-radius: 999px; background: #EDF0F5; position: relative; }
+  .slider .tr .fl { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: linear-gradient(90deg, var(--coral), var(--orange)); }
+  .slider .tr .kn { position: absolute; top: 50%; width: 16px; height: 16px; border-radius: 50%; background: #fff; border: 3px solid var(--orange); transform: translate(-50%, -50%); }
+  .slider .v { font-size: 14px; font-weight: 800; color: var(--orange); width: 40px; text-align: right; }
+
+  /* 숙제 출제 목록 */
+  .hwl { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .hwl:first-of-type { border-top: 0; }
+  .hwl .no { width: 20px; height: 20px; border-radius: 6px; background: rgba(249,110,0,0.1); color: var(--orange); font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center; }
+  .hwl .n { flex: 1; font-size: 12.5px; font-weight: 700; }
+  .hwl .m { font-size: 11px; color: var(--sub); font-weight: 600; }
+  .add-line { margin-top: 8px; font-size: 12px; font-weight: 700; color: var(--orange); padding: 8px; border: 1.5px dashed rgba(249,110,0,0.3); border-radius: 9px; text-align: center; }
+
+  /* 표 */
+  table { width: 100%; border-collapse: collapse; }
+  th { font-size: 10.5px; font-weight: 700; color: var(--sub); text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); background: #FAFBFC; white-space: nowrap; }
+  th .sm { font-weight: 600; color: #AEB6C4; }
+  td { font-size: 12.5px; font-weight: 600; padding: 6px 8px; border-bottom: 1px solid #F0F2F6; height: 38px; }
+  tr.flag td { background: rgba(249,110,0,0.035); }
+  td.nm { font-weight: 800; width: 86px; }
+  .seg3 { display: inline-flex; background: #F2F4F8; border-radius: 8px; padding: 2px; }
+  .seg3 span { font-size: 11px; font-weight: 700; color: #9AA2B1; padding: 4px 9px; border-radius: 6px; }
+  .seg3 span.ok { background: #fff; color: var(--good); box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  .seg3 span.pt { background: #fff; color: var(--warn); box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  .seg3 span.no { background: #fff; color: #B3261E; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  .num { display: inline-flex; align-items: center; gap: 4px; }
+  .num .box { width: 42px; border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; text-align: center; font-weight: 800; background: #fff; font-size: 12.5px; }
+  .num .box.focus { border: 1.5px solid var(--orange); box-shadow: 0 0 0 3px rgba(249,110,0,0.12); }
+  .num .of { font-size: 11px; color: var(--sub); }
+  .tag { font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+  .tag.ok { color: var(--good); background: rgba(27,158,90,0.09); }
+  .tag.pt { color: var(--warn); background: rgba(249,110,0,0.1); }
+  .tag.no { color: #B3261E; background: rgba(179,38,30,0.08); }
+  .tag.wait { color: var(--blue); background: rgba(93,135,255,0.1); }
+  .tag.gray { color: #8A93A6; background: #F2F4F8; }
+  .auto { font-size: 10px; font-weight: 700; color: #AEB6C4; margin-left: 4px; }
+
+  /* 하단 바 */
+  .foot { display: flex; align-items: center; gap: 10px; padding: 12px 26px; background: #fff; border-top: 1px solid var(--line); }
+  .foot .saved { font-size: 11.5px; color: var(--good); font-weight: 700; display: flex; align-items: center; gap: 6px; }
+  .foot .saved .c { width: 16px; height: 16px; border-radius: 50%; background: rgba(27,158,90,0.12); display: flex; align-items: center; justify-content: center; font-size: 9px; }
+  .foot .sp { flex: 1; }
+
+  /* 시험 요약 */
+  .sum { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+  .sum .b { background: #FAFBFC; border: 1px solid var(--line); border-radius: 11px; padding: 10px 12px; }
+  .sum .b .l { font-size: 10.5px; font-weight: 700; color: var(--sub); }
+  .sum .b .v { font-size: 19px; font-weight: 800; margin-top: 2px; }
+  .sum .b .v small { font-size: 11px; color: var(--sub); }
+  .sum .b.hl { background: rgba(249,110,0,0.06); border-color: rgba(249,110,0,0.22); }
+  .sum .b.hl .v { color: var(--orange); }
+  .callout { border-radius: 12px; padding: 12px 14px; background: rgba(249,110,0,0.06); border: 1px solid rgba(249,110,0,0.2); }
+  .callout .t { font-size: 12.5px; font-weight: 800; color: #B35000; margin-bottom: 6px; }
+  .callout .s { font-size: 11.5px; color: #6B5040; font-weight: 600; line-height: 1.55; }
+  .callout .names { display: flex; gap: 5px; flex-wrap: wrap; margin: 8px 0 10px; }
+  .callout .names span { font-size: 11px; font-weight: 700; background: #fff; border: 1px solid rgba(249,110,0,0.25); color: #B35000; padding: 3px 9px; border-radius: 999px; }
+  .tmpl { display: flex; gap: 5px; flex-wrap: wrap; }
+  .tmpl span { font-size: 11px; font-weight: 600; background: #F2F4F8; color: #5A6372; padding: 5px 9px; border-radius: 8px; }
+  .memo { border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; font-size: 11.5px; color: #3A4254; background: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 210px; }
+  .memo.empty { color: #C3CAD8; }
+
+  /* 보강 */
+  .mk-date { display: flex; flex-direction: column; align-items: center; width: 44px; border-radius: 10px; background: #F4F5F8; padding: 5px 0; }
+  .mk-date .m { font-size: 9px; font-weight: 700; color: var(--sub); }
+  .mk-date .d { font-size: 16px; font-weight: 800; letter-spacing: -0.5px; }
+  .why { white-space: nowrap; font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: #F2F4F8; color: #5A6372; }
+  .why.re { background: rgba(249,110,0,0.09); color: #B35000; }
+  .why.ab { background: rgba(93,135,255,0.1); color: var(--blue); }
+  .who { display: flex; gap: 4px; flex-wrap: wrap; }
+  .who span { font-size: 11px; font-weight: 700; background: #F4F5F8; padding: 3px 8px; border-radius: 999px; }
+  .pick { display: flex; flex-wrap: wrap; gap: 5px; }
+  .pick span { font-size: 11.5px; font-weight: 700; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--line); color: #5A6372; background: #fff; }
+  .pick span.on { background: var(--orange); color: #fff; border-color: var(--orange); }
+
+  /* 노트 */
+  .drop {
+    border: 2px dashed rgba(249,110,0,0.35); border-radius: 14px; background: rgba(249,110,0,0.03);
+    padding: 22px; text-align: center;
+  }
+  .drop .ic { width: 42px; height: 42px; margin: 0 auto 8px; border-radius: 12px; background: linear-gradient(135deg, var(--coral), var(--orange)); display: flex; align-items: center; justify-content: center; }
+  .drop .ic svg { width: 20px; height: 20px; stroke: #fff; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .drop .t { font-size: 13.5px; font-weight: 800; }
+  .drop .s { font-size: 11.5px; color: var(--sub); font-weight: 600; margin-top: 4px; }
+  .thumbs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .th { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #fff; }
+  .th .ph { height: 92px; position: relative;
+    background: repeating-linear-gradient(0deg, transparent 0 13px, rgba(93,135,255,0.13) 13px 14px), linear-gradient(140deg, #fff, #F2F6FC); }
+  .th .ph::before { content: ""; position: absolute; left: 11px; top: 0; bottom: 0; width: 1.5px; background: rgba(249,110,0,0.35); }
+  .th .ph .w { position: absolute; left: 18px; top: 8px; font-size: 7.5px; line-height: 14px; color: #44536B; }
+  .th .ph .w b { color: #E86A00; }
+  .th .meta { padding: 8px 10px; }
+  .th .meta .n { font-size: 11.5px; font-weight: 800; }
+  .th .meta .s { font-size: 10px; color: var(--sub); font-weight: 600; margin-top: 2px; display: flex; justify-content: space-between; }
+
+  .lk-row td { height: 42px; }
+  .phone4 { white-space: nowrap; font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: #5A6372; }
+  .seen { white-space: nowrap; font-size: 11px; font-weight: 600; color: var(--sub); }
+  .seen b { color: var(--good); }
+</style>
+</head>
+<body>
+
+<!-- ═════════ ① 진도 · 숙제 ═════════ -->
+<div class="frame-wrap" id="f1">
+  <div class="frame-label">① 진도 · 숙제 — 반 단위로 한 번에</div>
+  <div class="frame-sub">진도는 반 전체에 한 번만 입력. 숙제 검사는 "전원 완료"로 채운 뒤 못 한 학생만 고친다.</div>
+  <div class="frame">
+    <div class="side">
+      <div class="logo"><div class="m">P</div><div class="n">페이지원영어학원</div></div>
+      <div class="menu"><span class="dot"></span>대시보드</div>
+      <div class="menu"><span class="dot"></span>학생 관리</div>
+      <div class="menu"><span class="dot"></span>반 관리</div>
+      <div class="menu"><span class="dot"></span>상담</div>
+      <div class="menu"><span class="dot"></span>수납</div>
+      <div class="grp">학부모 리포트</div>
+      <div class="menu on"><span class="dot"></span>학습 기록 입력</div>
+      <div class="menu"><span class="dot"></span>부모님 링크</div>
+    </div>
+    <div class="main">
+      <div class="head">
+        <h1>학습 기록 입력</h1>
+        <div class="chip-sel"><b>중2 정규반</b> · 10명 <span class="caret">▼</span></div>
+        <div class="week-nav"><span class="a">‹</span><span>11월 1주차</span><span class="a">›</span></div>
+        <div class="status-badge"><span class="d"></span>작성 중 · 부모님께 아직 안 보임</div>
+      </div>
+      <div class="tabs">
+        <div class="on">진도 · 숙제</div>
+        <div>시험 점수</div>
+        <div>보강 계획 <span class="cnt">3</span></div>
+        <div>노트 사진 <span class="cnt g">2</span></div>
+      </div>
+      <div class="body">
+        <div class="row2">
+          <div class="card">
+            <div class="card-h"><span class="t">이번 주 진도</span><span class="s">반 전체 공통</span></div>
+            <div class="fields">
+              <div class="f"><label>교재</label><div class="in">중등 영어 Level 2 <span class="caret">▼</span></div></div>
+              <div class="f"><label>단원</label><div class="in">Unit 05. Our Daily Life <span class="caret">▼</span></div></div>
+              <div class="f full"><label>이번 주 주제</label><div class="in">현재완료 표현과 핵심 어휘</div></div>
+              <div class="f full"><label>전체 진도</label>
+                <div class="slider"><div class="tr"><div class="fl" style="width:65%"></div><div class="kn" style="left:65%"></div></div><span class="v">65%</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-h"><span class="t">이번 주 숙제 출제</span><span class="s">반 전체 공통</span>
+              <div class="r"><span class="btn ghost">지난주 숙제 불러오기</span></div></div>
+            <div class="hwl"><span class="no">1</span><span class="n">단어장 Day 11–12 암기</span><span class="m">60단어 · 수요일까지</span></div>
+            <div class="hwl"><span class="no">2</span><span class="n">워크북 p.32–35</span><span class="m">20문항 · 금요일까지</span></div>
+            <div class="hwl"><span class="no">3</span><span class="n">본문 읽기 녹음</span><span class="m">3회 · 일요일까지</span></div>
+            <div class="add-line">+ 숙제 추가</div>
+          </div>
+        </div>
+
+        <div class="card" style="flex:1; padding-bottom: 6px;">
+          <div class="card-h"><span class="t">숙제 검사</span>
+            <span class="hint">다 한 학생은 그대로 두고, <b>못 한 학생만</b> 고치세요</span>
+            <div class="r"><span class="btn soft">전원 완료로 채우기</span></div></div>
+          <table>
+            <tr><th>학생</th><th>① 단어장 <span class="sm">60단어</span></th><th>② 워크북 <span class="sm">20문항 · 해온 개수 입력</span></th><th>③ 녹음 <span class="sm">일요일 마감</span></th><th>부모님께 보이는 결과</th></tr>
+            <tr class="flag"><td class="nm">홍길동</td><td><span class="seg3"><span class="ok">완료</span><span>일부</span><span>안함</span></span></td><td><span class="num"><span class="box focus">14</span><span class="of">/ 20</span></span><span class="auto">→ 자동</span> <span class="tag pt">6문항 부족</span></td><td><span class="tag gray">마감 전</span></td><td><span class="tag pt">1/3 완료 · 6문항 모자랍니다</span></td></tr>
+            <tr><td class="nm">김민지</td><td><span class="seg3"><span class="ok">완료</span><span>일부</span><span>안함</span></span></td><td><span class="num"><span class="box">20</span><span class="of">/ 20</span></span> <span class="tag ok">완료</span></td><td><span class="tag gray">마감 전</span></td><td><span class="tag ok">2/3 완료</span></td></tr>
+            <tr><td class="nm">이서준</td><td><span class="seg3"><span class="ok">완료</span><span>일부</span><span>안함</span></span></td><td><span class="num"><span class="box">20</span><span class="of">/ 20</span></span> <span class="tag ok">완료</span></td><td><span class="tag gray">마감 전</span></td><td><span class="tag ok">2/3 완료</span></td></tr>
+            <tr class="flag"><td class="nm">박하은</td><td><span class="seg3"><span>완료</span><span class="pt">일부</span><span>안함</span></span></td><td><span class="num"><span class="box">20</span><span class="of">/ 20</span></span> <span class="tag ok">완료</span></td><td><span class="tag gray">마감 전</span></td><td><span class="tag pt">1/3 완료 · 단어 일부</span></td></tr>
+            <tr><td class="nm">최유나</td><td><span class="seg3"><span class="ok">완료</span><span>일부</span><span>안함</span></span></td><td><span class="num"><span class="box">20</span><span class="of">/ 20</span></span> <span class="tag ok">완료</span></td><td><span class="tag gray">마감 전</span></td><td><span class="tag ok">2/3 완료</span></td></tr>
+            <tr class="flag"><td class="nm">정도윤</td><td><span class="seg3"><span>완료</span><span>일부</span><span class="no">안함</span></span></td><td><span class="num"><span class="box">0</span><span class="of">/ 20</span></span> <span class="tag no">안 해옴</span></td><td><span class="tag gray">마감 전</span></td><td><span class="tag no">0/3 · 보강 권장</span></td></tr>
+            <tr><td class="nm">강지호</td><td><span class="seg3"><span class="ok">완료</span><span>일부</span><span>안함</span></span></td><td><span class="num"><span class="box">20</span><span class="of">/ 20</span></span> <span class="tag ok">완료</span></td><td><span class="tag gray">마감 전</span></td><td><span class="tag ok">2/3 완료</span></td></tr>
+          </table>
+          <div class="hint" style="padding: 8px 8px 0;">윤서아 · 서예린 · 임준우 — 아래로 스크롤</div>
+        </div>
+      </div>
+      <div class="foot">
+        <span class="saved"><span class="c">✓</span>자동 저장됨 · 오후 7:42</span>
+        <span class="sp"></span>
+        <span class="btn">부모님 화면 미리보기</span>
+        <span class="btn pri">이번 주 리포트 공개하기</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═════════ ② 시험 점수 ═════════ -->
+<div class="frame-wrap" id="f2">
+  <div class="frame-label">② 시험 점수 — 점수만 넣으면 나머지는 자동</div>
+  <div class="frame-sub">평균 · 상위 % · 통과 여부는 자동 계산. 통과 못 한 학생은 재시 일정까지 한 번에 잡는다.</div>
+  <div class="frame">
+    <div class="side">
+      <div class="logo"><div class="m">P</div><div class="n">페이지원영어학원</div></div>
+      <div class="menu"><span class="dot"></span>대시보드</div>
+      <div class="menu"><span class="dot"></span>학생 관리</div>
+      <div class="menu"><span class="dot"></span>반 관리</div>
+      <div class="menu"><span class="dot"></span>상담</div>
+      <div class="menu"><span class="dot"></span>수납</div>
+      <div class="grp">학부모 리포트</div>
+      <div class="menu on"><span class="dot"></span>학습 기록 입력</div>
+      <div class="menu"><span class="dot"></span>부모님 링크</div>
+    </div>
+    <div class="main">
+      <div class="head">
+        <h1>학습 기록 입력</h1>
+        <div class="chip-sel"><b>중2 정규반</b> · 10명 <span class="caret">▼</span></div>
+        <div class="week-nav"><span class="a">‹</span><span>11월 1주차</span><span class="a">›</span></div>
+        <div class="status-badge"><span class="d"></span>작성 중 · 부모님께 아직 안 보임</div>
+      </div>
+      <div class="tabs">
+        <div>진도 · 숙제</div>
+        <div class="on">시험 점수</div>
+        <div>보강 계획 <span class="cnt">3</span></div>
+        <div>노트 사진 <span class="cnt g">2</span></div>
+      </div>
+      <div class="body" style="flex-direction: row;">
+        <div class="card" style="flex: 1; min-width: 0;">
+          <div class="card-h"><span class="t">시험 정보</span></div>
+          <div class="fields" style="grid-template-columns: 1.6fr 1fr 1fr 0.8fr; margin-bottom: 14px;">
+            <div class="f"><label>시험 이름</label><div class="in">Unit 05 주간평가</div></div>
+            <div class="f"><label>종류</label><div class="in">주간평가 <span class="caret">▼</span></div></div>
+            <div class="f"><label>시험 날짜</label><div class="in">11월 4일 (화)</div></div>
+            <div class="f"><label>통과 기준</label><div class="in">70점</div></div>
+          </div>
+          <table>
+            <tr><th>학생</th><th>어휘</th><th>문법</th><th>독해</th><th>점수 <span class="sm">자동</span></th><th>결과 <span class="sm">자동</span></th><th>선생님 한마디 <span class="sm">선택</span></th></tr>
+            <tr class="flag"><td class="nm">홍길동</td><td><span class="num"><span class="box">88</span></span></td><td><span class="num"><span class="box focus">76</span></span></td><td><span class="num"><span class="box">90</span></span></td><td><b>85</b></td><td><span class="tag ok">통과</span></td><td><div class="memo">독해가 꾸준히 좋아지고 있어요! 현재완료만 조금 더</div></td></tr>
+            <tr><td class="nm">김민지</td><td><span class="num"><span class="box">94</span></span></td><td><span class="num"><span class="box">88</span></span></td><td><span class="num"><span class="box">94</span></span></td><td><b>92</b></td><td><span class="tag ok">통과</span></td><td><div class="memo empty">+ 한마디 쓰기</div></td></tr>
+            <tr><td class="nm">이서준</td><td><span class="num"><span class="box">84</span></span></td><td><span class="num"><span class="box">76</span></span></td><td><span class="num"><span class="box">80</span></span></td><td><b>80</b></td><td><span class="tag ok">통과</span></td><td><div class="memo empty">+ 한마디 쓰기</div></td></tr>
+            <tr><td class="nm">박하은</td><td><span class="num"><span class="box">80</span></span></td><td><span class="num"><span class="box">74</span></span></td><td><span class="num"><span class="box">80</span></span></td><td><b>78</b></td><td><span class="tag ok">통과</span></td><td><div class="memo empty">+ 한마디 쓰기</div></td></tr>
+            <tr><td class="nm">최유나</td><td><span class="num"><span class="box">78</span></span></td><td><span class="num"><span class="box">70</span></span></td><td><span class="num"><span class="box">74</span></span></td><td><b>74</b></td><td><span class="tag ok">통과</span></td><td><div class="memo empty">+ 한마디 쓰기</div></td></tr>
+            <tr><td class="nm">정도윤</td><td><span class="num"><span class="box">76</span></span></td><td><span class="num"><span class="box">68</span></span></td><td><span class="num"><span class="box">72</span></span></td><td><b>72</b></td><td><span class="tag ok">통과</span></td><td><div class="memo empty">+ 한마디 쓰기</div></td></tr>
+            <tr><td class="nm">강지호</td><td><span class="num"><span class="box">74</span></span></td><td><span class="num"><span class="box">66</span></span></td><td><span class="num"><span class="box">70</span></span></td><td><b>70</b></td><td><span class="tag ok">통과</span></td><td><div class="memo empty">+ 한마디 쓰기</div></td></tr>
+            <tr class="flag"><td class="nm">윤서아</td><td><span class="num"><span class="box">70</span></span></td><td><span class="num"><span class="box">60</span></span></td><td><span class="num"><span class="box">68</span></span></td><td><b>66</b></td><td><span class="tag no">재시</span></td><td><div class="memo">문법 오답 정리 후 재시 봐요</div></td></tr>
+            <tr class="flag"><td class="nm">서예린</td><td><span class="num"><span class="box">62</span></span></td><td><span class="num"><span class="box">52</span></span></td><td><span class="num"><span class="box">60</span></span></td><td><b>58</b></td><td><span class="tag no">재시</span></td><td><div class="memo empty">+ 한마디 쓰기</div></td></tr>
+            <tr class="flag"><td class="nm">임준우</td><td><span class="num"><span class="box">56</span></span></td><td><span class="num"><span class="box">44</span></span></td><td><span class="num"><span class="box">50</span></span></td><td><b>50</b></td><td><span class="tag no">재시</span></td><td><div class="memo empty">+ 한마디 쓰기</div></td></tr>
+          </table>
+        </div>
+        <div style="width: 300px; display: flex; flex-direction: column; gap: 14px; flex-shrink: 0;">
+          <div class="card">
+            <div class="card-h"><span class="t">자동 계산</span></div>
+            <div class="sum" style="grid-template-columns: 1fr 1fr;">
+              <div class="b"><div class="l">반 평균</div><div class="v">72.5<small>점</small></div></div>
+              <div class="b"><div class="l">최고점</div><div class="v">92<small>점</small></div></div>
+              <div class="b"><div class="l">통과</div><div class="v">7<small>명</small></div></div>
+              <div class="b hl"><div class="l">재시 대상</div><div class="v">3<small>명</small></div></div>
+            </div>
+            <div class="hint">상위 % 는 학생마다 자동으로 붙어요<br>(홍길동 85점 → 상위 20%)</div>
+          </div>
+          <div class="callout">
+            <div class="t">재시 일정 한 번에 잡기</div>
+            <div class="names"><span>윤서아 66</span><span>서예린 58</span><span>임준우 50</span></div>
+            <div class="fields" style="grid-template-columns: 1fr 1fr; margin-bottom: 10px;">
+              <div class="f"><label>재시 날짜</label><div class="in">11월 8일 (토)</div></div>
+              <div class="f"><label>시간</label><div class="in">오후 2시</div></div>
+            </div>
+            <div class="s" style="margin-bottom: 10px;">부모님 화면 맨 위에 <b>D-day 배너</b>로 뜹니다.</div>
+            <span class="btn pri" style="display:block; text-align:center;">재시 3명 등록</span>
+          </div>
+          <div class="card">
+            <div class="card-h"><span class="t">한마디 빠른 입력</span></div>
+            <div class="tmpl"><span>꾸준히 좋아지고 있어요</span><span>집중력이 좋았어요</span><span>오답 정리 필요해요</span><span>단어 암기 더 필요해요</span><span>+ 내 문구 추가</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="foot">
+        <span class="saved"><span class="c">✓</span>자동 저장됨 · 오후 7:45</span>
+        <span class="sp"></span>
+        <span class="btn">부모님 화면 미리보기</span>
+        <span class="btn pri">이번 주 리포트 공개하기</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═════════ ③ 보강 계획 ═════════ -->
+<div class="frame-wrap" id="f3">
+  <div class="frame-label">③ 보강 계획 — 재시 · 숙제 미완료 학생을 바로 묶어서</div>
+  <div class="frame-sub">"보강 필요" 학생이 자동으로 추천된다. 골라서 날짜만 잡으면 부모님 일정에 뜬다.</div>
+  <div class="frame">
+    <div class="side">
+      <div class="logo"><div class="m">P</div><div class="n">페이지원영어학원</div></div>
+      <div class="menu"><span class="dot"></span>대시보드</div>
+      <div class="menu"><span class="dot"></span>학생 관리</div>
+      <div class="menu"><span class="dot"></span>반 관리</div>
+      <div class="menu"><span class="dot"></span>상담</div>
+      <div class="menu"><span class="dot"></span>수납</div>
+      <div class="grp">학부모 리포트</div>
+      <div class="menu on"><span class="dot"></span>학습 기록 입력</div>
+      <div class="menu"><span class="dot"></span>부모님 링크</div>
+    </div>
+    <div class="main">
+      <div class="head">
+        <h1>학습 기록 입력</h1>
+        <div class="chip-sel"><b>중2 정규반</b> · 10명 <span class="caret">▼</span></div>
+        <div class="week-nav"><span class="a">‹</span><span>11월 1주차</span><span class="a">›</span></div>
+        <div class="status-badge"><span class="d"></span>작성 중 · 부모님께 아직 안 보임</div>
+      </div>
+      <div class="tabs">
+        <div>진도 · 숙제</div>
+        <div>시험 점수</div>
+        <div class="on">보강 계획 <span class="cnt">3</span></div>
+        <div>노트 사진 <span class="cnt g">2</span></div>
+      </div>
+      <div class="body" style="flex-direction: row;">
+        <div class="card" style="flex: 1; min-width: 0;">
+          <div class="card-h"><span class="t">잡힌 보강</span><span class="s">이 반 · 11월</span></div>
+          <table>
+            <tr><th>날짜</th><th>내용</th><th>사유</th><th>학생</th><th>상태</th></tr>
+            <tr class="lk-row"><td><div class="mk-date"><span class="m">11월 · 토</span><span class="d">8</span></div></td><td><b>단어 재시험 · Unit 05</b><div class="hint">오후 2시 · 50문항 중 45개 통과</div></td><td><span class="why re">재시</span></td><td><div class="who"><span>윤서아</span><span>서예린</span><span>임준우</span></div></td><td><span class="tag wait">예정 · D-2</span></td></tr>
+            <tr class="lk-row"><td><div class="mk-date"><span class="m">11월 · 월</span><span class="d">10</span></div></td><td><b>워크북 문법 보충</b><div class="hint">오후 5시 · p.34–35 Grammar Check</div></td><td><span class="why">숙제 부족</span></td><td><div class="who"><span>홍길동</span><span>정도윤</span></div></td><td><span class="tag wait">예정 · D-4</span></td></tr>
+            <tr class="lk-row"><td><div class="mk-date"><span class="m">11월 · 수</span><span class="d">12</span></div></td><td><b>결석 보강 · Unit 05 본문</b><div class="hint">오후 4시 · 11/5 수업분</div></td><td><span class="why ab">결석</span></td><td><div class="who"><span>강지호</span></div></td><td><span class="tag wait">예정 · D-6</span></td></tr>
+            <tr class="lk-row"><td><div class="mk-date" style="opacity:.6"><span class="m">11월 · 토</span><span class="d">1</span></div></td><td><b>문법 재시 · 현재완료</b><div class="hint">오후 2시</div></td><td><span class="why re">재시</span></td><td><div class="who"><span>홍길동</span><span>박하은</span></div></td><td><span class="tag ok">완료</span></td></tr>
+            <tr class="lk-row"><td><div class="mk-date" style="opacity:.6"><span class="m">10월 · 수</span><span class="d">29</span></div></td><td><b>결석 보강 · Unit 04</b><div class="hint">오후 4시</div></td><td><span class="why ab">결석</span></td><td><div class="who"><span>최유나</span></div></td><td><span class="tag no">불참</span></td></tr>
+          </table>
+          <div class="hint" style="padding: 10px 8px 0;">보강이 끝나면 상태만 <b>완료 / 불참</b>으로 바꾸면 됩니다. 불참은 부모님 화면에 따로 표시돼요.</div>
+        </div>
+        <div style="width: 330px; display: flex; flex-direction: column; gap: 14px; flex-shrink: 0;">
+          <div class="callout">
+            <div class="t">보강이 필요해 보이는 학생</div>
+            <div class="s">이번 주 기록에서 자동으로 찾았어요</div>
+            <div class="names"><span>정도윤 · 숙제 0/3</span><span>박하은 · 단어 일부</span></div>
+          </div>
+          <div class="card">
+            <div class="card-h"><span class="t">새 보강 잡기</span></div>
+            <div class="f" style="margin-bottom: 10px;"><label>학생 (여러 명 가능)</label>
+              <div class="pick"><span>홍길동</span><span>김민지</span><span>이서준</span><span class="on">박하은</span><span>최유나</span><span class="on">정도윤</span><span>강지호</span><span>윤서아</span><span>서예린</span><span>임준우</span></div>
+            </div>
+            <div class="fields" style="margin-bottom: 10px;">
+              <div class="f"><label>날짜</label><div class="in">11월 13일 (목)</div></div>
+              <div class="f"><label>시간</label><div class="in">오후 5시</div></div>
+              <div class="f"><label>사유</label><div class="in">숙제 부족 <span class="caret">▼</span></div></div>
+              <div class="f"><label>소요</label><div class="in">60분 <span class="caret">▼</span></div></div>
+              <div class="f full"><label>내용 (부모님께 보이는 문구)</label><div class="in">단어장 Day 11–12 재암기 + 확인 시험</div></div>
+            </div>
+            <span class="btn pri" style="display:block; text-align:center;">2명 보강 잡기</span>
+          </div>
+        </div>
+      </div>
+      <div class="foot">
+        <span class="saved"><span class="c">✓</span>자동 저장됨 · 오후 7:48</span>
+        <span class="sp"></span>
+        <span class="btn">부모님 화면 미리보기</span>
+        <span class="btn pri">이번 주 리포트 공개하기</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═════════ ④ 노트 사진 + 부모님 링크 ═════════ -->
+<div class="frame-wrap" id="f4">
+  <div class="frame-label">④ 노트 사진 올리기 · 부모님 링크 보내기</div>
+  <div class="frame-sub">사진은 반 전체 또는 학생 개별로. 링크는 학생별로 복사해서 카톡으로 보낸다.</div>
+  <div class="frame">
+    <div class="side">
+      <div class="logo"><div class="m">P</div><div class="n">페이지원영어학원</div></div>
+      <div class="menu"><span class="dot"></span>대시보드</div>
+      <div class="menu"><span class="dot"></span>학생 관리</div>
+      <div class="menu"><span class="dot"></span>반 관리</div>
+      <div class="menu"><span class="dot"></span>상담</div>
+      <div class="menu"><span class="dot"></span>수납</div>
+      <div class="grp">학부모 리포트</div>
+      <div class="menu"><span class="dot"></span>학습 기록 입력</div>
+      <div class="menu on"><span class="dot"></span>부모님 링크</div>
+    </div>
+    <div class="main">
+      <div class="head">
+        <h1>노트 사진 · 부모님 링크</h1>
+        <div class="chip-sel"><b>중2 정규반</b> · 10명 <span class="caret">▼</span></div>
+        <div class="status-badge" style="color: var(--good); background: rgba(27,158,90,0.08); border-color: rgba(27,158,90,0.2);"><span class="d" style="background: var(--good);"></span>11월 1주차 리포트 공개됨 · 11/7 오후 8:02</div>
+      </div>
+      <div class="body" style="flex-direction: row; padding-top: 22px;">
+        <div class="card" style="width: 390px; flex-shrink: 0;">
+          <div class="card-h"><span class="t">노트 사진</span><span class="s">11월 1주차</span></div>
+          <div class="drop">
+            <div class="ic"><svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></div>
+            <div class="t">사진을 여기에 끌어다 놓기</div>
+            <div class="s">또는 폰에서 찍어 바로 올리기 · 여러 장 한 번에</div>
+          </div>
+          <div class="f" style="margin: 12px 0;"><label>누구에게 보일까요?</label>
+            <div class="pick"><span class="on">반 전체 (10명)</span><span>학생 골라서</span></div>
+          </div>
+          <div class="thumbs">
+            <div class="th"><div class="ph"><div class="w"><b>현재완료</b><br>have/has + p.p.<br>과거~현재 연결</div></div><div class="meta"><div class="n">문법 개념 정리</div><div class="s"><span>반 전체</span><span>11.04</span></div></div></div>
+            <div class="th"><div class="ph"><div class="w"><b>Unit 05 표현</b><br>be interested in<br>make a difference</div></div><div class="meta"><div class="n">본문 핵심 표현</div><div class="s"><span>반 전체</span><span>11.02</span></div></div></div>
+            <div class="th"><div class="ph"><div class="w"><b>오답 체크</b><br>has finished (O)<br>have finish (X)</div></div><div class="meta"><div class="n">홍길동 오답 노트</div><div class="s"><span>홍길동만</span><span>11.04</span></div></div></div>
+          </div>
+        </div>
+
+        <div class="card" style="flex: 1; min-width: 0;">
+          <div class="card-h"><span class="t">부모님 링크</span><span class="s">부모님은 전화번호 뒤 4자리로 한 번 확인</span>
+            <div class="r"><span class="btn soft">안내 문구 + 링크 전체 복사</span></div></div>
+          <table>
+            <tr><th>학생</th><th>확인용 번호</th><th>최근 열람</th><th>링크</th></tr>
+            <tr class="lk-row"><td class="nm">홍길동</td><td class="phone4">010-****-5678</td><td class="seen"><b>● 열람</b> · 오늘 8:15</td><td><span class="btn">복사</span> <span class="btn ghost">재발급</span></td></tr>
+            <tr class="lk-row"><td class="nm">김민지</td><td class="phone4">010-****-2231</td><td class="seen"><b>● 열람</b> · 오늘 8:40</td><td><span class="btn">복사</span> <span class="btn ghost">재발급</span></td></tr>
+            <tr class="lk-row"><td class="nm">이서준</td><td class="phone4">010-****-9014</td><td class="seen">아직 안 봄</td><td><span class="btn">복사</span> <span class="btn ghost">재발급</span></td></tr>
+            <tr class="lk-row"><td class="nm">박하은</td><td class="phone4">010-****-4470</td><td class="seen"><b>● 열람</b> · 11/5</td><td><span class="btn">복사</span> <span class="btn ghost">재발급</span></td></tr>
+            <tr class="lk-row"><td class="nm">최유나</td><td class="phone4">010-****-7852</td><td class="seen">아직 안 봄</td><td><span class="btn">복사</span> <span class="btn ghost">재발급</span></td></tr>
+            <tr class="lk-row"><td class="nm">정도윤</td><td class="phone4" style="color:#B3261E;">보호자 번호 없음</td><td class="seen">—</td><td><span class="btn" style="opacity:.45">복사</span> <span class="hint">번호부터 입력</span></td></tr>
+            <tr class="lk-row"><td class="nm">강지호</td><td class="phone4">010-****-3306</td><td class="seen"><b>● 열람</b> · 11/6</td><td><span class="btn">복사</span> <span class="btn ghost">재발급</span></td></tr>
+          </table>
+          <div class="hint" style="padding: 10px 8px 0;"><b>재발급</b>을 누르면 예전 링크는 바로 막힙니다. 링크가 잘못 전달됐을 때만 쓰세요. · 결제·수납 정보는 리포트에 절대 나오지 않아요.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // #f1 처럼 주소에 붙이면 그 화면 한 장만 보여 준다 (캡처용)
+  var id = location.hash.replace('#', '');
+  if (id && document.getElementById(id)) {
+    document.body.classList.add('solo');
+    document.getElementById(id).classList.add('show');
+  }
+</script>
+</body>
+</html>

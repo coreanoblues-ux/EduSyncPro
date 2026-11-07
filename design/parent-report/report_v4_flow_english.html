@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>학습 리포트 v4 — 영어</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --orange: #F96E00;
+    --coral: #FF9A4D;
+    --ink: #1C1E26;
+    --sub: #8A93A6;
+    --good: #1B9E5A;
+    --line: rgba(28, 30, 38, 0.07);
+  }
+  body {
+    font-family: "Pretendard", "Noto Sans KR", -apple-system, sans-serif;
+    background: #E9ECF2; padding: 36px 40px 48px;
+    display: flex; gap: 36px; align-items: flex-start;
+    letter-spacing: -0.2px; color: var(--ink);
+  }
+  .col { width: 402px; flex-shrink: 0; }
+  .flow-label { text-align: center; font-size: 15px; font-weight: 800; color: #3A4254; margin-bottom: 6px; }
+  .flow-sub { text-align: center; font-size: 11.5px; color: #8A93A6; margin-bottom: 16px; font-weight: 600; }
+
+  .screen {
+    position: relative; width: 402px; height: 880px; overflow: hidden;
+    border-radius: 34px; border: 1px solid rgba(28,30,38,0.08);
+    box-shadow: 0 24px 60px rgba(28,30,38,0.16);
+    background:
+      radial-gradient(420px 300px at 85% -40px, rgba(249, 110, 0, 0.09), transparent 70%),
+      radial-gradient(500px 360px at -60px 200px, rgba(93, 135, 255, 0.06), transparent 70%),
+      #F7F8FB;
+  }
+
+  /* ── 공통 ── */
+  .topbar { display: flex; align-items: center; gap: 9px; padding: 20px 22px 6px; }
+  .logo-mark {
+    width: 30px; height: 30px; border-radius: 9px;
+    background: linear-gradient(135deg, var(--coral), var(--orange));
+    color: #fff; font-size: 14px; font-weight: 800;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 3px 8px rgba(249,110,0,0.3);
+  }
+  .brand { font-size: 15px; font-weight: 800; }
+  .brand small { display: block; font-weight: 500; font-size: 9.5px; color: var(--sub); letter-spacing: 0.08em; margin-top: 1px; }
+  .bell {
+    margin-left: auto; width: 34px; height: 34px; border-radius: 12px; background: rgba(255,255,255,0.85);
+    border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; position: relative;
+  }
+  .bell svg { width: 16px; height: 16px; stroke: #5A6372; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .bell .dot { position: absolute; top: 8px; right: 9px; width: 6px; height: 6px; border-radius: 50%; background: var(--orange); border: 1.5px solid #fff; }
+
+  .card {
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(255,255,255,0.9);
+    outline: 1px solid var(--line);
+    border-radius: 20px; margin: 0 16px 12px; padding: 18px;
+    box-shadow: 0 8px 26px rgba(28, 30, 38, 0.06);
+  }
+  .pill { font-size: 10.5px; font-weight: 700; padding: 5px 10px; border-radius: 999px; white-space: nowrap; }
+  .pill.dday { color: #fff; background: var(--orange); }
+  .pill.pass { color: var(--good); background: rgba(27,158,90,0.09); }
+  .pill.part { color: #C14E00; background: rgba(249,110,0,0.1); }
+  .pill.navy { color: #44639E; background: rgba(93,135,255,0.1); }
+
+  /* ════ ① 홈 ════ */
+  .hero { padding: 14px 22px 14px; }
+  .hero .hello { font-size: 12.5px; color: var(--sub); font-weight: 600; margin-bottom: 3px; }
+  .hero-row { display: flex; justify-content: space-between; align-items: flex-end; }
+  .student { font-size: 25px; font-weight: 800; letter-spacing: -0.8px; }
+  .student small { font-size: 12px; font-weight: 600; color: var(--sub); margin-left: 7px; letter-spacing: 0; }
+  .week-pill {
+    font-size: 11.5px; font-weight: 700;
+    background: rgba(255,255,255,0.9); border: 1px solid var(--line);
+    padding: 7px 13px; border-radius: 999px;
+  }
+  .week-pill span { color: var(--orange); }
+
+  /* 급한 일 배너 */
+  .urgent {
+    margin: 0 16px 12px; border-radius: 20px; padding: 16px 18px;
+    background: linear-gradient(120deg, #FF8B33, #F96E00);
+    box-shadow: 0 10px 26px rgba(249,110,0,0.32);
+    display: flex; align-items: center; gap: 12px; color: #fff;
+  }
+  .urgent .dday-big {
+    flex-shrink: 0; background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 13px; padding: 9px 12px; font-size: 16px; font-weight: 800; letter-spacing: -0.5px;
+  }
+  .urgent .tx .t { font-size: 14px; font-weight: 800; }
+  .urgent .tx .s { font-size: 11px; opacity: 0.9; margin-top: 2px; font-weight: 600; }
+  .urgent .arr { margin-left: auto; font-size: 18px; font-weight: 800; opacity: 0.85; }
+
+  /* 2x2 타일 */
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 0 16px 12px; }
+  .tile {
+    background: rgba(255,255,255,0.92); border: 1px solid rgba(255,255,255,0.9);
+    outline: 1px solid var(--line); border-radius: 20px; padding: 16px;
+    box-shadow: 0 8px 24px rgba(28,30,38,0.06); position: relative; height: 128px;
+  }
+  .tile .tt { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 700; color: var(--sub); }
+  .tile .tt svg { width: 13px; height: 13px; stroke: var(--orange); fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+  .tile .big { font-size: 26px; font-weight: 800; letter-spacing: -1px; margin-top: 10px; }
+  .tile .big small { font-size: 13px; font-weight: 700; color: var(--sub); letter-spacing: 0; }
+  .tile .note { font-size: 10.5px; font-weight: 700; margin-top: 4px; }
+  .tile .note.ok { color: var(--good); }
+  .tile .note.warn { color: #D94F00; }
+  .tile .note.info { color: var(--sub); font-weight: 600; }
+  .tile .chev { position: absolute; right: 13px; top: 15px; color: #C3CAD8; font-size: 13px; font-weight: 800; }
+  .tile .mini-ring { position: absolute; right: 14px; bottom: 14px; width: 44px; height: 44px; }
+  .tile .mini-ring svg { transform: rotate(-90deg); }
+  .tile .badge-new {
+    position: absolute; right: 13px; bottom: 15px;
+    font-size: 9.5px; font-weight: 800; color: #fff; background: var(--orange);
+    padding: 4px 8px; border-radius: 999px;
+  }
+  .tile .thumb {
+    position: absolute; right: 13px; bottom: 13px; width: 46px; height: 34px; border-radius: 8px;
+    background: repeating-linear-gradient(0deg, transparent 0 7px, rgba(93,135,255,0.14) 7px 8px), linear-gradient(140deg,#fff,#F0F4FB);
+    border: 1px solid var(--line);
+  }
+
+  /* 일정 미리보기 */
+  .sched-mini .row { display: flex; align-items: center; gap: 10px; padding: 9px 0; }
+  .sched-mini .row + .row { border-top: 1px solid var(--line); }
+  .sched-mini .d { width: 38px; font-size: 11px; font-weight: 800; color: var(--orange); }
+  .sched-mini .n { flex: 1; font-size: 12.5px; font-weight: 600; }
+  .sec-mini-head { display: flex; align-items: center; margin-bottom: 8px; }
+  .sec-mini-head .t { font-size: 13.5px; font-weight: 800; }
+  .sec-mini-head .more { margin-left: auto; font-size: 11px; font-weight: 700; color: var(--sub); }
+
+  /* 탭바 */
+  .tabbar {
+    position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+    width: 364px; background: rgba(28, 30, 38, 0.93);
+    border-radius: 999px; display: flex; padding: 9px 10px;
+    box-shadow: 0 12px 32px rgba(28, 30, 38, 0.3);
+  }
+  .tab { flex: 1; text-align: center; padding: 8px 0 6px; border-radius: 999px; color: #8B92A3; }
+  .tab svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; display: block; margin: 0 auto 3px; }
+  .tab .l { font-size: 9.5px; font-weight: 600; }
+  .tab.active { background: linear-gradient(135deg, var(--coral), var(--orange)); color: #fff; box-shadow: 0 4px 12px rgba(249,110,0,0.4); }
+
+  /* ════ ②③ 상세 공통 ════ */
+  .det-head { display: flex; align-items: center; gap: 10px; padding: 20px 20px 14px; }
+  .back {
+    width: 34px; height: 34px; border-radius: 12px; background: rgba(255,255,255,0.9);
+    border: 1px solid var(--line); display: flex; align-items: center; justify-content: center;
+  }
+  .back svg { width: 16px; height: 16px; stroke: var(--ink); fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+  .det-head .t { font-size: 17px; font-weight: 800; }
+  .det-head .s { margin-left: auto; font-size: 11px; font-weight: 700; color: var(--sub); }
+
+  .sec-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+  .sec-head .t { font-size: 14.5px; font-weight: 800; }
+  .sec-head .r { margin-left: auto; font-size: 11px; font-weight: 700; color: var(--sub); }
+  .sec-head .r b { color: var(--orange); }
+
+  /* 숙제 상세 */
+  .hw { padding: 12px 2px; }
+  .hw + .hw { border-top: 1px solid var(--line); }
+  .hw-top { display: flex; align-items: center; gap: 10px; }
+  .hw-top .n { font-size: 13.5px; font-weight: 700; flex: 1; }
+  .hw-sub { font-size: 11.5px; color: var(--sub); margin-top: 4px; }
+  .hw-sub b.warn { color: #D94F00; font-weight: 700; }
+  .hw-sub b.ok { color: var(--good); font-weight: 700; }
+  .hw-meter { margin-top: 8px; background: #EDF0F5; height: 5px; border-radius: 999px; overflow: hidden; }
+  .hw-meter div { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--coral), var(--orange)); }
+  .hw-meter div.g { background: linear-gradient(90deg, #6FCF9B, #1B9E5A); }
+
+  .hist { margin-top: 2px; }
+  .hist .row { display: flex; align-items: center; gap: 10px; padding: 10px 0; }
+  .hist .row + .row { border-top: 1px solid var(--line); }
+  .hist .w { font-size: 11px; font-weight: 700; color: var(--sub); width: 52px; }
+  .hist .n { flex: 1; font-size: 12.5px; font-weight: 600; }
+
+  /* 시험 상세 */
+  .score-hero { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  .score-hero .v { font-size: 36px; font-weight: 800; letter-spacing: -1.5px; }
+  .score-hero .u { font-size: 12px; font-weight: 700; color: var(--sub); }
+  .score-hero .top { margin-left: auto; font-size: 14.5px; font-weight: 800; color: var(--orange); }
+  .score-sub { font-size: 11px; color: var(--sub); margin-bottom: 14px; }
+  .pos-row { display: flex; justify-content: space-between; font-size: 10.5px; font-weight: 600; color: var(--sub); margin-bottom: 6px; }
+  .pos-row .me { color: var(--orange); font-weight: 800; }
+  .pos-track { position: relative; background: #EDF0F5; height: 7px; border-radius: 999px; margin-bottom: 4px; }
+  .pos-track .avg { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #C3CAD8; border-radius: 2px; }
+  .pos-track .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: linear-gradient(90deg, var(--coral), var(--orange)); }
+  .pos-track .dot {
+    position: absolute; top: 50%; transform: translate(-50%, -50%);
+    width: 15px; height: 15px; border-radius: 50%; background: var(--orange);
+    border: 3px solid #fff; box-shadow: 0 2px 6px rgba(249,110,0,0.4);
+  }
+  .pos-legend { display: flex; justify-content: space-between; font-size: 9.5px; color: #AEB6C4; }
+
+  .bar-row { display: grid; grid-template-columns: 50px 1fr 40px; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .bar-row:last-child { margin-bottom: 0; }
+  .bar-label { font-size: 12px; font-weight: 700; color: #5A6372; }
+  .bar-track { background: #EDF0F5; height: 7px; border-radius: 999px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #FFC08A, var(--orange)); }
+  .bar-fill.alt { background: linear-gradient(90deg, #B9CBF2, #5D87FF); }
+  .bar-score { text-align: right; font-size: 13px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .divider { height: 1px; background: var(--line); margin: 15px 0; }
+  .eval-label { display: flex; align-items: baseline; gap: 7px; margin: 2px 0 12px; }
+  .eval-label .t { font-size: 13px; font-weight: 800; }
+  .eval-label .d { font-size: 10.5px; color: var(--sub); font-weight: 600; }
+
+  .quote {
+    margin-top: 4px; padding: 13px 15px; border-radius: 14px;
+    background: linear-gradient(135deg, rgba(249,110,0,0.07), rgba(255,154,77,0.04));
+    border-left: 3px solid var(--orange);
+  }
+  .quote .who { font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; color: var(--orange); margin-bottom: 4px; }
+  .quote .msg { font-size: 12.5px; font-weight: 600; color: #4A3A2C; line-height: 1.5; }
+
+  .trend { display: flex; align-items: flex-end; gap: 10px; height: 64px; padding: 0 4px; }
+  .trend .tb { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 5px; }
+  .trend .tb .bar { width: 16px; border-radius: 6px 6px 3px 3px; background: linear-gradient(180deg, var(--coral), var(--orange)); opacity: 0.45; }
+  .trend .tb.cur .bar { opacity: 1; }
+  .trend .tb .l { font-size: 9px; font-weight: 700; color: var(--sub); }
+  .trend .tb.cur .l { color: var(--orange); }
+</style>
+</head>
+<body>
+
+  <!-- ════════ ① 홈 (첫 화면) ════════ -->
+  <div class="col">
+    <div class="flow-label">① 첫 화면 (홈)</div>
+    <div class="flow-sub">딱 보면 아는 요약 — 타일을 누르면 상세로 전환</div>
+    <div class="screen">
+      <div class="topbar">
+        <div class="logo-mark">P</div>
+        <div class="brand">페이지원영어학원<small>학부모 · 학생 조회</small></div>
+        <div class="bell"><svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg><span class="dot"></span></div>
+      </div>
+
+      <div class="hero">
+        <div class="hello">이번 주 학습 소식이에요</div>
+        <div class="hero-row">
+          <div class="student">홍길동<small>중2 · 정규반</small></div>
+          <div class="week-pill"><span>11월</span> 1주차</div>
+        </div>
+      </div>
+
+      <!-- 제일 급한 일 -->
+      <div class="urgent">
+        <div class="dday-big">D-4</div>
+        <div class="tx">
+          <div class="t">보강 · 워크북 문법 보충</div>
+          <div class="s">11월 10일 (월) 오후 5시 · p.34–35</div>
+        </div>
+        <div class="arr">›</div>
+      </div>
+
+      <!-- 요약 타일 -->
+      <div class="tiles">
+        <div class="tile">
+          <div class="tt"><svg viewBox="0 0 24 24"><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>현재 진도<span class="chev">›</span></div>
+          <div class="big">65<small>%</small></div>
+          <div class="note info">Unit 05 진행 중</div>
+          <div class="mini-ring">
+            <svg width="44" height="44" viewBox="0 0 44 44">
+              <circle cx="22" cy="22" r="18" fill="none" stroke="#EDF0F5" stroke-width="5"/>
+              <circle cx="22" cy="22" r="18" fill="none" stroke="#F96E00" stroke-width="5" stroke-linecap="round" stroke-dasharray="113" stroke-dashoffset="40"/>
+            </svg>
+          </div>
+        </div>
+        <div class="tile">
+          <div class="tt"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>숙제<span class="chev">›</span></div>
+          <div class="big">1<small>/3 완료</small></div>
+          <div class="note warn">6문항 모자랍니다</div>
+        </div>
+        <div class="tile">
+          <div class="tt"><svg viewBox="0 0 24 24"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>최근 시험<span class="chev">›</span></div>
+          <div class="big">85<small>점</small></div>
+          <div class="note ok">상위 20% · 통과</div>
+        </div>
+        <div class="tile">
+          <div class="tt"><svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>노트정리<span class="chev">›</span></div>
+          <div class="big">2<small>장</small></div>
+          <div class="note info">이번 주 새 노트</div>
+          <span class="badge-new">NEW</span>
+        </div>
+      </div>
+
+      <!-- 다가오는 일정 미리보기 -->
+      <div class="card sched-mini">
+        <div class="sec-mini-head"><span class="t">다가오는 일정</span><span class="more">전체 보기 ›</span></div>
+        <div class="row"><span class="d">11.10</span><span class="n">보강 · 워크북 문법 (월 오후 5시)</span><span class="pill dday">D-4</span></div>
+        <div class="row"><span class="d">11.14</span><span class="n">11월 월간평가</span><span class="pill part">D-8</span></div>
+        <div class="row"><span class="d">11.01</span><span class="n">문법 재시 · 현재완료</span><span class="pill pass">통과</span></div>
+      </div>
+
+      <div class="tabbar">
+        <div class="tab active"><svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><div class="l">홈</div></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg><div class="l">학습현황</div></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg><div class="l">알림</div></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><div class="l">마이</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════ ② 숙제 상세 ════════ -->
+  <div class="col">
+    <div class="flow-label">② 숙제 타일 누르면 → 숙제 검사</div>
+    <div class="flow-sub">몇 문항 했는지까지 구체적으로</div>
+    <div class="screen">
+      <div class="det-head">
+        <div class="back"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></div>
+        <div class="t">숙제 검사</div>
+        <div class="s">홍길동 · 중2 정규반</div>
+      </div>
+
+      <div class="card">
+        <div class="sec-head"><span class="t">이번 주</span><span class="r"><b>1</b> / 3 완료</span></div>
+        <div class="hw">
+          <div class="hw-top"><span class="n">단어장 Day 11–12 암기</span><span class="pill pass">완료</span></div>
+          <div class="hw-sub">60단어 전부 외움 · <b class="ok">단어시험 통과</b></div>
+          <div class="hw-meter"><div class="g" style="width:100%"></div></div>
+        </div>
+        <div class="hw">
+          <div class="hw-top"><span class="n">워크북 p.32–35</span><span class="pill part">일부</span></div>
+          <div class="hw-sub">20문항 중 14개 해옴 · <b class="warn">6문항 모자랍니다</b> · 금요일까지</div>
+          <div class="hw-meter"><div style="width:70%"></div></div>
+        </div>
+        <div class="hw">
+          <div class="hw-top"><span class="n">본문 읽기 녹음</span><span class="pill navy">출제됨</span></div>
+          <div class="hw-sub">Unit 05 본문 3회 · 일요일까지</div>
+          <div class="hw-meter"><div style="width:0%"></div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec-head"><span class="t">밀린 숙제</span><span class="r"><b>1</b>건</span></div>
+        <div class="hw">
+          <div class="hw-top"><span class="n">워크북 6문항 (p.34–35)</span><span class="pill part">보충 필요</span></div>
+          <div class="hw-sub">Grammar Check 범위 · 다음 등원일에 검사해요</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec-head"><span class="t">지난 기록</span></div>
+        <div class="hist">
+          <div class="row"><span class="w">10월 4주</span><span class="n">3건 모두 완료</span><span class="pill pass">완료</span></div>
+          <div class="row"><span class="w">10월 3주</span><span class="n">2건 완료 · 1건 일부</span><span class="pill part">일부</span></div>
+          <div class="row"><span class="w">10월 2주</span><span class="n">3건 모두 완료</span><span class="pill pass">완료</span></div>
+        </div>
+      </div>
+
+      <div class="quote" style="margin: 0 16px;">
+        <div class="who">TEACHER'S NOTE</div>
+        <div class="msg">단어 암기는 꾸준히 잘해오고 있어요. 워크북 뒷부분 문법 문제를 남기는 편이라 수업에서 같이 짚어볼게요.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════ ③ 시험 결과 상세 ════════ -->
+  <div class="col">
+    <div class="flow-label">③ 시험 타일 누르면 → 시험 결과</div>
+    <div class="flow-sub">점수 + 반에서의 위치 + 영역별 성취도</div>
+    <div class="screen">
+      <div class="det-head">
+        <div class="back"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></div>
+        <div class="t">시험 결과</div>
+        <div class="s">홍길동 · 중2 정규반</div>
+      </div>
+
+      <div class="card">
+        <div class="sec-head"><span class="t">Unit 05 주간평가</span><span class="r">11월 4일</span></div>
+        <div class="score-hero">
+          <span class="v">85</span><span class="u">점</span>
+          <span class="top">상위 20%</span>
+        </div>
+        <div class="score-sub">정규반 10명 응시 · 통과 기준 70점</div>
+        <div class="pos-row"><span>반 평균 72.5점</span><span class="me">홍길동 85점</span></div>
+        <div class="pos-track">
+          <div class="fill" style="width:85%"></div>
+          <div class="avg" style="left:72.5%"></div>
+          <div class="dot" style="left:85%"></div>
+        </div>
+        <div class="pos-legend"><span>0</span><span>50</span><span>100</span></div>
+      </div>
+
+      <div class="card">
+        <div class="eval-label"><span class="t">영역별 성취도</span><span class="d">이번 시험</span></div>
+        <div class="bar-row"><span class="bar-label">어휘</span><div class="bar-track"><div class="bar-fill" style="width:88%"></div></div><span class="bar-score">88</span></div>
+        <div class="bar-row"><span class="bar-label">문법</span><div class="bar-track"><div class="bar-fill" style="width:76%"></div></div><span class="bar-score">76</span></div>
+        <div class="bar-row"><span class="bar-label">독해</span><div class="bar-track"><div class="bar-fill" style="width:90%"></div></div><span class="bar-score">90</span></div>
+        <div class="divider"></div>
+        <div class="eval-label"><span class="t">최근 추이</span><span class="d">최근 5회 점수</span></div>
+        <div class="trend">
+          <div class="tb"><div class="bar" style="height:34px"></div><div class="l">9/12</div></div>
+          <div class="tb"><div class="bar" style="height:38px"></div><div class="l">9/26</div></div>
+          <div class="tb"><div class="bar" style="height:36px"></div><div class="l">10/10</div></div>
+          <div class="tb"><div class="bar" style="height:44px"></div><div class="l">10/24</div></div>
+          <div class="tb cur"><div class="bar" style="height:52px"></div><div class="l">11/4</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="quote" style="margin: 0;">
+          <div class="who">TEACHER'S NOTE</div>
+          <div class="msg">독해가 꾸준히 좋아지고 있어요! 현재완료 문법만 조금 더 연습하면 다음 평가에서 더 오를 거예요.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec-head" style="margin-bottom: 8px;"><span class="t">재시 기록</span></div>
+        <div class="hist">
+          <div class="row"><span class="w">11.01</span><span class="n">문법 재시 · 현재완료 (18/20)</span><span class="pill pass">통과</span></div>
+          <div class="row"><span class="w">10.18</span><span class="n">단어 재시험 · Unit 04 (47/50)</span><span class="pill pass">통과</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

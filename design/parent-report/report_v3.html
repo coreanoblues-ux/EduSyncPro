@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>학습 리포트 v3 — 화이트라벨</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    /* 학원별 브랜드 색 — 설정에서 바꾸는 값 */
+    --navy: #1D2B50;
+    --navy2: #3A4F85;
+    --accent: #FF7A2F;      /* 포인트(디데이·경고) */
+    --good: #1B9E5A;
+    --ink: #1C1E26;
+    --sub: #8A93A6;
+    --line: rgba(29, 43, 80, 0.07);
+  }
+  body {
+    font-family: "Pretendard", "Noto Sans KR", -apple-system, sans-serif;
+    width: 402px; margin: 0 auto; padding-bottom: 110px;
+    color: var(--ink);
+    background:
+      radial-gradient(420px 300px at 85% -40px, rgba(29, 43, 80, 0.07), transparent 70%),
+      radial-gradient(500px 360px at -60px 200px, rgba(58, 79, 133, 0.05), transparent 70%),
+      #F6F7FA;
+    letter-spacing: -0.2px;
+  }
+
+  /* ── 헤더: 학원 로고 자리(화이트라벨) ── */
+  .topbar { display: flex; align-items: center; gap: 9px; padding: 20px 22px 6px; }
+  .logo-mark {
+    width: 30px; height: 30px; border-radius: 9px;
+    background: linear-gradient(135deg, var(--navy2), var(--navy));
+    color: #fff; font-size: 14px; font-weight: 800;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 3px 8px rgba(29,43,80,0.25);
+  }
+  .brand { font-size: 15px; font-weight: 800; color: var(--navy); }
+  .brand small { display: block; font-weight: 500; font-size: 9.5px; color: var(--sub); letter-spacing: 0.08em; margin-top: 1px; }
+  .bell {
+    margin-left: auto; width: 34px; height: 34px; border-radius: 12px; background: rgba(255,255,255,0.8);
+    border: 1px solid var(--line); display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 1px 4px rgba(28,30,38,0.04); position: relative;
+  }
+  .bell svg { width: 16px; height: 16px; stroke: #5A6372; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .bell .dot { position: absolute; top: 8px; right: 9px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); border: 1.5px solid #fff; }
+
+  /* ── 히어로 ── */
+  .hero { padding: 16px 22px 18px; }
+  .hero .eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; color: var(--navy2); text-transform: uppercase; margin-bottom: 7px; }
+  .hero-row { display: flex; justify-content: space-between; align-items: flex-end; }
+  .student { font-size: 26px; font-weight: 800; letter-spacing: -0.8px; line-height: 1.15; }
+  .student .cls { display: block; margin-top: 6px; font-size: 12px; font-weight: 600; color: var(--sub); letter-spacing: 0; }
+  .student .cls b { color: var(--navy); font-weight: 700; }
+  .week-pill {
+    font-size: 12px; font-weight: 700; color: var(--ink);
+    background: rgba(255,255,255,0.85); border: 1px solid var(--line);
+    padding: 8px 14px; border-radius: 999px; box-shadow: 0 1px 5px rgba(28,30,38,0.05);
+    white-space: nowrap;
+  }
+  .week-pill span { color: var(--navy2); }
+
+  /* ── 카드 공통 ── */
+  .card {
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(255,255,255,0.9);
+    outline: 1px solid var(--line);
+    border-radius: 22px; margin: 0 16px 14px; padding: 21px;
+    box-shadow: 0 8px 26px rgba(29, 43, 80, 0.06);
+  }
+  .sec-head { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+  .sec-head .t { font-size: 15px; font-weight: 800; }
+  .sec-head .r { margin-left: auto; font-size: 11.5px; font-weight: 700; color: var(--sub); }
+  .sec-head .r b { color: var(--navy2); }
+  .glyph {
+    width: 26px; height: 26px; border-radius: 9px;
+    background: linear-gradient(135deg, var(--navy2), var(--navy));
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 3px 8px rgba(29, 43, 80, 0.22);
+  }
+  .glyph svg { width: 13px; height: 13px; stroke: #fff; fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ── 상태 알약 ── */
+  .pill { font-size: 10.5px; font-weight: 700; padding: 5px 10px; border-radius: 999px; white-space: nowrap; }
+  .pill.dday { color: #C14E00; background: rgba(255,122,47,0.1); border: 1px solid rgba(255,122,47,0.22); }
+  .pill.pass { color: var(--good); background: rgba(27,158,90,0.08); border: 1px solid rgba(27,158,90,0.16); }
+  .pill.part { color: #C14E00; background: rgba(255,122,47,0.08); }
+  .pill.done { color: var(--good); background: rgba(27,158,90,0.08); }
+  .pill.navy { color: var(--navy2); background: rgba(58,79,133,0.08); }
+
+  /* ── 다가오는 일정 ── */
+  .sched { display: flex; align-items: center; gap: 12px; padding: 12px 2px; }
+  .sched + .sched { border-top: 1px solid var(--line); }
+  .sched .date {
+    width: 40px; flex-shrink: 0; text-align: center; border-radius: 11px; padding: 6px 0;
+    background: #F2F4F9; border: 1px solid var(--line);
+  }
+  .sched .date .m { display: block; font-size: 8.5px; font-weight: 700; color: var(--sub); }
+  .sched .date .d { display: block; font-size: 15px; font-weight: 800; color: var(--navy); letter-spacing: -0.5px; }
+  .sched .info { flex: 1; min-width: 0; }
+  .sched .info .n { font-size: 13.5px; font-weight: 700; }
+  .sched .info .s { font-size: 11px; color: var(--sub); margin-top: 2px; }
+
+  /* ── 진도: 링 + 정보 ── */
+  .progress-wrap { display: flex; align-items: center; gap: 20px; }
+  .ring { position: relative; width: 104px; height: 104px; flex-shrink: 0; }
+  .ring svg { transform: rotate(-90deg); }
+  .ring .num { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .ring .num .v { font-size: 22px; font-weight: 800; letter-spacing: -1px; }
+  .ring .num .v small { font-size: 12px; font-weight: 700; color: var(--navy2); }
+  .ring .num .l { font-size: 9.5px; font-weight: 600; color: var(--sub); margin-top: 1px; }
+  .prog-info .course { font-size: 11px; font-weight: 700; color: var(--sub); letter-spacing: 0.06em; margin-bottom: 5px; }
+  .prog-info .unit { font-size: 17px; font-weight: 800; letter-spacing: -0.4px; line-height: 1.3; }
+  .prog-info .topic {
+    display: inline-block; margin-top: 8px; font-size: 11.5px; font-weight: 600; color: var(--navy2);
+    background: rgba(58, 79, 133, 0.08); padding: 5px 10px; border-radius: 8px;
+  }
+
+  /* ── 숙제 검사 ── */
+  .hw { padding: 13px 2px; }
+  .hw + .hw { border-top: 1px solid var(--line); }
+  .hw-top { display: flex; align-items: center; gap: 10px; }
+  .hw-top .n { font-size: 13.5px; font-weight: 700; flex: 1; }
+  .hw-sub { font-size: 11.5px; color: var(--sub); margin-top: 4px; }
+  .hw-sub b.warn { color: #D94F00; font-weight: 700; }
+  .hw-sub b.ok { color: var(--good); font-weight: 700; }
+  .hw-meter { margin-top: 8px; background: #EDF0F5; height: 5px; border-radius: 999px; overflow: hidden; }
+  .hw-meter div { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--navy2), var(--navy)); }
+  .hw-meter div.warn { background: linear-gradient(90deg, #FFB37E, var(--accent)); }
+
+  /* ── 시험 결과 ── */
+  .score-hero { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  .score-hero .v { font-size: 34px; font-weight: 800; letter-spacing: -1.5px; color: var(--navy); }
+  .score-hero .u { font-size: 12px; font-weight: 700; color: var(--sub); }
+  .score-hero .top { margin-left: auto; font-size: 14px; font-weight: 800; color: var(--accent); }
+  .score-sub { font-size: 11px; color: var(--sub); margin-bottom: 14px; }
+  .pos-row { display: flex; justify-content: space-between; font-size: 10.5px; font-weight: 600; color: var(--sub); margin-bottom: 6px; }
+  .pos-row .me { color: var(--navy); font-weight: 800; }
+  .pos-track { position: relative; background: #EDF0F5; height: 7px; border-radius: 999px; margin-bottom: 4px; }
+  .pos-track .avg { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #C3CAD8; border-radius: 2px; }
+  .pos-track .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: linear-gradient(90deg, var(--navy2), var(--navy)); }
+  .pos-track .dot {
+    position: absolute; top: 50%; transform: translate(-50%, -50%);
+    width: 15px; height: 15px; border-radius: 50%; background: var(--navy);
+    border: 3px solid #fff; box-shadow: 0 2px 6px rgba(29,43,80,0.35);
+  }
+  .pos-legend { display: flex; justify-content: space-between; font-size: 9.5px; color: #AEB6C4; }
+
+  /* ── 성취도 바 ── */
+  .eval-label { display: flex; align-items: baseline; gap: 7px; margin: 2px 0 12px; }
+  .eval-label .t { font-size: 13px; font-weight: 800; }
+  .eval-label .d { font-size: 10.5px; color: var(--sub); font-weight: 600; }
+  .bar-row { display: grid; grid-template-columns: 50px 1fr 40px; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .bar-row:last-child { margin-bottom: 0; }
+  .bar-label { font-size: 12px; font-weight: 700; color: #5A6372; }
+  .bar-track { background: #EDF0F5; height: 7px; border-radius: 999px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #8DA2D8, var(--navy)); }
+  .bar-fill.alt { background: linear-gradient(90deg, #FFC49A, var(--accent)); }
+  .bar-score { text-align: right; font-size: 13px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .divider { height: 1px; background: var(--line); margin: 17px 0; }
+  .quote {
+    margin-top: 18px; padding: 14px 16px; border-radius: 14px;
+    background: rgba(29, 43, 80, 0.045);
+    border-left: 3px solid var(--navy);
+  }
+  .quote .who { font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; color: var(--navy2); margin-bottom: 4px; }
+  .quote .msg { font-size: 13px; font-weight: 600; color: #333D52; line-height: 1.5; }
+
+  /* ── 노트 ── */
+  .note-sub { font-size: 12px; color: var(--sub); margin: -8px 0 14px; }
+  .notes { display: flex; gap: 12px; }
+  .note { flex: 1; position: relative; border-radius: 16px; overflow: hidden; height: 148px; border: 1px solid var(--line); }
+  .note .ph {
+    position: absolute; inset: 0;
+    background:
+      repeating-linear-gradient(0deg, transparent 0 16px, rgba(58,79,133,0.10) 16px 17px),
+      repeating-linear-gradient(90deg, transparent 0 16px, rgba(58,79,133,0.06) 16px 17px),
+      linear-gradient(140deg, #FFFFFF, #F2F4FA);
+  }
+  .note .scb { position: absolute; left: 14px; top: 10px; right: 10px; font-size: 8.5px; color: #44536B; line-height: 16.5px; }
+  .note .scb .hl { background: rgba(255, 214, 110, 0.75); padding: 0 2px; border-radius: 2px; }
+  .note .scb .bl { color: var(--navy2); font-weight: 700; }
+  .note .cap {
+    position: absolute; left: 0; right: 0; bottom: 0; padding: 20px 12px 9px;
+    background: linear-gradient(transparent, rgba(18, 24, 42, 0.74));
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  .note .cap .n { font-size: 11.5px; font-weight: 700; color: #fff; }
+  .note .cap .d { font-size: 9.5px; color: rgba(255,255,255,0.75); }
+  .note-more {
+    margin-top: 15px; display: flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 13px; border-radius: 14px; border: 1px solid rgba(29,43,80,0.18);
+    color: var(--navy); font-size: 13px; font-weight: 700; text-decoration: none;
+    background: rgba(29,43,80,0.02);
+  }
+
+  .foot { text-align: center; font-size: 10.5px; color: #AEB6C4; margin: 6px 0 14px; }
+
+  /* ── 플로팅 탭바 ── */
+  .tabbar {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    width: 364px; background: rgba(20, 26, 44, 0.94);
+    border-radius: 999px; display: flex; padding: 9px 10px;
+    box-shadow: 0 12px 32px rgba(20, 26, 44, 0.3);
+  }
+  .tab { flex: 1; text-align: center; padding: 8px 0 6px; border-radius: 999px; color: #8B92A3; }
+  .tab svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; display: block; margin: 0 auto 3px; }
+  .tab .l { font-size: 9.5px; font-weight: 600; }
+  .tab.active { background: linear-gradient(135deg, var(--navy2), var(--navy)); color: #fff; box-shadow: 0 4px 12px rgba(29,43,80,0.5); }
+</style>
+</head>
+<body>
+
+  <!-- 학원 로고·이름 = 학원별 설정값 (화이트라벨) -->
+  <div class="topbar">
+    <div class="logo-mark">한</div>
+    <div class="brand">한빛수학학원<small>학부모 · 학생 조회</small></div>
+    <div class="bell">
+      <svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+      <span class="dot"></span>
+    </div>
+  </div>
+
+  <div class="hero">
+    <div class="eyebrow">WEEKLY LEARNING REPORT</div>
+    <div class="hero-row">
+      <div>
+        <div class="student">홍길동
+          <span class="cls"><b>중2 · 심화반</b> · 월수금 7시</span>
+        </div>
+      </div>
+      <div class="week-pill"><span>11월</span> 1주차</div>
+    </div>
+  </div>
+
+  <!-- 다가오는 일정 (레퍼런스: 재시 일정 + D-day) -->
+  <div class="card">
+    <div class="sec-head">
+      <div class="glyph"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg></div>
+      <div class="t">다가오는 일정</div>
+    </div>
+    <div class="sched">
+      <div class="date"><span class="m">11월</span><span class="d">8</span></div>
+      <div class="info">
+        <div class="n">단원평가 재시 · 일차함수 (1회)</div>
+        <div class="s">지난 시험 62점 → 70점 이상 통과</div>
+      </div>
+      <span class="pill dday">D-2</span>
+    </div>
+    <div class="sched">
+      <div class="date"><span class="m">11월</span><span class="d">14</span></div>
+      <div class="info">
+        <div class="n">11월 월간평가</div>
+        <div class="s">범위: 일차함수 전체</div>
+      </div>
+      <span class="pill dday">D-8</span>
+    </div>
+    <div class="sched">
+      <div class="date"><span class="m">11월</span><span class="d">1</span></div>
+      <div class="info">
+        <div class="n">연산 재시 · 유리수 계산</div>
+        <div class="s">18/20 정답</div>
+      </div>
+      <span class="pill pass">통과</span>
+    </div>
+  </div>
+
+  <!-- 현재 진도 -->
+  <div class="card">
+    <div class="sec-head">
+      <div class="glyph"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div>
+      <div class="t">현재 진도</div>
+    </div>
+    <div class="progress-wrap">
+      <div class="ring">
+        <svg width="104" height="104" viewBox="0 0 104 104">
+          <defs>
+            <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#5B74B8"/><stop offset="100%" stop-color="#1D2B50"/>
+            </linearGradient>
+          </defs>
+          <circle cx="52" cy="52" r="44" fill="none" stroke="#EDF0F5" stroke-width="9"/>
+          <circle cx="52" cy="52" r="44" fill="none" stroke="url(#g1)" stroke-width="9"
+                  stroke-linecap="round" stroke-dasharray="276" stroke-dashoffset="80"/>
+        </svg>
+        <div class="num"><div class="v">71<small>%</small></div><div class="l">전체 진도</div></div>
+      </div>
+      <div class="prog-info">
+        <div class="course">중등 수학 · 중2 과정</div>
+        <div class="unit">Ⅲ. 일차함수와<br>그래프</div>
+        <div class="topic">일차함수의 그래프와 절편</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 숙제 검사 (레퍼런스: 몇 문항 했는지 구체적으로) -->
+  <div class="card">
+    <div class="sec-head">
+      <div class="glyph"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div>
+      <div class="t">숙제 검사</div>
+      <div class="r"><b>1</b> / 3 완료</div>
+    </div>
+    <div class="hw">
+      <div class="hw-top"><span class="n">연산 훈련 Day 11–12</span><span class="pill done">완료</span></div>
+      <div class="hw-sub">40문항 전부 해옴 · <b class="ok">검사 통과</b></div>
+      <div class="hw-meter"><div style="width:100%"></div></div>
+    </div>
+    <div class="hw">
+      <div class="hw-top"><span class="n">교재 p.84–89 유형문제</span><span class="pill part">일부</span></div>
+      <div class="hw-sub">30문항 중 23개 해옴 · <b class="warn">7문항 모자랍니다</b> · 금요일까지</div>
+      <div class="hw-meter"><div class="warn" style="width:77%"></div></div>
+    </div>
+    <div class="hw">
+      <div class="hw-top"><span class="n">오답노트 정리 (5문항)</span><span class="pill navy">출제됨</span></div>
+      <div class="hw-sub">일요일까지</div>
+      <div class="hw-meter"><div style="width:0%"></div></div>
+    </div>
+  </div>
+
+  <!-- 시험 결과 (레퍼런스: 점수만 말고 위치까지) -->
+  <div class="card">
+    <div class="sec-head">
+      <div class="glyph"><svg viewBox="0 0 24 24"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg></div>
+      <div class="t">시험 결과</div>
+      <div class="r">일차함수 단원평가</div>
+    </div>
+    <div class="score-hero">
+      <span class="v">82</span><span class="u">% 정답률</span>
+      <span class="top">상위 22%</span>
+    </div>
+    <div class="score-sub">11월 4일 · 심화반 12명 응시</div>
+    <div class="pos-row"><span>반 평균 68.4%</span><span class="me">홍길동 82%</span></div>
+    <div class="pos-track">
+      <div class="fill" style="width:82%"></div>
+      <div class="avg" style="left:68.4%"></div>
+      <div class="dot" style="left:82%"></div>
+    </div>
+    <div class="pos-legend"><span>0</span><span>50</span><span>100</span></div>
+
+    <div class="divider"></div>
+
+    <div class="eval-label"><span class="t">영역별 성취도</span><span class="d">10월 종합</span></div>
+    <div class="bar-row"><span class="bar-label">연산</span><div class="bar-track"><div class="bar-fill" style="width:90%"></div></div><span class="bar-score">90</span></div>
+    <div class="bar-row"><span class="bar-label">개념이해</span><div class="bar-track"><div class="bar-fill" style="width:82%"></div></div><span class="bar-score">82</span></div>
+    <div class="bar-row"><span class="bar-label">문제해결</span><div class="bar-track"><div class="bar-fill alt" style="width:74%"></div></div><span class="bar-score">74</span></div>
+
+    <div class="quote">
+      <div class="who">TEACHER'S NOTE</div>
+      <div class="msg">연산 속도가 많이 빨라졌어요. 서술형 풀이 과정을 쓰는 연습을 하면 문제해결 점수가 더 오를 거예요.</div>
+    </div>
+  </div>
+
+  <!-- 노트 -->
+  <div class="card">
+    <div class="sec-head">
+      <div class="glyph"><svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></div>
+      <div class="t">나의 노트정리</div>
+    </div>
+    <div class="note-sub">선생님이 직접 올려주시는 수업 노트예요.</div>
+    <div class="notes">
+      <div class="note">
+        <div class="ph"></div>
+        <div class="scb">
+          <span class="bl">Ⅲ. 일차함수</span><br>
+          <span class="hl">y = ax + b (a ≠ 0)</span><br>
+          · 기울기 a, y절편 b<br>
+          · x절편: y=0 대입<br>
+          ex) y = 2x − 4
+        </div>
+        <div class="cap"><span class="n">개념 정리</span><span class="d">11.04</span></div>
+      </div>
+      <div class="note">
+        <div class="ph"></div>
+        <div class="scb">
+          <span class="bl">오답 다시 풀기</span><br>
+          · 유형 12번 ③<br>
+          · <span class="hl">절편 부호 주의!</span><br>
+          · 그래프 평행이동<br>
+          · y = 2x + k 꼴
+        </div>
+        <div class="cap"><span class="n">오답 풀이</span><span class="d">11.02</span></div>
+      </div>
+    </div>
+    <a class="note-more" href="#">노트 전체 보기 →</a>
+  </div>
+
+  <div class="foot">선생님이 등록한 학습 정보를 확인할 수 있어요.</div>
+
+  <div class="tabbar">
+    <div class="tab"><svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><div class="l">홈</div></div>
+    <div class="tab active"><svg viewBox="0 0 24 24"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg><div class="l">학습현황</div></div>
+    <div class="tab"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><div class="l">문의</div></div>
+    <div class="tab"><svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg><div class="l">알림</div></div>
+    <div class="tab"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><div class="l">마이</div></div>
+  </div>
+
+</body>
+</html>

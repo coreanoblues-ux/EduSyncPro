@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>페이지원영어학원 학부모 학습 리포트</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Pretendard", "Noto Sans KR", -apple-system, sans-serif;
+    background: #EAF4FB; /* 밝은 파스텔 하늘색 */
+    color: #37373A;
+    width: 402px;
+    margin: 0 auto;
+    padding-bottom: 90px;
+  }
+  /* ── 헤더 ── */
+  .topbar {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 16px 20px 10px;
+  }
+  .brand { font-size: 17px; font-weight: 800; letter-spacing: -0.3px; }
+  .brand .o { color: #F96E00; }
+  .bell { font-size: 18px; color: #8FAABB; }
+  .hero { padding: 4px 20px 16px; }
+  .chip {
+    display: inline-block; background: #F96E00; color: #fff;
+    font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px;
+    margin-bottom: 8px;
+  }
+  .student-row { display: flex; justify-content: space-between; align-items: center; }
+  .student { font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }
+  .enrolled {
+    font-size: 11px; font-weight: 700; color: #F96E00;
+    border: 1.5px solid #F96E00; border-radius: 999px; padding: 3px 8px;
+    vertical-align: middle; margin-left: 6px;
+  }
+  .week-badge {
+    background: #fff; border: 1px solid #D4E6F2; border-radius: 10px;
+    font-size: 12px; font-weight: 700; color: #4A6B80; padding: 7px 12px;
+  }
+  .hero p { font-size: 12.5px; color: #7A94A6; margin-top: 6px; }
+
+  /* ── 카드 공통 ── */
+  .card {
+    background: #fff; border-radius: 16px; margin: 0 16px 14px;
+    padding: 18px; box-shadow: 0 2px 10px rgba(74, 123, 160, 0.08);
+  }
+  .card-title {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 15px; font-weight: 800; margin-bottom: 14px;
+  }
+  .card-title .ico {
+    width: 24px; height: 24px; border-radius: 7px; background: #FFF0E3;
+    display: flex; align-items: center; justify-content: center; font-size: 13px;
+  }
+  .card-title .right { margin-left: auto; font-size: 11px; font-weight: 700; color: #F96E00; }
+
+  /* ── 현재 진도 ── */
+  .subject { font-size: 11.5px; font-weight: 700; color: #7A94A6; margin-bottom: 4px; }
+  .unit { font-size: 19px; font-weight: 800; letter-spacing: -0.4px; margin-bottom: 3px; }
+  .unit-desc { font-size: 12.5px; color: #7A94A6; margin-bottom: 12px; }
+  .progress-track { background: #E4EFF7; border-radius: 999px; height: 9px; overflow: hidden; }
+  .progress-fill { background: linear-gradient(90deg, #FF9440, #F96E00); height: 100%; width: 65%; border-radius: 999px; }
+  .progress-row { display: flex; justify-content: space-between; margin-top: 7px; font-size: 12px; }
+  .progress-row .label { color: #7A94A6; }
+  .progress-row .pct { font-weight: 800; color: #F96E00; font-size: 14px; }
+
+  /* ── 숙제 ── */
+  .hw { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border-radius: 11px; margin-bottom: 8px; }
+  .hw:last-child { margin-bottom: 0; }
+  .hw.done { background: #FFF4EA; }
+  .hw.todo { background: #F4F9FD; }
+  .cb {
+    width: 20px; height: 20px; border-radius: 6px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 900; color: #fff;
+  }
+  .hw.done .cb { background: #F96E00; }
+  .hw.todo .cb { background: #fff; border: 2px solid #C6DAE8; }
+  .hw-name { font-size: 13.5px; font-weight: 600; flex: 1; }
+  .hw.done .hw-name { color: #B08258; text-decoration: line-through; text-decoration-color: #E8B98D; }
+  .tag { font-size: 10.5px; font-weight: 700; padding: 4px 9px; border-radius: 999px; }
+  .tag.ok { background: #F96E00; color: #fff; }
+  .tag.fri { background: #FFE9D2; color: #C25400; }
+  .tag.sun { background: #DCEBF6; color: #3D6E8F; }
+
+  /* ── 성취도 ── */
+  .eval-block { margin-bottom: 16px; }
+  .eval-block:last-of-type { margin-bottom: 0; }
+  .eval-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+  .eval-head .t { font-size: 13.5px; font-weight: 800; }
+  .eval-head .d { font-size: 11px; color: #9AB2C2; font-weight: 600; }
+  .bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+  .bar-row:last-child { margin-bottom: 0; }
+  .bar-label { width: 36px; font-size: 12px; font-weight: 700; color: #5B7A8E; flex-shrink: 0; }
+  .bar-track { flex: 1; background: #E4EFF7; height: 8px; border-radius: 999px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #FFB070, #F96E00); }
+  .bar-score { width: 36px; text-align: right; font-size: 12.5px; font-weight: 800; color: #37373A; flex-shrink: 0; }
+  .teacher-note {
+    display: flex; gap: 8px; align-items: center; margin-top: 15px;
+    background: #FFF7F0; border: 1px solid #FFE3C8; border-radius: 11px; padding: 11px 13px;
+  }
+  .teacher-note .b { font-size: 11px; font-weight: 800; color: #F96E00; flex-shrink: 0; }
+  .teacher-note .m { font-size: 12.5px; color: #6B5540; }
+
+  /* ── 노트 ── */
+  .note-sub { font-size: 12px; color: #7A94A6; margin: -8px 0 12px; }
+  .notes { display: flex; gap: 10px; }
+  .note { flex: 1; }
+  .note-photo {
+    border-radius: 11px; height: 130px; border: 1px solid #E0ECF4; overflow: hidden; position: relative;
+    background:
+      repeating-linear-gradient(0deg, transparent 0 17px, #D8E6F0 17px 18px),
+      linear-gradient(135deg, #FDFEFF, #F0F7FC);
+  }
+  .note-photo::before {
+    content: ""; position: absolute; left: 14px; top: 0; bottom: 0; width: 1.5px; background: #F5C6A5;
+  }
+  .note-photo .scribble { position: absolute; left: 24px; top: 12px; font-size: 9px; color: #5B7A8E; line-height: 17.5px; }
+  .note-photo .hl { background: #FFE49A; padding: 0 2px; }
+  .note-photo .orange { color: #E86A00; font-weight: 700; }
+  .note-cap { display: flex; justify-content: space-between; margin-top: 7px; padding: 0 2px; }
+  .note-cap .n { font-size: 12px; font-weight: 700; }
+  .note-cap .d { font-size: 11px; color: #9AB2C2; }
+  .note-more {
+    display: block; text-align: center; margin-top: 14px;
+    font-size: 13px; font-weight: 700; color: #F96E00; text-decoration: none;
+  }
+
+  .foot { text-align: center; font-size: 10.5px; color: #9AB2C2; margin: 4px 0 10px; }
+
+  /* ── 하단 탭 ── */
+  .tabbar {
+    position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
+    width: 402px; background: #fff; border-top: 1px solid #E0ECF4;
+    display: flex; padding: 10px 0 16px;
+  }
+  .tab { flex: 1; text-align: center; font-size: 10.5px; font-weight: 600; color: #9AB2C2; }
+  .tab .i { font-size: 17px; display: block; margin-bottom: 3px; }
+  .tab.active { color: #F96E00; font-weight: 800; }
+</style>
+</head>
+<body>
+
+  <div class="topbar">
+    <div class="brand">Page<span class="o">O</span>ne <span style="font-weight:600; font-size:13px; color:#7A94A6;">영어학원</span></div>
+    <div class="bell">🔔</div>
+  </div>
+
+  <div class="hero">
+    <span class="chip">학부모 학습 리포트</span>
+    <div class="student-row">
+      <div class="student">홍길동 학생 <span class="enrolled">재원 중</span></div>
+      <div class="week-badge">📅 11월 1주차</div>
+    </div>
+    <p>이번 주 학습 소식을 확인하세요.</p>
+  </div>
+
+  <!-- 현재 진도 -->
+  <div class="card">
+    <div class="card-title"><span class="ico">📖</span> 현재 진도</div>
+    <div class="subject">중등 영어 · Level 2</div>
+    <div class="unit">Unit 05. Our Daily Life</div>
+    <div class="unit-desc">현재완료 표현과 핵심 어휘</div>
+    <div class="progress-track"><div class="progress-fill"></div></div>
+    <div class="progress-row"><span class="label">전체 진도 65%</span><span class="pct">65%</span></div>
+  </div>
+
+  <!-- 주간 숙제 -->
+  <div class="card">
+    <div class="card-title"><span class="ico">✅</span> 주간 숙제 알림이 <span class="right">완료 1 / 3</span></div>
+    <div class="hw done">
+      <div class="cb">✓</div>
+      <div class="hw-name">단어장 Day 11–12 암기</div>
+      <span class="tag ok">완료</span>
+    </div>
+    <div class="hw todo">
+      <div class="cb"></div>
+      <div class="hw-name">워크북 p.32–35</div>
+      <span class="tag fri">금요일까지</span>
+    </div>
+    <div class="hw todo">
+      <div class="cb"></div>
+      <div class="hw-name">본문 읽기 녹음</div>
+      <span class="tag sun">일요일까지</span>
+    </div>
+  </div>
+
+  <!-- 성취도 평가 -->
+  <div class="card">
+    <div class="card-title"><span class="ico">📊</span> 성취도 평가</div>
+
+    <div class="eval-block">
+      <div class="eval-head"><span class="t">주간평가</span><span class="d">11월 1주차</span></div>
+      <div class="bar-row"><span class="bar-label">어휘</span><div class="bar-track"><div class="bar-fill" style="width:85%"></div></div><span class="bar-score">85점</span></div>
+      <div class="bar-row"><span class="bar-label">문법</span><div class="bar-track"><div class="bar-fill" style="width:72%"></div></div><span class="bar-score">72점</span></div>
+      <div class="bar-row"><span class="bar-label">독해</span><div class="bar-track"><div class="bar-fill" style="width:90%"></div></div><span class="bar-score">90점</span></div>
+    </div>
+
+    <div class="eval-block">
+      <div class="eval-head"><span class="t">월간평가</span><span class="d">10월 종합</span></div>
+      <div class="bar-row"><span class="bar-label">어휘</span><div class="bar-track"><div class="bar-fill" style="width:88%"></div></div><span class="bar-score">88점</span></div>
+      <div class="bar-row"><span class="bar-label">문법</span><div class="bar-track"><div class="bar-fill" style="width:80%"></div></div><span class="bar-score">80점</span></div>
+      <div class="bar-row"><span class="bar-label">독해</span><div class="bar-track"><div class="bar-fill" style="width:92%"></div></div><span class="bar-score">92점</span></div>
+    </div>
+
+    <div class="teacher-note">
+      <span class="b">💬 선생님 한마디</span>
+      <span class="m">독해가 꾸준히 좋아지고 있어요!</span>
+    </div>
+  </div>
+
+  <!-- 노트정리 -->
+  <div class="card">
+    <div class="card-title"><span class="ico">📷</span> 나의 노트정리</div>
+    <div class="note-sub">선생님이 직접 올려주시는 노트예요.</div>
+    <div class="notes">
+      <div class="note">
+        <div class="note-photo">
+          <div class="scribble">
+            <span class="orange">중등 영어 Level 2</span><br>
+            <span class="hl">현재완료 (Present Perfect)</span><br>
+            · have/has + p.p.<br>
+            · 과거~현재 연결<br>
+            ex) She <u>has finished</u>...
+          </div>
+        </div>
+        <div class="note-cap"><span class="n">문법 개념 정리</span><span class="d">11.04</span></div>
+      </div>
+      <div class="note">
+        <div class="note-photo">
+          <div class="scribble">
+            <span class="orange">Unit 05 핵심 표현</span><br>
+            · be interested in ~<br>
+            · <span class="hl">take a difference</span><br>
+            · make sense of ~<br>
+            · I'm interested in...
+          </div>
+        </div>
+        <div class="note-cap"><span class="n">본문 핵심 표현</span><span class="d">11.02</span></div>
+      </div>
+    </div>
+    <a class="note-more" href="#">노트 전체 보기 →</a>
+  </div>
+
+  <div class="foot">선생님이 등록한 학습 정보를 확인할 수 있어요.</div>
+
+  <div class="tabbar">
+    <div class="tab"><span class="i">🏠</span>홈</div>
+    <div class="tab active"><span class="i">📊</span>학습현황</div>
+    <div class="tab"><span class="i">🔔</span>알림</div>
+    <div class="tab"><span class="i">👤</span>마이</div>
+  </div>
+
+</body>
+</html>

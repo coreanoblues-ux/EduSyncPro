@@ -51,6 +51,7 @@ import levelTestRouter from "./level-test/routes";
 import levelTestShareRouter from "./level-test/shareRoutes";
 import callIntakeRouter from "./call-intake/routes";
 import projectsRouter from "./projects/routes";
+import learningReportRouter from "./learning-report/routes";
 import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
 import { parseDays, parseSchedule } from "@shared/timetable";
@@ -1853,6 +1854,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
    * 라우터 안에 경로를 전부 적어 두었으므로 프리픽스 없이 마운트한다.
    */
   app.use(projectsRouter);
+  /**
+   * 학부모 학습 리포트 — 선생님 입력 (/api/learning-report/*). 전부 로그인 필요.
+   * 부모님이 로그인 없이 여는 /p/:token 은 별도 파일이다(docs/PARENT_REPORT_PLAN.md §4).
+   * 테스트: npm run test:learning-report
+   */
+  app.use(learningReportRouter);
   // 학생용 태블릿 웹앱 전용 API. 완전히 별도 인증(kioskGuard) 경로.
   app.use("/api/toss-kiosk", tossKioskRouter);
   // 결제 단말기 모드 dispatch. 두 라우터는 인증 미들웨어가 서로 달라서

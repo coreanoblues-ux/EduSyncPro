@@ -11,6 +11,7 @@ import { setupVite, serveStatic, log } from "./vite";
 import { startGradePromotionScheduler } from "./lib/gradePromotion";
 import { startFunnelWatchScheduler } from "./lib/funnelWatch";
 import { startSharePurgeScheduler } from "./lib/sharePurge";
+import { startPhotoPurgeScheduler } from "./learning-report/photoStore";
 
 // ─── 최후의 방어선 ─────────────────────────────────────────────────────────
 // lib/asyncErrors 가 라우트 핸들러를 감싸지만, 전역 미들웨어·타이머·백그라운드
@@ -154,5 +155,7 @@ app.use((req, res, next) => {
     // 발급 후 6개월이 지난 학부모 링크 주소를 지운다. 점수 기록은 그대로 두고
     // 주소 한 칸만 비운다(server/lib/sharePurge.ts 의 경고문 참고).
     startSharePurgeScheduler();
+    // 찍은 지 6개월 지난 노트 사진의 원본을 지운다. 제목·날짜 행은 남긴다(learning-report/photoStore.ts).
+    startPhotoPurgeScheduler();
   });
 })();

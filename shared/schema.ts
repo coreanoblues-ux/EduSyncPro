@@ -1338,7 +1338,6 @@ export const insertProjectAttendeeSchema = createInsertSchema(projectAttendees).
 });
 
 // ─── 학부모 학습 리포트 ──────────────────────────────────────────────────
-// 화면에서 오는 요청 본문 검증은 라우트를 만드는 2단계에서 더한다.
 export const insertReportWeekSchema = createInsertSchema(reportWeeks).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertHomeworkItemSchema = createInsertSchema(homeworkItems).omit({ id: true, createdAt: true });
 export const insertHomeworkCheckSchema = createInsertSchema(homeworkChecks).omit({ id: true, updatedAt: true });
@@ -1348,6 +1347,90 @@ export const insertMakeupSessionSchema = createInsertSchema(makeupSessions).omit
 export const insertMakeupStudentSchema = createInsertSchema(makeupStudents).omit({ id: true, updatedAt: true });
 export const insertNotePhotoSchema = createInsertSchema(notePhotos).omit({ id: true, createdAt: true, purgedAt: true });
 export const insertParentLinkSchema = createInsertSchema(parentLinks).omit({ id: true, createdAt: true });
+
+// 화면에서 오는 요청 본문. 학생·반 id 가 우리 학원 것인지는 라우트가 따로 확인한다(여기는 모양만).
+const lrYmd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "날짜는 YYYY-MM-DD 형식이어야 합니다.");
+const lrId = z.string().uuid("유효하지 않은 ID 형식입니다.");
+const lrScore = z.number().int().min(0, "점수는 0 이상이어야 합니다.").max(100, "점수는 100 이하여야 합니다.");
+
+export const updateReportWeekBodySchema = z.object({
+  textbook: z.string().trim().max(120).nullable().optional(),
+  unit: z.string().trim().max(120).nullable().optional(),
+  topic: z.string().trim().max(200).nullable().optional(),
+  progressPct: z.number().int().min(0).max(100).nullable().optional(),
+});
+
+export const homeworkItemBodySchema = z.object({
+  title: z.string().trim().min(1, "숙제 내용이 필요합니다.").max(200),
+  totalCount: z.number().int().min(1).max(1000).nullable().optional(),
+  countUnit: z.enum(HOMEWORK_COUNT_UNITS).nullable().optional(),
+  dueDate: lrYmd.nullable().optional(),
+  sortOrder: z.number().int().min(0).max(100).optional(),
+});
+export const updateHomeworkItemBodySchema = homeworkItemBodySchema.partial();
+
+export const homeworkChecksBodySchema = z.object({
+  checks: z
+    .array(
+      z.object({
+        studentId: lrId,
+        status: z.enum(HOMEWORK_STATUSES).optional(),
+        doneCount: z.number().int().min(0).max(1000).nullable().optional(),
+      })
+    )
+    .min(1)
+    .max(100),
+});
+
+export const examBodySchema = z.object({
+  name: z.string().trim().min(1, "시험 이름이 필요합니다.").max(120),
+  kind: z.enum(EXAM_KINDS).optional(),
+  examDate: lrYmd,
+  passScore: lrScore.nullable().optional(),
+  // 비우면 반 과목의 기본 영역(DEFAULT_EXAM_AREAS)을 쓴다.
+  areas: z.array(z.string().trim().min(1).max(20)).min(1).max(6).optional(),
+  retestOf: lrId.nullable().optional(),
+});
+export const updateExamBodySchema = examBodySchema.partial();
+
+export const examScoresBodySchema = z.object({
+  scores: z
+    .array(
+      z.object({
+        studentId: lrId,
+        areaScores: z.record(z.string(), lrScore).optional(),
+        absent: z.boolean().optional(),
+        comment: z.string().max(300).nullable().optional(),
+      })
+    )
+    .min(1)
+    .max(100),
+});
+
+const makeupFields = {
+  date: lrYmd,
+  startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "시간은 HH:MM 형식이어야 합니다.").nullable().optional(),
+  minutes: z.number().int().min(10).max(480).nullable().optional(),
+  reason: z.enum(MAKEUP_REASONS).optional(),
+  content: z.string().trim().min(1, "부모님께 보일 내용이 필요합니다.").max(200),
+};
+export const makeupBodySchema = z.object({
+  ...makeupFields,
+  classId: lrId.nullable().optional(),
+  examId: lrId.nullable().optional(),
+  studentIds: z.array(lrId).min(1, "학생을 한 명 이상 골라 주세요.").max(100),
+});
+export const updateMakeupBodySchema = z.object(makeupFields).partial();
+export const makeupStudentStatusBodySchema = z.object({ status: z.enum(MAKEUP_STUDENT_STATUSES) });
+
+/** 재시 일괄 등록. studentIds 를 비우면 통과 못 한 학생 전원. */
+export const retestBodySchema = z.object({
+  date: lrYmd,
+  startTime: makeupFields.startTime,
+  minutes: makeupFields.minutes,
+  content: z.string().trim().max(200).optional(),
+  studentIds: z.array(lrId).max(100).optional(),
+});
 
 const projectTemplateItemSchema = z.object({
   offsetDays: z.number().int().min(-365).max(365),

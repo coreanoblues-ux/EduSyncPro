@@ -25,6 +25,12 @@ import {
   type InsertAiAuditLog,
   type LevelTest,
   type InsertLevelTest,
+  type Project,
+  type InsertProject,
+  type ProjectTemplate,
+  type InsertProjectTemplate,
+  type ProjectAttendee,
+  type InsertProjectAttendee,
   users,
   tenants,
   students,
@@ -38,8 +44,11 @@ import {
   tasks,
   aiAuditLogs,
   levelTests,
+  projects,
+  projectTemplates,
+  projectAttendees,
 } from "@shared/schema";
-import { eq, and, sql, desc, isNull, isNotNull, gt, lt, ilike } from "drizzle-orm";
+import { eq, and, sql, desc, asc, isNull, isNotNull, gt, lt, ilike } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { db } from "./db";
 
@@ -162,6 +171,35 @@ export interface IStorage {
   createTask(task: InsertTask): Promise<Task>;
   updateTask(id: string, patch: Partial<InsertTask>): Promise<Task>;
   deleteTask(id: string): Promise<void>;
+
+  // Project methods (설명회·광고 프로젝트)
+  getProjectsByTenant(tenantId: string): Promise<Project[]>;
+  getProject(id: string): Promise<Project | undefined>;
+  createProject(project: InsertProject): Promise<Project>;
+  updateProject(id: string, patch: Partial<InsertProject>): Promise<Project>;
+  deleteProject(id: string): Promise<void>;
+
+  getProjectTemplatesByTenant(tenantId: string): Promise<ProjectTemplate[]>;
+  getProjectTemplate(id: string): Promise<ProjectTemplate | undefined>;
+  createProjectTemplate(template: InsertProjectTemplate): Promise<ProjectTemplate>;
+  updateProjectTemplate(id: string, patch: Partial<InsertProjectTemplate>): Promise<ProjectTemplate>;
+  deleteProjectTemplate(id: string): Promise<void>;
+
+  getAttendeesByProject(projectId: string): Promise<ProjectAttendee[]>;
+  getProjectAttendee(id: string): Promise<ProjectAttendee | undefined>;
+  createProjectAttendee(attendee: InsertProjectAttendee): Promise<ProjectAttendee>;
+  updateProjectAttendee(id: string, patch: Partial<InsertProjectAttendee>): Promise<ProjectAttendee>;
+  deleteProjectAttendee(id: string): Promise<void>;
+
+  /** 이 프로젝트에 딸린 할 일. 역산으로 생긴 것만 들어 있다. */
+  getTasksByProject(projectId: string): Promise<Task[]>;
+  /** 역산 할 일 일괄 생성. 한 건씩 넣으면 왕복이 템플릿 항목 수만큼 생긴다. */
+  createTasks(tasks: InsertTask[]): Promise<Task[]>;
+  /**
+   * 프로젝트의 **아직 안 끝난** 할 일만 지운다. D-day 를 옮겨 다시 깔 때 쓴다.
+   * 완료한 것을 남기는 이유: 이미 보낸 문자를 "안 보낸 일"로 되돌리면 두 번 보내게 된다.
+   */
+  deleteIncompleteTasksByProject(projectId: string): Promise<number>;
 
   // 자연어 입력 지원
   findStudentsByName(tenantId: string, name: string): Promise<Student[]>;
@@ -951,6 +989,137 @@ export class DbStorage implements IStorage {
 
   async deleteTask(id: string): Promise<void> {
     await db.delete(tasks).where(eq(tasks.id, id));
+  }
+
+  // Project methods (설명회·광고 프로젝트)
+  async getProjectsByTenant(tenantId: string): Promise<Project[]> {
+    // D-day 가 가까운 것이 위로. 지난 행사는 자연히 아래로 내려간다.
+    return await db
+      .select()
+      .from(projects)
+      .where(eq(projects.tenantId, tenantId))
+      .orderBy(asc(projects.dDay));
+  }
+
+  async getProject(id: string): Promise<Project | undefined> {
+    const result = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
+    return result[0];
+  }
+
+  async createProject(insert: InsertProject): Promise<Project> {
+    const result = await db.insert(projects).values({
+      ...insert,
+      id: randomUUID(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }).returning();
+    return result[0];
+  }
+
+  async updateProject(id: string, patch: Partial<InsertProject>): Promise<Project> {
+    const result = await db.update(projects)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(projects.id, id))
+      .returning();
+    return result[0];
+  }
+
+  async deleteProject(id: string): Promise<void> {
+    // tasks.project_id 와 project_attendees 는 ON DELETE CASCADE 라 같이 지워진다.
+    await db.delete(projects).where(eq(projects.id, id));
+  }
+
+  async getProjectTemplatesByTenant(tenantId: string): Promise<ProjectTemplate[]> {
+    return await db
+      .select()
+      .from(projectTemplates)
+      .where(eq(projectTemplates.tenantId, tenantId))
+      .orderBy(asc(projectTemplates.kind), asc(projectTemplates.name));
+  }
+
+  async getProjectTemplate(id: string): Promise<ProjectTemplate | undefined> {
+    const result = await db.select().from(projectTemplates).where(eq(projectTemplates.id, id)).limit(1);
+    return result[0];
+  }
+
+  async createProjectTemplate(insert: InsertProjectTemplate): Promise<ProjectTemplate> {
+    const result = await db.insert(projectTemplates).values({
+      ...insert,
+      id: randomUUID(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }).returning();
+    return result[0];
+  }
+
+  async updateProjectTemplate(id: string, patch: Partial<InsertProjectTemplate>): Promise<ProjectTemplate> {
+    const result = await db.update(projectTemplates)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(projectTemplates.id, id))
+      .returning();
+    return result[0];
+  }
+
+  async deleteProjectTemplate(id: string): Promise<void> {
+    await db.delete(projectTemplates).where(eq(projectTemplates.id, id));
+  }
+
+  async getAttendeesByProject(projectId: string): Promise<ProjectAttendee[]> {
+    return await db
+      .select()
+      .from(projectAttendees)
+      .where(eq(projectAttendees.projectId, projectId))
+      .orderBy(asc(projectAttendees.createdAt));
+  }
+
+  async getProjectAttendee(id: string): Promise<ProjectAttendee | undefined> {
+    const result = await db.select().from(projectAttendees).where(eq(projectAttendees.id, id)).limit(1);
+    return result[0];
+  }
+
+  async createProjectAttendee(insert: InsertProjectAttendee): Promise<ProjectAttendee> {
+    const result = await db.insert(projectAttendees).values({
+      ...insert,
+      id: randomUUID(),
+      createdAt: new Date(),
+    }).returning();
+    return result[0];
+  }
+
+  async updateProjectAttendee(id: string, patch: Partial<InsertProjectAttendee>): Promise<ProjectAttendee> {
+    const result = await db.update(projectAttendees)
+      .set(patch)
+      .where(eq(projectAttendees.id, id))
+      .returning();
+    return result[0];
+  }
+
+  async deleteProjectAttendee(id: string): Promise<void> {
+    await db.delete(projectAttendees).where(eq(projectAttendees.id, id));
+  }
+
+  async getTasksByProject(projectId: string): Promise<Task[]> {
+    return await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.projectId, projectId))
+      .orderBy(asc(tasks.dueDate));
+  }
+
+  async createTasks(inserts: InsertTask[]): Promise<Task[]> {
+    if (inserts.length === 0) return [];
+    const now = new Date();
+    return await db.insert(tasks).values(
+      inserts.map((t) => ({ ...t, id: randomUUID(), createdAt: now, updatedAt: now }))
+    ).returning();
+  }
+
+  async deleteIncompleteTasksByProject(projectId: string): Promise<number> {
+    const result = await db
+      .delete(tasks)
+      .where(and(eq(tasks.projectId, projectId), isNull(tasks.completedAt)))
+      .returning({ id: tasks.id });
+    return result.length;
   }
 
   // 자연어 입력 지원 — 이름으로 학생 찾기

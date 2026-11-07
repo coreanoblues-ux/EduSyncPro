@@ -437,9 +437,166 @@ export const tasks = pgTable("tasks", {
   deferCount: integer("defer_count").default(0).notNull(),
   notes: text("notes"),
   sourceText: text("source_text"),
+  // 설명회 역산으로 생긴 할 일이면 그 프로젝트를 가리킨다. 손으로 적은 일은 null.
+  // 할 일 테이블을 따로 두지 않은 이유: 설명회 준비도 결국 "퇴근 전에 할 일"이고,
+  // 나누면 원장이 화면 두 개를 봐야 한다.
+  projectId: varchar("project_id").references(() => projects.id, { onDelete: "cascade" }),
   createdBy: varchar("created_by").references(() => users.id).notNull(),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// ─── Project tables (설명회·광고 프로젝트) ──────────────────────────────
+// D-day 하나를 넣으면 역산 템플릿이 준비 할 일을 날짜별로 깔아 준다.
+//
+// kind / 연락 상태 같은 구분값에 pgEnum 을 쓰지 않았다. pgEnum 은 값을 하나 더할 때마다
+// drizzle-kit push 가 데이터 손실 우려로 대화형 확인을 요구해 배포가 멈춘다
+// (railway.toml 주석 1번). text + zod 검증이면 종류를 늘려도 마이그레이션이 필요 없다.
+export type ProjectTemplateItem = {
+  /** D-day 기준 며칠 전인가. D-21 이면 -21, 당일이면 0 */
+  offsetDays: number;
+  title: string;
+  slot: "퇴근전" | "출근전";
+};
+
+export const PROJECT_KINDS = [
+  "설명회",
+  "신규반",
+  "신규학생모집",
+  "교차수업",
+  "합동모의고사",
+  "전단",
+  "온라인광고",
+  "기타",
+] as const;
+export type ProjectKind = (typeof PROJECT_KINDS)[number];
+
+/**
+ * 스케쥴러 화면의 탭 구성. 탭 하나가 종류 몇 개를 맡는다.
+ *
+ * 종류를 탭과 1:1 로 두지 않은 이유: 원장에게 "전단"과 "온라인광고"는 따로 관리할 일이
+ * 아니라 둘 다 광고다. 반대로 "신규반"과 "신규학생모집"은 D-day 의 의미 자체가 달라서
+ * (개강일 vs 모집 마감일) 한 탭에 섞으면 역산 템플릿이 엉킨다.
+ */
+export const SCHEDULER_TABS = [
+  {
+    key: "promo",
+    label: "설명회 & 광고",
+    // 신규학생모집을 따로 떼지 않았다. 원장에게 광고는 곧 모집이라 탭을 나누면
+    // 같은 달의 설명회와 모집 광고가 두 화면으로 갈라져 오히려 안 보인다.
+    kinds: ["설명회", "신규학생모집", "합동모의고사", "전단", "온라인광고", "기타"],
+  },
+  { key: "newclass", label: "신규반 형성 프로젝트", kinds: ["신규반"] },
+  { key: "cross", label: "타학원 교차수업", kinds: ["교차수업"] },
+] as const satisfies readonly { key: string; label: string; kinds: readonly ProjectKind[] }[];
+
+/**
+ * 종류별 기본 역산 묶음. 그 종류의 템플릿이 하나도 없을 때만 깔린다.
+ * 원장이 설정 화면에서 고치면 그 뒤로는 고친 것이 쓰인다 — 여기 값은 다시 덮어쓰지 않는다.
+ *
+ * ⚠️ 어떤 종류의 템플릿을 **전부** 지우면 다음 방문에 기본값이 다시 깔린다.
+ *    "빈 탭을 보여 주느니 기본값이라도 있는 편이 낫다"는 쪽을 택한 결과다.
+ *    기본값이 싫으면 지우지 말고 **내용을 고쳐** 두면 된다.
+ */
+export const DEFAULT_PROJECT_TEMPLATES: { kind: ProjectKind; name: string; items: ProjectTemplateItem[] }[] = [
+  {
+    kind: "설명회",
+    name: "설명회 기본",
+    items: [
+      { offsetDays: -21, title: "장소 확정", slot: "퇴근전" },
+      { offsetDays: -14, title: "홍보물 제작", slot: "퇴근전" },
+      { offsetDays: -10, title: "학부모 문자 1차", slot: "출근전" },
+      { offsetDays: -3, title: "학부모 문자 2차", slot: "출근전" },
+      { offsetDays: -1, title: "자료 인쇄", slot: "퇴근전" },
+    ],
+  },
+  {
+    // D-day 는 **개강일**이다. 모집 마감이 아니다 — 마감을 D-day 로 잡으면
+    // 개강 준비(교재·출석부)가 역산에서 빠진다.
+    kind: "신규반",
+    name: "신규반 형성 기본",
+    items: [
+      { offsetDays: -30, title: "반 구성안 확정 (학년·레벨·정원)", slot: "퇴근전" },
+      { offsetDays: -21, title: "시간표·강의실 확정", slot: "퇴근전" },
+      { offsetDays: -21, title: "담당 교사 배정", slot: "퇴근전" },
+      { offsetDays: -14, title: "대기 학생 명단 확인·연락", slot: "출근전" },
+      { offsetDays: -10, title: "학부모 공지 문자", slot: "출근전" },
+      { offsetDays: -7, title: "모집 마감·최종 인원 확정", slot: "퇴근전" },
+      { offsetDays: -3, title: "교재 주문 확인", slot: "퇴근전" },
+      { offsetDays: -1, title: "출석부·자리 배치 준비", slot: "퇴근전" },
+    ],
+  },
+  {
+    // D-day 는 **모집 마감일**이다.
+    kind: "신규학생모집",
+    name: "신규학생 모집 기본",
+    items: [
+      { offsetDays: -30, title: "모집 대상·정원 확정", slot: "퇴근전" },
+      { offsetDays: -21, title: "홍보 문구·이미지 제작", slot: "퇴근전" },
+      { offsetDays: -14, title: "네이버·블로그 광고 집행", slot: "퇴근전" },
+      { offsetDays: -10, title: "기존 학부모 소개 요청 문자", slot: "출근전" },
+      { offsetDays: -7, title: "상담 예약 현황 점검", slot: "출근전" },
+      { offsetDays: -3, title: "미등록 상담자 재연락", slot: "출근전" },
+    ],
+  },
+  {
+    // 타 과목 학원과 묶어서 여는 수업. D-day 는 첫 수업일이다.
+    kind: "교차수업",
+    name: "교차수업 기본",
+    items: [
+      { offsetDays: -30, title: "제휴 학원 접촉·미팅", slot: "퇴근전" },
+      { offsetDays: -21, title: "수업 일정·장소 협의", slot: "퇴근전" },
+      { offsetDays: -14, title: "수강료·정산 방식 합의", slot: "퇴근전" },
+      { offsetDays: -10, title: "양쪽 학부모 공지", slot: "출근전" },
+      { offsetDays: -7, title: "신청 마감·명단 확정", slot: "퇴근전" },
+      { offsetDays: -1, title: "교재·출석부 준비", slot: "퇴근전" },
+    ],
+  },
+];
+
+export const projects = pgTable("projects", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  name: text("name").notNull(),
+  /** 설명회 | 합동모의고사 | 전단 | 온라인광고 | 기타 */
+  kind: text("kind").notNull(),
+  // YYYY-MM-DD. tasks.dueDate 와 같은 이유로 문자열이다 — timestamp 로 두면 UTC 로 저장되어
+  // 한국 시각 밤에 넣은 날짜가 전날로 뜬다.
+  dDay: text("d_day").notNull(),
+  place: text("place"),
+  /** 파트너 학원 */
+  partner: text("partner"),
+  budget: integer("budget"),
+  notes: text("notes"),
+  createdBy: varchar("created_by").references(() => users.id).notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// 종류별 역산 묶음. 설정 화면에서 편집한다.
+// items 예: [{ offsetDays: -21, title: "장소 확정", slot: "퇴근전" }, ...]
+// offsetDays 는 D-day 기준 음수다 (D-21 = -21, 당일 = 0).
+export const projectTemplates = pgTable("project_templates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  kind: text("kind").notNull(),
+  name: text("name").notNull(),
+  items: jsonb("items").$type<ProjectTemplateItem[]>().notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// 설명회 참석 신청자. 상담으로 넘기면 consultationId 가 채워지고,
+// 그때부터 화면의 버튼이 "상담으로 넘기기"에서 "상담 보기"로 바뀐다.
+export const projectAttendees = pgTable("project_attendees", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  projectId: varchar("project_id").references(() => projects.id, { onDelete: "cascade" }).notNull(),
+  name: text("name").notNull(),
+  phone: text("phone"),
+  notes: text("notes"),
+  consultationId: varchar("consultation_id").references(() => consultations.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
 // AI Audit Log table (AI 자연어 처리 감사 로그)
@@ -969,6 +1126,65 @@ export const updateTaskBodySchema = z.object({
   defer: z.enum(["퇴근전", "출근전"]).optional(),
 });
 
+// ─── 설명회·광고 프로젝트 ────────────────────────────────────────────────
+export const insertProjectSchema = createInsertSchema(projects).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export const insertProjectTemplateSchema = createInsertSchema(projectTemplates).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export const insertProjectAttendeeSchema = createInsertSchema(projectAttendees).omit({
+  id: true,
+  createdAt: true,
+});
+
+const projectTemplateItemSchema = z.object({
+  offsetDays: z.number().int().min(-365).max(365),
+  title: z.string().trim().min(1, "할 일 내용이 필요합니다.").max(200),
+  slot: z.enum(["퇴근전", "출근전"]),
+});
+
+export const createProjectBodySchema = insertProjectSchema
+  .omit({ tenantId: true, createdBy: true })
+  .extend({
+    name: z.string().trim().min(1, "프로젝트 이름이 필요합니다.").max(120),
+    kind: z.enum(PROJECT_KINDS),
+    dDay: ymd,
+    place: z.string().trim().max(200).nullable().optional(),
+    partner: z.string().trim().max(120).nullable().optional(),
+    budget: z.number().int().min(0).nullable().optional(),
+    notes: z.string().max(2000).nullable().optional(),
+  });
+
+export const updateProjectBodySchema = createProjectBodySchema.partial();
+
+export const projectTemplateBodySchema = z.object({
+  kind: z.enum(PROJECT_KINDS),
+  name: z.string().trim().min(1).max(120),
+  items: z.array(projectTemplateItemSchema).max(50),
+});
+
+export const createAttendeeBodySchema = z.object({
+  name: z.string().trim().min(1, "이름이 필요합니다.").max(60),
+  phone: z.string().trim().max(30).nullable().optional(),
+  notes: z.string().max(500).nullable().optional(),
+});
+
+/**
+ * 역산 할 일 생성.
+ *
+ * replace 는 "이미 깔린 할 일을 지우고 다시"다. D-day 를 미뤘을 때 쓴다.
+ * 기본값이 false 인 이유: 이미 체크해 둔 완료 표시가 조용히 사라지면 안 된다.
+ */
+export const generateTasksBodySchema = z.object({
+  templateId: z.string().uuid().optional(),
+  replace: z.boolean().optional(),
+});
+
 /**
  * 레벨테스트 저장 본문 (POST /api/level-tests).
  *
@@ -1081,6 +1297,9 @@ export type Waiter = typeof waiters.$inferSelect;
 export type Consultation = typeof consultations.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type TaskSlot = Task["slot"];
+export type Project = typeof projects.$inferSelect;
+export type ProjectTemplate = typeof projectTemplates.$inferSelect;
+export type ProjectAttendee = typeof projectAttendees.$inferSelect;
 export type AiAuditLog = typeof aiAuditLogs.$inferSelect;
 export type LevelTest = typeof levelTests.$inferSelect;
 export type Attendance = typeof attendance.$inferSelect;
@@ -1104,6 +1323,9 @@ export type InsertLessonLog = z.infer<typeof insertLessonLogSchema>;
 export type InsertWaiter = z.infer<typeof insertWaiterSchema>;
 export type InsertConsultation = z.infer<typeof insertConsultationSchema>;
 export type InsertTask = z.infer<typeof insertTaskSchema>;
+export type InsertProject = z.infer<typeof insertProjectSchema>;
+export type InsertProjectTemplate = z.infer<typeof insertProjectTemplateSchema>;
+export type InsertProjectAttendee = z.infer<typeof insertProjectAttendeeSchema>;
 export type InsertAiAuditLog = z.infer<typeof insertAiAuditLogSchema>;
 export type InsertLevelTest = z.infer<typeof insertLevelTestSchema>;
 export type SaveLevelTestBody = z.infer<typeof saveLevelTestBodySchema>;

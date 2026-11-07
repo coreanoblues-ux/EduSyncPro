@@ -6,6 +6,7 @@ import {
   ChevronsRight,
   Flame,
   ListChecks,
+  Megaphone,
   Plus,
   Sunrise,
   Trash2,
@@ -18,7 +19,7 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { taskSeverity } from "@/lib/tasks";
-import type { Task } from "@shared/schema";
+import type { Project, Task } from "@shared/schema";
 import { addDays, daysBetween, todayKst } from "@shared/day";
 
 /**
@@ -42,6 +43,19 @@ export default function Todos() {
   const { data: tasks = [], isLoading } = useQuery<Task[]>({
     queryKey: ["/api/tasks"],
   });
+
+  /*
+    설명회 준비 할 일에 "어느 설명회 건인지" 배지를 달기 위한 이름표.
+    "학부모 문자 1차" 만 떠 있으면 어느 설명회 건인지 알 수 없고, 설명회가 두 개 겹친
+    달에는 특히 헷갈린다. 목록이 짧아 캐시가 비싸지 않다.
+  */
+  const { data: projects = [] } = useQuery<Project[]>({
+    queryKey: ["/api/projects"],
+  });
+  const projectName = useMemo(
+    () => new Map(projects.map((p) => [p.id, p.name])),
+    [projects]
+  );
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["/api/tasks"] });
 
@@ -142,6 +156,16 @@ export default function Todos() {
               <Badge variant="secondary" className="gap-1 text-xs">
                 <Sunrise className="h-3 w-3" />
                 출근 전
+              </Badge>
+            )}
+            {task.projectId && projectName.has(task.projectId) && (
+              <Badge
+                variant="outline"
+                className="gap-1 text-xs"
+                data-testid={`badge-project-${task.id}`}
+              >
+                <Megaphone className="h-3 w-3" />
+                {projectName.get(task.projectId)}
               </Badge>
             )}
           </div>

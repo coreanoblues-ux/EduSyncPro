@@ -29,6 +29,8 @@ plugins/**/*.zip
 .env
 .env.local
 .env.*.local
+# .env 를 고치기 전에 뜬 백업본. 접속 비밀번호가 그대로 들어 있다.
+.env.bak*
 
 # 쿠키/세션 파일
 cookies.txt

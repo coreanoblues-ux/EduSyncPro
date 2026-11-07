@@ -37,6 +37,7 @@
     "test:recommend": "tsx scripts/test-class-recommend.ts",
     "test:share": "tsx scripts/test-share-link.ts",
     "test:call-intake": "tsx scripts/test-call-intake.ts",
+    "test:projects": "tsx scripts/test-projects.ts",
     "gen:report-data": "node scripts/extract-report-data.mjs",
     "plugin:build": "npm --prefix plugins/toss-front install --no-audit --no-fund && npm --prefix plugins/toss-front run build",
     "plugin:pack": "npm run plugin:build && node scripts/pack-toss-plugin.mjs",
@@ -51,6 +52,7 @@
     "db:migrate:payment-idempotency": "tsx scripts/migrate-add-payment-idempotency.ts",
     "db:migrate:card-cancel": "tsx scripts/migrate-add-card-cancel.ts",
     "db:migrate:call-intake": "tsx scripts/migrate-add-call-intake.ts",
+    "db:migrate:projects": "tsx scripts/migrate-add-projects.ts",
     "db:verify": "tsx scripts/db-verify.ts",
     "grades:preview": "tsx scripts/preview-grades.ts",
     "funnel:preview": "tsx scripts/preview-funnel.ts"

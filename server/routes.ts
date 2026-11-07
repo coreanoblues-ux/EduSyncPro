@@ -50,6 +50,7 @@ import tossPluginLogRouter from "./toss-front/pluginLogs";
 import levelTestRouter from "./level-test/routes";
 import levelTestShareRouter from "./level-test/shareRoutes";
 import callIntakeRouter from "./call-intake/routes";
+import projectsRouter from "./projects/routes";
 import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
 import { parseDays, parseSchedule } from "@shared/timetable";
@@ -1846,6 +1847,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
    * 테스트: npm run test:call-intake
    */
   app.use(callIntakeRouter);
+  /**
+   * 설명회·광고 프로젝트 (/api/projects, /api/project-templates).
+   * 역산 할 일은 새 테이블이 아니라 기존 tasks 에 projectId 를 달아 깔린다.
+   * 라우터 안에 경로를 전부 적어 두었으므로 프리픽스 없이 마운트한다.
+   */
+  app.use(projectsRouter);
   // 학생용 태블릿 웹앱 전용 API. 완전히 별도 인증(kioskGuard) 경로.
   app.use("/api/toss-kiosk", tossKioskRouter);
   // 결제 단말기 모드 dispatch. 두 라우터는 인증 미들웨어가 서로 달라서

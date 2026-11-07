@@ -16,6 +16,7 @@ import Overdues from "@/pages/Overdues";
 import Consultations from "@/pages/Consultations";
 import LevelTests from "@/pages/LevelTests";
 import Todos from "@/pages/Todos";
+import Scheduler from "@/pages/Scheduler";
 import Settings from "@/pages/Settings";
 import LoginForm from "@/components/LoginForm";
 import SignupForm from "@/components/SignupForm";
@@ -80,6 +81,7 @@ function Router({ user, tenant }: { user: User | null; tenant: Tenant | null }) 
       <Route path="/consultations" component={() => <Consultations userRole={user.role} />} />
       <Route path="/level-tests" component={() => <LevelTests userRole={user.role} />} />
       <Route path="/todos" component={() => <Todos />} />
+      <Route path="/scheduler" component={() => <Scheduler />} />
       <Route path="/payments" component={() => <Payments userRole={user.role} />} />
       <Route path="/logs" component={() => <LessonLogs userRole={user.role} />} />
       <Route path="/overdues" component={() => <Overdues userRole={user.role} />} />

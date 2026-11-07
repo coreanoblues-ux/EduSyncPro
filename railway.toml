@@ -33,7 +33,11 @@ buildCommand = "npm install && npm run build"
 #    교훈: **이 저장소에서 칼럼 추가는 push 에 맡기지 않는다.** 위 1)~4)가
 #    전부 전용 스크립트인 이유가 이것이고, 앞으로 칼럼을 더할 때도 같은 모양의
 #    스크립트를 만들어 이 줄 뒤에 잇는다. 테스트가 이 사실을 글자로 확인한다.
-preDeployCommand = "npm run db:migrate:level-test && npm run db:migrate:toss-front && npm run db:migrate:toss-kiosk && npm run db:push && npm run db:migrate:level-test-records && npm run db:migrate:level-test-share && npm run db:migrate:tenant-share-phone"
+# 6) projects: 설명회·광고 프로젝트 3개 테이블 + tasks.project_id 한 칸.
+#    맨 뒤에 둔다. project_attendees 가 consultations 를, projects 가 tenants/users 를
+#    외래키로 참조하므로 빈 DB 에서는 push 가 먼저 그 테이블들을 만들어 줘야 한다.
+#    tasks.project_id 는 위 5)의 교훈대로 push 에 맡기지 않고 이 스크립트가 직접 더한다.
+preDeployCommand = "npm run db:migrate:level-test && npm run db:migrate:toss-front && npm run db:migrate:toss-kiosk && npm run db:push && npm run db:migrate:level-test-records && npm run db:migrate:level-test-share && npm run db:migrate:tenant-share-phone && npm run db:migrate:projects"
 startCommand = "npm start"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3

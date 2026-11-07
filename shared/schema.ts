@@ -1424,6 +1424,12 @@ export const makeupBodySchema = z.object({
 export const updateMakeupBodySchema = z.object(makeupFields).partial();
 export const makeupStudentStatusBodySchema = z.object({ status: z.enum(MAKEUP_STUDENT_STATUSES) });
 
+/** 올린 사진의 제목·보일 사람 고치기. studentId 가 null 이면 반 전체. */
+export const updateNotePhotoBodySchema = z.object({
+  title: z.string().trim().min(1, "사진 제목이 필요합니다.").max(60).optional(),
+  studentId: lrId.nullable().optional(),
+});
+
 /** 재시 일괄 등록. studentIds 를 비우면 통과 못 한 학생 전원. */
 export const retestBodySchema = z.object({
   date: lrYmd,

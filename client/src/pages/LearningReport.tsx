@@ -33,6 +33,9 @@ import { mondayOf, weekLabel } from "@shared/learningReport";
 import { API, bundleKey, useDebounced, useSaveTracker, type WeekBundle } from "@/components/learning-report/shared";
 import ProgressHomeworkTab from "@/components/learning-report/ProgressHomeworkTab";
 import ExamTab from "@/components/learning-report/ExamTab";
+import MakeupTab from "@/components/learning-report/MakeupTab";
+import PhotoTab from "@/components/learning-report/PhotoTab";
+import LinksTab from "@/components/learning-report/LinksTab";
 
 const LAST_CLASS_KEY = "learning-report:last-class";
 
@@ -178,6 +181,19 @@ export default function LearningReport() {
                 시험 점수
                 {bundle.exams.length > 0 && <span className="ml-1.5 rounded-full bg-orange-500 px-1.5 text-[10px] font-bold text-white">{bundle.exams.length}</span>}
               </TabsTrigger>
+              <TabsTrigger value="makeup" data-testid="tab-makeup">
+                보강 계획
+                {bundle.makeups.filter((m) => m.date >= todayKst()).length > 0 && (
+                  <span className="ml-1.5 rounded-full bg-orange-500 px-1.5 text-[10px] font-bold text-white">{bundle.makeups.filter((m) => m.date >= todayKst()).length}</span>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="photo" data-testid="tab-photo">
+                노트 사진
+                {bundle.photos.length > 0 && <span className="ml-1.5 rounded-full bg-slate-400 px-1.5 text-[10px] font-bold text-white">{bundle.photos.length}</span>}
+              </TabsTrigger>
+              <TabsTrigger value="links" data-testid="tab-links">
+                부모님 링크
+              </TabsTrigger>
             </TabsList>
             {/* key 로 반·주가 바뀔 때 탭을 새로 만든다 — 앞 반에서 입력하던 칸 값이 다음 반에 남지 않게. */}
             <TabsContent value="homework" className="mt-4">
@@ -185,6 +201,15 @@ export default function LearningReport() {
             </TabsContent>
             <TabsContent value="exam" className="mt-4">
               <ExamTab key={`${classId}:${weekStart}`} bundle={bundle} track={track} schedule={schedule} />
+            </TabsContent>
+            <TabsContent value="makeup" className="mt-4">
+              <MakeupTab key={`${classId}:${weekStart}`} bundle={bundle} track={track} />
+            </TabsContent>
+            <TabsContent value="photo" className="mt-4">
+              <PhotoTab key={`${classId}:${weekStart}`} bundle={bundle} track={track} schedule={schedule} />
+            </TabsContent>
+            <TabsContent value="links" className="mt-4">
+              <LinksTab key={classId} bundle={bundle} track={track} />
             </TabsContent>
           </Tabs>
         )}

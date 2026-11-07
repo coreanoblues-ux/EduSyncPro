@@ -379,6 +379,18 @@ async function main() {
       assert.ok(Buffer.from(await img.arrayBuffer()).equals(FAKE_JPEG));
     });
 
+    await test("사진 제목·보일 사람 고치기 (반 명단 밖 학생은 400)", async () => {
+      const r = await call("PATCH", `/api/learning-report/photos/${photoId}`, { title: "[TEST] 오답 노트", studentId: A.id });
+      assert.equal(r.status, 200);
+      const row = await r.json();
+      assert.equal(row.title, "[TEST] 오답 노트");
+      assert.equal(row.studentId, A.id);
+      const back = await call("PATCH", `/api/learning-report/photos/${photoId}`, { studentId: null });
+      assert.equal((await back.json()).studentId, null);
+      const bad = await call("PATCH", `/api/learning-report/photos/${photoId}`, { studentId: RANDOM_UUID });
+      assert.equal(bad.status, 400);
+    });
+
     await test("반 명단 밖 학생 전용 사진은 400", async () => {
       const r = await upload(FAKE_JPEG, `title=x&takenDate=2000-01-04&studentId=${RANDOM_UUID}`);
       assert.equal(r.status, 400);

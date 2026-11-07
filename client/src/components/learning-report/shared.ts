@@ -55,6 +55,18 @@ export type MakeupRow = {
   students: { studentId: string; status: string; name: string }[];
 };
 
+export type PhotoRow = {
+  id: string;
+  title: string;
+  takenDate: string;
+  studentId: string | null;
+  width: number | null;
+  height: number | null;
+  bytes: number | null;
+  /** 보관 기간(6개월)이 지나 원본이 지워졌다. 제목·날짜만 남는다. */
+  purged: boolean;
+};
+
 export type WeekBundle = {
   class: { id: string; name: string; subject: string };
   weekStart: string;
@@ -71,7 +83,7 @@ export type WeekBundle = {
   defaultAreas: string[];
   homework: HomeworkRow[];
   exams: ExamRow[];
-  photos: unknown[];
+  photos: PhotoRow[];
   makeups: MakeupRow[];
   suggestions: { studentId: string; name: string; reasons: string[] }[];
 };

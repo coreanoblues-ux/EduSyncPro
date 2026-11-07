@@ -45,6 +45,7 @@ import {
   updateMakeupBodySchema,
   makeupStudentStatusBodySchema,
   retestBodySchema,
+  updateNotePhotoBodySchema,
   type Class,
   type ReportWeek,
   type HomeworkItem,
@@ -836,6 +837,25 @@ router.get(
       res.setHeader("X-Content-Type-Options", "nosniff");
       res.setHeader("Cache-Control", "private, max-age=86400");
       res.end(file.data);
+    } catch (err) {
+      if (!sendHttpError(res, err)) throw err;
+    }
+  })
+);
+
+router.patch(
+  `${P}/photos/:photoId`,
+  ...guards,
+  validateBody(updateNotePhotoBodySchema),
+  handle("사진 정보 수정", async (req, res) => {
+    try {
+      const photo = await loadPhotoRow(req, req.params.photoId);
+      if (req.body.studentId) {
+        const [week] = await db.select().from(reportWeeks).where(eq(reportWeeks.id, photo.reportWeekId));
+        assertInRoster(await loadRoster(photo.tenantId, week.classId), [req.body.studentId]);
+      }
+      const [row] = await db.update(notePhotos).set(req.body).where(eq(notePhotos.id, photo.id)).returning();
+      res.json(row);
     } catch (err) {
       if (!sendHttpError(res, err)) throw err;
     }

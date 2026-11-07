@@ -601,9 +601,11 @@ router.put(
       const existing = await db.select().from(examScores).where(eq(examScores.examId, exam.id));
       for (const s of input) {
         const prev = existing.find((e) => e.studentId === s.studentId);
-        // 보낸 영역만 바꾼다. 어휘 칸 하나를 고쳤다고 문법·독해 점수가 지워지면 안 된다.
-        const merged: Record<string, number> = { ...(prev?.areaScores ?? {}), ...(s.areaScores ?? {}) };
-        const areaScores = Object.fromEntries(Object.entries(merged).filter(([k]) => exam.areas.includes(k)));
+        // 보낸 영역만 바꾼다. 어휘 칸 하나를 고쳤다고 문법·독해 점수가 지워지면 안 된다. null 은 그 칸 지우기.
+        const merged: Record<string, number | null> = { ...(prev?.areaScores ?? {}), ...(s.areaScores ?? {}) };
+        const areaScores = Object.fromEntries(
+          Object.entries(merged).filter((e): e is [string, number] => exam.areas.includes(e[0]) && e[1] != null)
+        );
         const absent = s.absent ?? prev?.absent ?? false;
         const comment = s.comment !== undefined ? s.comment : prev?.comment ?? null;
         const total = examTotal(exam.areas, areaScores);

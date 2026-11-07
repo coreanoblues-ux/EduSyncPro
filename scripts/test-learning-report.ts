@@ -304,6 +304,14 @@ async function main() {
       assert.deepEqual(exam.stats.failStudentIds, [B.id]);
     });
 
+    await test("칸을 비우면(null) 그 영역 점수만 지워지고 총점이 다시 계산된다", async () => {
+      const areas: string[] = (await bundle()).exams[0].areas;
+      await call("PUT", `/api/learning-report/exams/${examId}/scores`, { scores: [{ studentId: B.id, areaScores: { [areas[0]]: null, [areas[1]]: 80 } }] });
+      const b = (await bundle()).exams[0].scores.find((s: any) => s.studentId === B.id);
+      assert.deepEqual(b.areaScores, { [areas[1]]: 80, [areas[2]]: 50 });
+      assert.equal(b.total, 65);
+    });
+
     await test("점수 101 은 400", async () => {
       const areas: string[] = (await bundle()).exams[0].areas;
       const r = await call("PUT", `/api/learning-report/exams/${examId}/scores`, { scores: [{ studentId: C.id, areaScores: { [areas[0]]: 101 } }] });

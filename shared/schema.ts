@@ -1398,7 +1398,8 @@ export const examScoresBodySchema = z.object({
     .array(
       z.object({
         studentId: lrId,
-        areaScores: z.record(z.string(), lrScore).optional(),
+        // null 은 "이 영역 점수 지우기" — 칸을 비웠을 때 화면이 보낸다.
+        areaScores: z.record(z.string(), lrScore.nullable()).optional(),
         absent: z.boolean().optional(),
         comment: z.string().max(300).nullable().optional(),
       })

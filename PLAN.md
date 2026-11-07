@@ -242,6 +242,15 @@ createdAt
   `npm run test:learning-report` 31/31 (실제 반 하나의 2000-01-03 주에만 쓰고 지운다). tsc·build 통과.
   첫 실행 때 "결제 수 무변동" 단정이 15:51 태블릿 실결제 때문에 거짓 실패 → 결제·할 일·상담은 전후 숫자만 찍게 고침.
   다음: 원장 확인 → 3단계 선생님 화면(진도·숙제, 시험).
+- **2026-11-07** — 2단계 푸시(a12bf0c), 16:13 배포 확인(/api/learning-report 401 = 연결됨).
+- **2026-11-07** — **학부모 리포트 3단계 (선생님 화면 ①진도·숙제 ②시험 점수, 미푸시).**
+  `client/src/pages/LearningReport.tsx`(/learning-report, 사이드바 "학습 기록 입력"), `components/learning-report/`
+  (shared.ts 자동 저장 장치 · ProgressHomeworkTab · ExamTab). 저장 버튼 없음 — 칸을 고치면 0.7초 뒤 저장,
+  화면을 떠나면 기다리던 저장을 즉시 보냄. 화면 계산은 shared/learningReport.ts 와 같은 함수(서버와 어긋나지 않게).
+  서버 보완: 점수 칸을 비우면(null) 그 영역만 지움 — 테스트 32/32. tsc·build 통과.
+  로컬 확인: 아침 09:51 부터 다른 창이 띄운 dev 서버가 3000 을 잡고 있어(구 코드) 3001 로 잠깐 띄워
+  /api/learning-report 401·/learning-report 200·새 모듈 변환 확인 후 바로 종료. 실제 화면은 로그인이 필요해
+  원장 확인 대기. 보강·노트 사진 탭은 4단계.
 
 ## 6. 작업 중 확인된 운영 환경 사실 (문서가 낡아 있었다)
 

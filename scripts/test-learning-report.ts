@@ -26,7 +26,7 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import type { Server } from "node:http";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../server/db";
 import {
   users,
@@ -40,9 +40,10 @@ import {
   notePhotos,
   makeupSessions,
   parentLinks,
+  vocabScores,
   DEFAULT_EXAM_AREAS,
 } from "@shared/schema";
-import { mondayOf, weekLabel, examStats, examTotal, deriveHomeworkStatus, phoneLast4 } from "@shared/learningReport";
+import { mondayOf, weekLabel, examStats, examTotal, deriveHomeworkStatus, phoneLast4, vocabResult, weekDatesFor } from "@shared/learningReport";
 import { generateToken } from "../server/middleware/auth";
 
 let passed = 0;
@@ -106,6 +107,16 @@ async function main() {
     assert.equal(s.passCount, 7);
     assert.deepEqual(s.failStudentIds, ["s7", "s8", "s9"]);
     assert.deepEqual(examStats(rows.slice(0, 4), 70).topPct, {});
+  });
+
+  await test("단어시험 판정: 50문항 5개 통과 · 7개 반복쓰기 · 8개 재시험 (경계 포함)", () => {
+    assert.equal(vocabResult(50, 5), "pass"); // 10%
+    assert.equal(vocabResult(50, 6), "rewrite"); // 12%
+    assert.equal(vocabResult(50, 7), "rewrite"); // 14%
+    assert.equal(vocabResult(20, 3), "rewrite"); // 정확히 15%
+    assert.equal(vocabResult(50, 8), "retest"); // 16%
+    assert.equal(vocabResult(30, 0), "pass");
+    assert.deepEqual(weekDatesFor("2026-11-02", ["월", "수", "금"]), ["2026-11-02", "2026-11-04", "2026-11-06"]);
   });
 
   await test("해온 개수가 고른 상태를 이긴다", () => {
@@ -271,6 +282,56 @@ async function main() {
       await call("PATCH", `/api/learning-report/homework/${itemId}`, { totalCount: 14 });
       const hw = (await bundle()).homework[0];
       assert.equal(hw.checks[A.id].status, "done");
+    });
+
+    /* ── 단어시험 ─────────────────────────────────────────────────────── */
+    console.log("\n단어시험:");
+
+    const vocabPath = `${weekPath}/vocab`;
+    await test("통과·반복쓰기·재시험 저장, 재시험은 보강 추천에 오른다", async () => {
+      const r = await call("PUT", vocabPath, {
+        entries: [
+          { studentId: A.id, testDate: "2000-01-03", total: 50, wrong: 5 },
+          { studentId: B.id, testDate: "2000-01-03", total: 50, wrong: 7 },
+          { studentId: C.id, testDate: "2000-01-07", total: 40, wrong: 9 },
+        ],
+      });
+      assert.equal(r.status, 200);
+      const b = await bundle();
+      assert.equal(b.vocab.scores.length, 3);
+      assert.ok(b.vocab.dates.includes("2000-01-07"), "기록이 있는 날(클리닉 날 등)은 날짜 칸에 들어가야 한다");
+      // 지난번 총 문항 = 그 학생의 가장 최근 날짜 기록. 실제 기록(2000년 이후)이 있으면 그 값이 나와야 맞다.
+      const [latest] = await db
+        .select({ total: vocabScores.total })
+        .from(vocabScores)
+        .where(eq(vocabScores.studentId, C.id))
+        .orderBy(desc(vocabScores.testDate))
+        .limit(1);
+      assert.equal(b.vocab.lastTotals[C.id], latest.total, "학생별 지난번 총 문항");
+      const sug = b.suggestions.find((s: any) => s.studentId === C.id);
+      assert.ok(sug && sug.reasons.some((x: string) => x.startsWith("단어 재시험")), "재시험 학생이 보강 추천에 있어야 한다");
+    });
+
+    await test("재시 통과를 체크하면 추천에서 빠지고, 점수를 고쳐 통과가 되면 재시 표시는 지워진다", async () => {
+      await call("PUT", vocabPath, { entries: [{ studentId: C.id, testDate: "2000-01-07", total: 40, wrong: 9, retestPassed: true }] });
+      let b = await bundle();
+      assert.equal(b.vocab.scores.find((v: any) => v.studentId === C.id).retestPassed, true);
+      assert.ok(!(b.suggestions.find((s: any) => s.studentId === C.id)?.reasons ?? []).some((x: string) => x.startsWith("단어 재시험")));
+      await call("PUT", vocabPath, { entries: [{ studentId: C.id, testDate: "2000-01-07", total: 40, wrong: 2 }] });
+      b = await bundle();
+      assert.equal(b.vocab.scores.find((v: any) => v.studentId === C.id).retestPassed, null);
+    });
+
+    await test("다른 주 날짜·틀린 개수 > 총 문항·반 명단 밖 학생은 400", async () => {
+      assert.equal((await call("PUT", vocabPath, { entries: [{ studentId: A.id, testDate: "2000-01-10", total: 50, wrong: 1 }] })).status, 400);
+      assert.equal((await call("PUT", vocabPath, { entries: [{ studentId: A.id, testDate: "2000-01-04", total: 10, wrong: 11 }] })).status, 400);
+      assert.equal((await call("PUT", vocabPath, { entries: [{ studentId: RANDOM_UUID, testDate: "2000-01-04", total: 10, wrong: 1 }] })).status, 400);
+    });
+
+    await test("칸을 비우면(null) 그날 기록이 지워진다", async () => {
+      await call("PUT", vocabPath, { entries: [{ studentId: B.id, testDate: "2000-01-03", total: 50, wrong: null }] });
+      const b = await bundle();
+      assert.ok(!b.vocab.scores.some((v: any) => v.studentId === B.id));
     });
 
     /* ── 시험 ─────────────────────────────────────────────────────────── */

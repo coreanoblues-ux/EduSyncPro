@@ -34,6 +34,7 @@ import { API, bundleKey, useDebounced, useSaveTracker, type WeekBundle } from "@
 import ProgressHomeworkTab from "@/components/learning-report/ProgressHomeworkTab";
 import ExamTab from "@/components/learning-report/ExamTab";
 import MakeupTab from "@/components/learning-report/MakeupTab";
+import VocabTab from "@/components/learning-report/VocabTab";
 import PhotoTab from "@/components/learning-report/PhotoTab";
 import LinksTab, { previewUrl } from "@/components/learning-report/LinksTab";
 
@@ -210,6 +211,12 @@ export default function LearningReport() {
               <TabsTrigger value="homework" data-testid="tab-homework">
                 진도 · 숙제
               </TabsTrigger>
+              <TabsTrigger value="vocab" data-testid="tab-vocab">
+                단어시험
+                {bundle.vocab.scores.length > 0 && (
+                  <span className="ml-1.5 rounded-full bg-orange-500 px-1.5 text-[10px] font-bold text-white">{bundle.vocab.scores.length}</span>
+                )}
+              </TabsTrigger>
               <TabsTrigger value="exam" data-testid="tab-exam">
                 시험 점수
                 {bundle.exams.length > 0 && <span className="ml-1.5 rounded-full bg-orange-500 px-1.5 text-[10px] font-bold text-white">{bundle.exams.length}</span>}
@@ -231,6 +238,9 @@ export default function LearningReport() {
             {/* key 로 반·주가 바뀔 때 탭을 새로 만든다 — 앞 반에서 입력하던 칸 값이 다음 반에 남지 않게. */}
             <TabsContent value="homework" className="mt-4">
               <ProgressHomeworkTab key={`${classId}:${weekStart}`} bundle={bundle} track={track} schedule={schedule} />
+            </TabsContent>
+            <TabsContent value="vocab" className="mt-4">
+              <VocabTab key={`${classId}:${weekStart}`} bundle={bundle} track={track} schedule={schedule} />
             </TabsContent>
             <TabsContent value="exam" className="mt-4">
               <ExamTab key={`${classId}:${weekStart}`} bundle={bundle} track={track} schedule={schedule} />

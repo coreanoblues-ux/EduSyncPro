@@ -17,7 +17,7 @@
 
 import express, { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
-import { and, asc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import { db } from "../db";
 import { authGuard, tenantGuard, roleGuard } from "../middleware/auth";
 import {
@@ -46,6 +46,8 @@ import {
   makeupStudentStatusBodySchema,
   retestBodySchema,
   updateNotePhotoBodySchema,
+  vocabScores,
+  vocabScoresBodySchema,
   type Class,
   type ReportWeek,
   type HomeworkItem,
@@ -61,7 +63,10 @@ import {
   examStats,
   phoneLast4,
   maskPhone,
+  vocabResult,
+  weekDatesFor,
 } from "@shared/learningReport";
+import { parseDays } from "@shared/timetable";
 import { generateShareToken } from "../lib/shareLink";
 import { savePhoto, readPhoto, deletePhoto, detectImageMime, MAX_PHOTO_BYTES } from "./photoStore";
 import { buildParentView } from "../parent-report/data";
@@ -231,6 +236,19 @@ async function weekBundle(tenantId: string, cls: Class, weekStart: string) {
   // 보강은 주에 매달리지 않는다(일정이라서). 이 반의 전후 몇 주를 보여 준다.
   const makeups = await loadMakeups(tenantId, cls.id, addDays(weekStart, -28), addDays(weekStart, 35));
 
+  // 단어시험. 날짜 칸 = 반 수업 요일(schedule 글자에서 읽음) + 이미 기록이 있는 날(클리닉 날 등).
+  const vocabRows = week ? await db.select().from(vocabScores).where(eq(vocabScores.reportWeekId, week.id)) : [];
+  const classDays = parseDays(cls.schedule);
+  const vocabDates = Array.from(new Set([...weekDatesFor(weekStart, classDays), ...vocabRows.map((v) => v.testDate)])).sort();
+  // 학생마다 지난번 총 문항을 기본값으로 쓴다(구성이 학생마다 달라서 매번 치게 하지 않는다).
+  const lastTotals = roster.length
+    ? await db
+        .selectDistinctOn([vocabScores.studentId], { studentId: vocabScores.studentId, total: vocabScores.total })
+        .from(vocabScores)
+        .where(inArray(vocabScores.studentId, roster.map((s) => s.id)))
+        .orderBy(vocabScores.studentId, desc(vocabScores.testDate))
+    : [];
+
   const homework = items.map((item) => ({
     ...item,
     checks: Object.fromEntries(
@@ -258,7 +276,13 @@ async function weekBundle(tenantId: string, cls: Class, weekStart: string) {
     exams: examList,
     photos: photos.map(({ ...p }) => ({ ...p, purged: !!p.purgedAt })),
     makeups,
-    suggestions: makeupSuggestions(roster, homework, examList),
+    vocab: {
+      classDays,
+      dates: vocabDates,
+      scores: vocabRows.map((v) => ({ studentId: v.studentId, testDate: v.testDate, total: v.total, wrong: v.wrong, retestPassed: v.retestPassed })),
+      lastTotals: Object.fromEntries(lastTotals.map((r) => [r.studentId, r.total])),
+    },
+    suggestions: makeupSuggestions(roster, homework, examList, vocabRows),
   };
 }
 
@@ -269,11 +293,17 @@ async function weekBundle(tenantId: string, cls: Class, weekStart: string) {
 function makeupSuggestions(
   roster: { id: string; name: string }[],
   homework: { title: string; checks: Record<string, { status: string; doneCount: number | null }> }[],
-  examList: { name: string; stats: { failStudentIds: string[] } }[]
+  examList: { name: string; stats: { failStudentIds: string[] } }[],
+  vocabRows: { studentId: string; testDate: string; total: number; wrong: number; retestPassed: boolean | null }[] = []
 ) {
   const out: { studentId: string; name: string; reasons: string[] }[] = [];
   for (const s of roster) {
     const reasons: string[] = [];
+    for (const v of vocabRows) {
+      if (v.studentId === s.id && vocabResult(v.total, v.wrong) === "retest" && v.retestPassed !== true) {
+        reasons.push(`단어 재시험 (${Number(v.testDate.slice(5, 7))}/${Number(v.testDate.slice(8, 10))})`);
+      }
+    }
     const statuses = homework.map((h) => h.checks[s.id]?.status).filter(Boolean);
     const none = statuses.filter((st) => st === "none").length;
     const partial = statuses.filter((st) => st === "partial").length;
@@ -514,6 +544,62 @@ router.post(
           });
       }
       res.json({ filled: targets.length, kept: checked.size });
+    } catch (err) {
+      if (!sendHttpError(res, err)) throw err;
+    }
+  })
+);
+
+// ─── 단어시험 ────────────────────────────────────────────────────────────
+
+/**
+ * 단어시험 일괄 저장. 칸 하나를 고칠 때도, 한 열(날짜)의 총 문항을 한꺼번에 바꿀 때도 이 경로 하나다.
+ * wrong 이 null 이면 그 칸을 지운다. 날짜는 그 주 안이어야 한다 — 다른 주 날짜가 섞이면
+ * 그 기록이 엉뚱한 주의 공개 스위치를 따르게 된다.
+ * 재시 통과(retestPassed)는 재시험 판정일 때만 남긴다. 점수를 고쳐 통과로 바뀌면 지운다.
+ */
+router.put(
+  `${P}/classes/:classId/weeks/:weekStart/vocab`,
+  ...guards,
+  validateBody(vocabScoresBodySchema),
+  handle("단어시험 저장", async (req, res) => {
+    try {
+      const cls = await loadClass(req, req.params.classId);
+      const weekStart = parseWeek(req.params.weekStart);
+      const input = req.body.entries as z.infer<typeof vocabScoresBodySchema>["entries"];
+      const weekEnd = addDays(weekStart, 6);
+      const outside = input.filter((e) => e.testDate < weekStart || e.testDate > weekEnd);
+      if (outside.length) return res.status(400).json({ error: "이 주에 속하지 않는 날짜가 있습니다." });
+      const bad = input.filter((e) => e.wrong != null && e.wrong > e.total);
+      if (bad.length) return res.status(400).json({ error: "틀린 개수가 총 문항보다 많습니다." });
+      assertInRoster(await loadRoster(cls.tenantId, cls.id), input.map((e) => e.studentId));
+      const week = await ensureWeek(req, cls, weekStart);
+      for (const e of input) {
+        const where = and(eq(vocabScores.classId, cls.id), eq(vocabScores.studentId, e.studentId), eq(vocabScores.testDate, e.testDate));
+        if (e.wrong == null) {
+          await db.delete(vocabScores).where(where);
+          continue;
+        }
+        const isRetest = vocabResult(e.total, e.wrong) === "retest";
+        const set: Partial<typeof vocabScores.$inferInsert> = { total: e.total, wrong: e.wrong, updatedBy: req.user!.id, updatedAt: new Date() };
+        if (!isRetest) set.retestPassed = null;
+        else if (e.retestPassed !== undefined) set.retestPassed = e.retestPassed;
+        await db
+          .insert(vocabScores)
+          .values({
+            tenantId: cls.tenantId,
+            reportWeekId: week.id,
+            classId: cls.id,
+            studentId: e.studentId,
+            testDate: e.testDate,
+            total: e.total,
+            wrong: e.wrong,
+            retestPassed: isRetest ? e.retestPassed ?? null : null,
+            updatedBy: req.user!.id,
+          })
+          .onConflictDoUpdate({ target: [vocabScores.classId, vocabScores.studentId, vocabScores.testDate], set });
+      }
+      res.json({ saved: input.length });
     } catch (err) {
       if (!sendHttpError(res, err)) throw err;
     }

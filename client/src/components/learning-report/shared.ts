@@ -67,6 +67,8 @@ export type PhotoRow = {
   purged: boolean;
 };
 
+export type VocabRow = { studentId: string; testDate: string; total: number; wrong: number; retestPassed: boolean | null };
+
 export type WeekBundle = {
   class: { id: string; name: string; subject: string };
   weekStart: string;
@@ -85,6 +87,15 @@ export type WeekBundle = {
   exams: ExamRow[];
   photos: PhotoRow[];
   makeups: MakeupRow[];
+  vocab: {
+    /** 반 수업 요일(시간표 글자에서 읽음). */
+    classDays: string[];
+    /** 표의 날짜 칸 = 수업 요일 + 이미 기록이 있는 날. */
+    dates: string[];
+    scores: VocabRow[];
+    /** 학생별 지난번 총 문항 (새 칸의 기본값). */
+    lastTotals: Record<string, number>;
+  };
   suggestions: { studentId: string; name: string; reasons: string[] }[];
 };
 

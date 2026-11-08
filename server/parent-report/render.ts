@@ -9,6 +9,7 @@
 
 import { escapeHtml as esc } from "../lib/shareLink";
 import { daysBetween } from "@shared/day";
+import { VOCAB_PASS_PCT, VOCAB_REWRITE_PCT } from "@shared/learningReport";
 import type { ParentView } from "./data";
 
 export type View = "home" | "homework" | "exam" | "notes";
@@ -38,6 +39,14 @@ function fmtTime(t: string | null): string {
 function weekPill(label: string): string {
   const m = /^(\d+월) (.+)$/.exec(label);
   return m ? `<b>${esc(m[1])}</b> ${esc(m[2])}` : esc(label);
+}
+function vocabCounts(list: ParentView["vocab"]) {
+  return {
+    pass: list.filter((x) => x.result === "pass").length,
+    rewrite: list.filter((x) => x.result === "rewrite").length,
+    retest: list.filter((x) => x.result === "retest").length,
+    retestOpen: list.filter((x) => x.result === "retest" && x.retestPassed !== true).length,
+  };
 }
 const REASON: Record<string, string> = { retest: "재시험", homework: "보강", absence: "결석 보강", other: "보강" };
 
@@ -207,13 +216,21 @@ export function renderHome(v: ParentView, nav: Nav): string {
     const exNote = ex
       ? `<div class="n ${ex.passed === false ? "warn" : "ok"}">${ex.topPct ? `상위 ${ex.topPct}%` : esc(ex.name)}${ex.passed === true ? " · 통과" : ex.passed === false ? " · 재시" : ""}</div>`
       : `<div class="n">이번 주 시험 없음</div>`;
-    const visiblePhotos = v.photos.filter((p) => !p.purged).length;
+    // 단어시험은 올 때마다 본다(주 2~3회) — 부모님이 가장 자주 궁금해하는 칸이라 타일 하나를 준다.
+    const vc = vocabCounts(v.vocab);
+    const vocabNote = !v.vocab.length
+      ? `<div class="n">이번 주 기록 없음</div>`
+      : vc.retestOpen
+        ? `<div class="n bad">재시험 ${vc.retestOpen}회 남음</div>`
+        : vc.rewrite
+          ? `<div class="n warn">반복쓰기 ${vc.rewrite}회</div>`
+          : `<div class="n ok">모두 통과!</div>`;
     tiles = `<div class="tiles">
 <a class="tile" href="${esc(nav.href("homework", q))}"><div class="tt">현재 진도</div><div class="big">${pct ?? "-"}<small>${pct == null ? "" : "%"}</small></div><div class="n">${esc(v.week.unit ?? v.week.textbook ?? "")}</div>
 <svg class="ring" width="44" height="44" viewBox="0 0 44 44" style="transform:rotate(-90deg)"><circle cx="22" cy="22" r="18" fill="none" stroke="#EDF0F5" stroke-width="5"/><circle cx="22" cy="22" r="18" fill="none" stroke="#F96E00" stroke-width="5" stroke-linecap="round" stroke-dasharray="113" stroke-dashoffset="${off}"/></svg></a>
 <a class="tile" href="${esc(nav.href("homework", q))}"><div class="tt">숙제</div><div class="big">${doneN}<small>/${v.homework.length} 완료</small></div>${hwNote}</a>
+<a class="tile" href="${esc(nav.href("homework", q))}#vocab"><div class="tt">단어시험</div><div class="big">${v.vocab.length ? `${vc.pass}<small>/${v.vocab.length}회 통과</small>` : "-"}</div>${vocabNote}</a>
 <a class="tile" href="${esc(nav.href("exam", q))}"><div class="tt">최근 시험</div><div class="big">${ex ? `${ex.total}<small>점</small>` : `-`}</div>${exNote}</a>
-<a class="tile" href="${esc(nav.href("notes", q))}"><div class="tt">노트정리</div><div class="big">${visiblePhotos}<small>장</small></div><div class="n">이번 주 노트</div>${visiblePhotos ? `<span class="new">NEW</span>` : ""}</a>
 </div>`;
   } else {
     tiles = `<div class="card"><div class="empty">아직 공개된 학습 기록이 없어요.<br>선생님이 기록을 올리면 여기에 보입니다.</div></div>`;
@@ -226,18 +243,50 @@ export function renderHome(v: ParentView, nav: Nav): string {
       : `<div class="empty">예정된 보강·재시험이 없어요</div>`
   }</div>`;
 
+  const visiblePhotos = v.photos.filter((p) => !p.purged).length;
+  const notesCard = visiblePhotos
+    ? `<a class="card" style="display:flex;align-items:center;gap:10px" href="${esc(nav.href("notes", q))}"><span style="font-size:14.5px;font-weight:800">나의 노트정리</span><span style="font-size:12px;color:var(--sub)">이번 주 ${visiblePhotos}장</span><span class="pill p-d" style="margin-left:auto">NEW</span><span style="color:#C3CAD8;font-weight:800">›</span></a>`
+    : "";
+
   const body = `${previewBand(nav, v)}<div class="wrap">${brand(v.academyName)}
 <div class="hero"><div class="hello">${v.week ? "이번 주 학습 소식이에요" : "학습 리포트"}</div><div class="hr"><div class="st">${esc(v.student.name)}<small>${esc([v.student.grade, v.className].filter(Boolean).join(" · "))}</small></div>${weekNav}</div></div>
 ${classChips}
 ${urgent ? `<div class="urgent"><div class="d">${daysBetween(v.today, urgent.date) === 0 ? "오늘" : `D-${daysBetween(v.today, urgent.date)}`}</div><div><div class="t">${esc(REASON[urgent.reason] ?? "보강")} · ${esc(urgent.content)}</div><div class="s">${fmtDate(urgent.date)}${urgent.startTime ? ` ${fmtTime(urgent.startTime)}` : ""}</div></div></div>` : ""}
 ${tiles}
 ${sched}
+${notesCard}
 <div class="foot">선생님이 기록한 학습 정보입니다</div>
 </div>${tabbar(nav, "home", v)}`;
   return page(`${v.student.name} 학습 리포트`, body);
 }
 
 // ─── 숙제 ────────────────────────────────────────────────────────────────
+
+/** 단어시험 카드. 날짜마다 "50개 중 3개 틀림 · 통과". 재시험은 다시 봐서 통과했는지까지 보여 준다. */
+function vocabCard(v: ParentView): string {
+  if (!v.week) return "";
+  const c = vocabCounts(v.vocab);
+  const pill = (x: ParentView["vocab"][number]) =>
+    x.result === "pass"
+      ? `<span class="pill p-g">통과</span>`
+      : x.result === "rewrite"
+        ? `<span class="pill p-o">반복쓰기</span>`
+        : x.retestPassed
+          ? `<span class="pill p-g">재시 통과</span>`
+          : `<span class="pill p-r">재시험</span>`;
+  const sub = (x: ParentView["vocab"][number]) =>
+    x.result === "rewrite" ? " · 틀린 단어를 남아서 다시 썼어요" : x.result === "retest" && !x.retestPassed ? " · 다시 시험을 봐요" : "";
+  return `<div class="card" id="vocab"><div class="sh"><span class="t">단어시험</span><span class="r">${v.vocab.length ? `<b>${c.pass}</b> / ${v.vocab.length}회 통과` : ""}</span></div>${
+    v.vocab.length
+      ? v.vocab
+          .map(
+            (x) =>
+              `<div class="hw"><div class="top2"><span class="n">${fmtDate(x.date).replace(/^\d+월 /, "")}</span>${pill(x)}</div><div class="sub">${x.total}개 중 <b>${x.total - x.wrong}개</b> 맞힘 (${x.wrong}개 틀림)${sub(x)}</div><div class="meter"><div class="${x.result === "pass" ? "g" : ""}" style="width:${Math.round(((x.total - x.wrong) / x.total) * 100)}%"></div></div></div>`
+          )
+          .join("")
+      : `<div class="empty">이번 주 단어시험 기록이 아직 없어요</div>`
+  }<div style="font-size:10.5px;color:#AEB6C4;margin-top:8px">틀린 개수 ${VOCAB_PASS_PCT}% 이하 통과 · ${VOCAB_REWRITE_PCT}% 이하 반복쓰기 · 그 이상 재시험</div></div>`;
+}
 
 export function renderHomework(v: ParentView, nav: Nav): string {
   const items = v.homework;
@@ -268,6 +317,7 @@ ${v.week.progressPct != null ? `<div class="meter" style="margin-top:12px;height
   const body = `${previewBand(nav, v)}<div class="wrap">${detailHead(nav, v, "숙제 검사")}
 ${progress}
 <div class="card"><div class="sh"><span class="t">${v.week ? esc(v.week.label) : "이번 주"}</span><span class="r"><b>${doneN}</b> / ${items.length} 완료</span></div>${items.length ? items.map(row).join("") : `<div class="empty">이번 주 숙제가 없어요</div>`}</div>
+${vocabCard(v)}
 ${behind.length ? `<div class="card"><div class="sh"><span class="t">밀린 숙제</span><span class="r"><b>${behind.length}</b>건</span></div>${behind.map((h) => `<div class="hw"><div class="top2"><span class="n">${esc(h.title)}</span><span class="pill p-o">보충 필요</span></div><div class="sub">${h.shortfall ? `${h.shortfall}${esc(h.countUnit ?? "개")} 남았어요 · ` : ""}다음 등원일에 다시 검사해요</div></div>`).join("")}</div>` : ""}
 ${v.history.length ? `<div class="card"><div class="sh"><span class="t">지난 기록</span></div>${v.history.map((x) => `<div class="row"><span class="dt" style="width:62px;color:var(--sub)">${esc(x.label.replace("주차", "주"))}</span><span class="nm">${x.done === x.total ? `${x.total}건 모두 완료` : `${x.done}건 완료${x.partial ? ` · ${x.partial}건 일부` : ""}${x.none ? ` · ${x.none}건 안 해옴` : ""}`}</span>${x.done === x.total ? `<span class="pill p-g">완료</span>` : `<span class="pill p-o">일부</span>`}</div>`).join("")}</div>` : ""}
 </div>${tabbar(nav, "homework", v)}`;

@@ -1,5 +1,5 @@
 /**
- * 학부모 학습 리포트 테이블 10개를 만든다.
+ * 학부모 학습 리포트 테이블 11개를 만든다 (2026-11-08 vocab_scores 추가).
  *
  * 실행: npx tsx scripts/migrate-add-learning-report.ts
  *       (= npm run db:migrate:learning-report)
@@ -182,7 +182,26 @@ const STATEMENTS: [string, string][] = [
      )`,
   ],
 
+  // 2026-11-08 추가: 단어시험(매 수업). 기존 테이블은 여전히 건드리지 않는다.
+  [
+    "vocab_scores 테이블",
+    `CREATE TABLE IF NOT EXISTS vocab_scores (
+       id              VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+       tenant_id       VARCHAR NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+       report_week_id  VARCHAR NOT NULL REFERENCES report_weeks(id) ON DELETE CASCADE,
+       class_id        VARCHAR NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+       student_id      VARCHAR NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+       test_date       TEXT NOT NULL,
+       total           INTEGER NOT NULL,
+       wrong           INTEGER NOT NULL,
+       retest_passed   BOOLEAN,
+       updated_by      VARCHAR REFERENCES users(id),
+       updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+     )`,
+  ],
+
   // ── 유니크: 같은 것이 두 번 생기는 것을 DB 가 막는다 (화면이 두 번 눌려도) ──
+  ["반 × 학생 × 날짜 단어시험 유니크", `CREATE UNIQUE INDEX IF NOT EXISTS vocab_scores_class_student_date_uniq ON vocab_scores (class_id, student_id, test_date)`],
   ["반 × 주 유니크", `CREATE UNIQUE INDEX IF NOT EXISTS report_weeks_class_week_uniq ON report_weeks (class_id, week_start)`],
   ["숙제 × 학생 유니크", `CREATE UNIQUE INDEX IF NOT EXISTS homework_checks_item_student_uniq ON homework_checks (homework_item_id, student_id)`],
   ["시험 × 학생 유니크", `CREATE UNIQUE INDEX IF NOT EXISTS exam_scores_exam_student_uniq ON exam_scores (exam_id, student_id)`],
@@ -208,6 +227,9 @@ const STATEMENTS: [string, string][] = [
   // 6개월 지난 사진 지우기가 하루 한 번 이 순서로 훑는다.
   ["note_photos 보관기간", `CREATE INDEX IF NOT EXISTS note_photos_taken_idx ON note_photos (taken_date) WHERE purged_at IS NULL`],
   ["parent_links 학생별", `CREATE INDEX IF NOT EXISTS parent_links_student_idx ON parent_links (student_id)`],
+  ["vocab_scores 주별", `CREATE INDEX IF NOT EXISTS vocab_scores_week_idx ON vocab_scores (report_week_id)`],
+  // 학생별 "지난번 총 문항" 을 기본값으로 꺼낼 때 탄다.
+  ["vocab_scores 학생·날짜", `CREATE INDEX IF NOT EXISTS vocab_scores_student_date_idx ON vocab_scores (student_id, test_date DESC)`],
 ];
 
 async function main() {

@@ -130,6 +130,13 @@ async function main() {
       fetch(`${base}${weekPath}/photos?${q}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "image/jpeg" }, body: FAKE_JPEG }).then((r) => r.json());
     const shared = await up(`title=${encodeURIComponent("[TEST] 반 전체 노트")}&takenDate=2000-01-04`);
     const privateOther = await up(`title=${encodeURIComponent("[TEST] 남의 노트")}&takenDate=2000-01-04&studentId=${other.id}`);
+    await teacher("PUT", `${weekPath}/vocab`, {
+      entries: [
+        { studentId: me.id, testDate: "2000-01-03", total: 50, wrong: 3 },
+        { studentId: me.id, testDate: "2000-01-05", total: 50, wrong: 7 },
+        { studentId: other.id, testDate: "2000-01-03", total: 50, wrong: 20 },
+      ],
+    });
     await teacher("POST", `${weekPath}/publish`);
 
     const link = await (await teacher("POST", `/api/learning-report/students/${me.id}/link`)).json();
@@ -203,6 +210,16 @@ async function main() {
       const [after] = await db.select().from(parentLinks).where(eq(parentLinks.token, link.token));
       assert.ok(after.viewCount >= 1 && after.lastViewedAt, "열람 기록이 남아야 한다");
       void row;
+    });
+
+    await test("단어시험: 홈 타일 '1/2회 통과', 숙제 화면에 날짜별 결과 (남의 기록은 없다)", async () => {
+      const home = await (await parent(`${P}${W}`)).text();
+      assert.ok(home.includes("단어시험") && home.includes("/2회 통과"), "홈 단어시험 타일");
+      assert.ok(home.includes("반복쓰기 1회"));
+      const hw = await (await parent(`${P}/homework${W}`)).text();
+      assert.ok(hw.includes("50개 중 <b>47개</b> 맞힘"), "1/3 통과 기록");
+      assert.ok(hw.includes("50개 중 <b>43개</b> 맞힘"), "1/5 반복쓰기 기록");
+      assert.ok(!hw.includes("<b>30개</b>"), "다른 학생(20개 틀림) 기록이 보이면 안 된다");
     });
 
     await test("시험: 내 한마디는 있고 남의 한마디는 없다", async () => {

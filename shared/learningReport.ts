@@ -119,6 +119,44 @@ export function examStats(rows: ScoreRow[], passScore: number | null | undefined
   };
 }
 
+// ─── 단어시험 ────────────────────────────────────────────────────────────
+
+/**
+ * 단어시험 판정 (원장 기준, 2026-11-08):
+ *   틀린 비율 10% 이하 → 통과
+ *   10% 초과 ~ 15% 이하 → 남아서 틀린 단어 반복쓰기
+ *   15% 초과 → 재시험
+ * 경계는 "그 비율까지 포함" 이다. 50문항이면 5개 틀림 = 통과, 7개 = 반복쓰기(14%), 8개 = 재시험(16%).
+ * 소수 오차로 경계가 뒤집히지 않게 비율이 아니라 정수로 비교한다(wrong*100 ≤ total*10).
+ */
+export const VOCAB_PASS_PCT = 10;
+export const VOCAB_REWRITE_PCT = 15;
+export type VocabResult = "pass" | "rewrite" | "retest";
+
+export function vocabResult(total: number, wrong: number): VocabResult {
+  if (wrong * 100 <= total * VOCAB_PASS_PCT) return "pass";
+  if (wrong * 100 <= total * VOCAB_REWRITE_PCT) return "rewrite";
+  return "retest";
+}
+
+export const VOCAB_RESULT_LABEL: Record<VocabResult, string> = { pass: "통과", rewrite: "반복쓰기", retest: "재시험" };
+
+// ─── 수업 요일 ───────────────────────────────────────────────────────────
+
+const DOW_KO = ["일", "월", "화", "수", "목", "금", "토"];
+
+/** "2026-11-04" → "수" */
+export function dayOfWeekKo(ymd: string): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return DOW_KO[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+}
+
+/** 그 주(월요일 시작)에서 주어진 요일들의 날짜. ["월","수"] → ["2026-11-02","2026-11-04"] */
+export function weekDatesFor(weekStart: string, days: readonly string[]): string[] {
+  const order = ["월", "화", "수", "목", "금", "토", "일"];
+  return order.map((d, i) => (days.includes(d) ? addDays(weekStart, i) : null)).filter((x): x is string => x != null);
+}
+
 // ─── 확인 번호 ───────────────────────────────────────────────────────────
 
 /** 보호자 번호의 끝 4자리. 숫자가 4개 미만이면 null — 그 학생은 링크를 만들 수 없다. */

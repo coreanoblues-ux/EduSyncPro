@@ -24,10 +24,11 @@ import {
   makeupSessions,
   makeupStudents,
   notePhotos,
+  vocabScores,
   type HomeworkStatus,
 } from "@shared/schema";
 import { addDays, todayKst } from "@shared/day";
-import { weekLabel, examStats, homeworkShortfall, mondayOf } from "@shared/learningReport";
+import { weekLabel, examStats, homeworkShortfall, mondayOf, vocabResult, type VocabResult } from "@shared/learningReport";
 
 export type ParentView = {
   academyName: string;
@@ -78,6 +79,8 @@ export type ParentView = {
   /** 지난 주들의 숙제 요약 (최근 3주). */
   history: { weekStart: string; label: string; done: number; partial: number; none: number; total: number }[];
   photos: { id: string; title: string; takenDate: string; purged: boolean }[];
+  /** 이번 주 단어시험 (기록이 있는 날만). 판정은 vocabResult 로 계산한 값. */
+  vocab: { date: string; total: number; wrong: number; result: VocabResult; retestPassed: boolean | null }[];
   /** 보강·재시 일정. 지난 2주 + 앞으로. 공개와 상관없이 보인다. */
   schedule: { date: string; startTime: string | null; minutes: number | null; content: string; reason: string; status: string }[];
 };
@@ -132,6 +135,7 @@ export async function buildParentView(opts: {
     trend: [],
     history: [],
     photos: [],
+    vocab: [],
     schedule,
   };
   if (!cls) return base;
@@ -255,6 +259,14 @@ export async function buildParentView(opts: {
     .where(and(eq(notePhotos.reportWeekId, week.id), or(isNull(notePhotos.studentId), eq(notePhotos.studentId, studentId))))
     .orderBy(asc(notePhotos.takenDate), asc(notePhotos.createdAt));
   base.photos = photos.map((p) => ({ id: p.id, title: p.title, takenDate: p.takenDate, purged: !!p.purgedAt }));
+
+  // ── 단어시험: 이 학생 것만, 이 주 것만 ──
+  const vocabRows = await db
+    .select({ date: vocabScores.testDate, total: vocabScores.total, wrong: vocabScores.wrong, retestPassed: vocabScores.retestPassed })
+    .from(vocabScores)
+    .where(and(eq(vocabScores.reportWeekId, week.id), eq(vocabScores.studentId, studentId)))
+    .orderBy(asc(vocabScores.testDate));
+  base.vocab = vocabRows.map((v) => ({ ...v, result: vocabResult(v.total, v.wrong) }));
 
   return base;
 }

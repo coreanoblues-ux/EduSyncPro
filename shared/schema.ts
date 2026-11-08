@@ -775,6 +775,26 @@ export const notePhotoFiles = pgTable("note_photo_files", {
   data: bytea("data").notNull(),
 });
 
+// 단어시험 — 학생 × 날짜 한 줄. 페이지원은 본수업·클리닉 상관없이 올 때마다 단어시험을 본다(주 2~3회).
+// 문항 수가 학생마다 조금씩 달라 total 도 줄마다 저장한다. 통과·반복쓰기·재시험 판정은 저장하지 않고
+// shared/learningReport.ts 의 vocabResult 로 그때 계산한다(기준이 바뀌어도 기록을 고칠 필요가 없다).
+// 기록은 그 날짜가 속한 주(report_weeks)에 매달려, 주를 공개해야 부모님께 보인다.
+// UNIQUE (class_id, student_id, test_date) — 스크립트 소유.
+export const vocabScores = pgTable("vocab_scores", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  reportWeekId: varchar("report_week_id").references(() => reportWeeks.id, { onDelete: "cascade" }).notNull(),
+  classId: varchar("class_id").references(() => classes.id, { onDelete: "cascade" }).notNull(),
+  studentId: varchar("student_id").references(() => students.id, { onDelete: "cascade" }).notNull(),
+  testDate: text("test_date").notNull(),
+  total: integer("total").notNull(),
+  wrong: integer("wrong").notNull(),
+  // 재시험 판정을 받은 뒤 다시 봐서 통과했는가. NULL = 아직(또는 재시 대상이 아님).
+  retestPassed: boolean("retest_passed"),
+  updatedBy: varchar("updated_by").references(() => users.id),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
 // 부모님 링크. 학생당 살아 있는 링크는 하나(revoked_at IS NULL) — 부분 유니크, 스크립트 소유.
 // 토큰 규칙은 server/lib/shareLink.ts 와 같다(12자). 확인 번호(보호자 번호 뒤 4자리)는 저장하지 않고
 // 그때그때 students.parent_phone 과 비교한다 — 보호자 번호를 고치면 확인 번호도 저절로 따라간다.
@@ -1424,6 +1444,25 @@ export const makeupBodySchema = z.object({
 export const updateMakeupBodySchema = z.object(makeupFields).partial();
 export const makeupStudentStatusBodySchema = z.object({ status: z.enum(MAKEUP_STUDENT_STATUSES) });
 
+/**
+ * 단어시험 일괄 저장. wrong 이 null 이면 그 칸 지우기(그날 시험 기록 없음).
+ * testDate 가 그 주 안인지, 학생이 반 명단에 있는지는 라우트가 확인한다.
+ */
+export const vocabScoresBodySchema = z.object({
+  entries: z
+    .array(
+      z.object({
+        studentId: lrId,
+        testDate: lrYmd,
+        total: z.number().int().min(1, "총 문항은 1 이상이어야 합니다.").max(300),
+        wrong: z.number().int().min(0).max(300).nullable(),
+        retestPassed: z.boolean().nullable().optional(),
+      })
+    )
+    .min(1)
+    .max(200),
+});
+
 /** 올린 사진의 제목·보일 사람 고치기. studentId 가 null 이면 반 전체. */
 export const updateNotePhotoBodySchema = z.object({
   title: z.string().trim().min(1, "사진 제목이 필요합니다.").max(60).optional(),
@@ -1606,6 +1645,7 @@ export type MakeupSession = typeof makeupSessions.$inferSelect;
 export type MakeupStudent = typeof makeupStudents.$inferSelect;
 export type NotePhoto = typeof notePhotos.$inferSelect;
 export type ParentLink = typeof parentLinks.$inferSelect;
+export type VocabScore = typeof vocabScores.$inferSelect;
 export type AiAuditLog = typeof aiAuditLogs.$inferSelect;
 export type LevelTest = typeof levelTests.$inferSelect;
 export type Attendance = typeof attendance.$inferSelect;

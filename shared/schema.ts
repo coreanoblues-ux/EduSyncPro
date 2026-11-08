@@ -795,6 +795,61 @@ export const vocabScores = pgTable("vocab_scores", {
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
+// ─── 주간 클리닉 시험 ──────────────────────────────────────────────────
+// 페이지원의 금(토) 클리닉 = 단계별 주간 시험 (원장 설명 2026-11-08).
+//   듣기(약 17문항, 다른 교실) / 브릿지 모의고사(100점) / 고1 모의고사 / 고2·3 모의고사(100점, 등급 자동)
+// 브릿지·모의고사는 **여러 반 학생이 한 교실에 섞여** 각자 단계를 푼다 → 반이 아니라 학생 단위로 기록한다.
+// 선택 수강이라 안 듣는 학생(중학생 약 15%, 고등부 전원)은 단계를 "none" 으로 둔다.
+
+export const CLINIC_LEVELS = ["listening", "bridge", "mock1", "mock23"] as const;
+export type ClinicLevel = (typeof CLINIC_LEVELS)[number];
+export const CLINIC_LEVEL_CHOICES = [...CLINIC_LEVELS, "none"] as const;
+export type ClinicLevelChoice = (typeof CLINIC_LEVEL_CHOICES)[number];
+
+// 학생별 클리닉 단계. 학생당 한 줄. 기존 students 에 칸을 더하지 않으려고 따로 둔다(share_phone 사고).
+// UNIQUE (student_id) — 스크립트 소유.
+export const studentClinicLevels = pgTable("student_clinic_levels", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  studentId: varchar("student_id").references(() => students.id, { onDelete: "cascade" }).notNull(),
+  level: text("level").notNull(),
+  updatedBy: varchar("updated_by").references(() => users.id),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// 클리닉 하루. 그날 단계별로 푼 시험지 이름과 **공개 스위치**를 가진다.
+// 반이 섞여서 반의 주 공개(report_weeks)를 따를 수 없으므로 클리닉 날마다 따로 공개한다.
+// UNIQUE (tenant_id, date) — 스크립트 소유.
+export const clinicDays = pgTable("clinic_days", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  date: text("date").notNull(),
+  // { listening: "듣기 12회", mock1: "2024년 9월 고1" } — 부모님 화면에 시험 이름으로 나간다
+  papers: jsonb("papers").$type<Partial<Record<ClinicLevel, string>>>().default(sql`'{}'::jsonb`).notNull(),
+  publishedAt: timestamp("published_at"),
+  publishedBy: varchar("published_by").references(() => users.id),
+  createdBy: varchar("created_by").references(() => users.id).notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// 클리닉 점수 — 학생 × 클리닉 날 한 줄. 듣기는 맞은 개수/총 문항, 브릿지·모의는 100점 만점 점수.
+// level 은 그날 푼 단계를 그대로 남긴다(나중에 학생 단계가 올라가도 그날 기록은 그날 단계로 보인다).
+// UNIQUE (clinic_day_id, student_id) — 스크립트 소유.
+export const clinicScores = pgTable("clinic_scores", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  clinicDayId: varchar("clinic_day_id").references(() => clinicDays.id, { onDelete: "cascade" }).notNull(),
+  studentId: varchar("student_id").references(() => students.id, { onDelete: "cascade" }).notNull(),
+  level: text("level").notNull(),
+  score: integer("score"),
+  correct: integer("correct"),
+  total: integer("total"),
+  reviewDone: boolean("review_done").default(false).notNull(),
+  updatedBy: varchar("updated_by").references(() => users.id),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
 // 부모님 링크. 학생당 살아 있는 링크는 하나(revoked_at IS NULL) — 부분 유니크, 스크립트 소유.
 // 토큰 규칙은 server/lib/shareLink.ts 와 같다(12자). 확인 번호(보호자 번호 뒤 4자리)는 저장하지 않고
 // 그때그때 students.parent_phone 과 비교한다 — 보호자 번호를 고치면 확인 번호도 저절로 따라간다.
@@ -1463,6 +1518,33 @@ export const vocabScoresBodySchema = z.object({
     .max(200),
 });
 
+export const clinicLevelsBodySchema = z.object({
+  items: z.array(z.object({ studentId: lrId, level: z.enum(CLINIC_LEVEL_CHOICES) })).min(1).max(300),
+});
+
+export const clinicDayBodySchema = z.object({
+  papers: z.record(z.enum(CLINIC_LEVELS), z.string().trim().max(60)).optional(),
+});
+
+/**
+ * 클리닉 점수 일괄 저장. 듣기는 correct/total, 브릿지·모의는 score. 둘 다 null 이면 그 학생 기록 지우기.
+ * 학생의 단계는 저장 시점의 단계(student_clinic_levels)를 서버가 남긴다.
+ */
+export const clinicScoresBodySchema = z.object({
+  entries: z
+    .array(
+      z.object({
+        studentId: lrId,
+        score: lrScore.nullable().optional(),
+        correct: z.number().int().min(0).max(100).nullable().optional(),
+        total: z.number().int().min(1).max(100).nullable().optional(),
+        reviewDone: z.boolean().optional(),
+      })
+    )
+    .min(1)
+    .max(300),
+});
+
 /** 올린 사진의 제목·보일 사람 고치기. studentId 가 null 이면 반 전체. */
 export const updateNotePhotoBodySchema = z.object({
   title: z.string().trim().min(1, "사진 제목이 필요합니다.").max(60).optional(),
@@ -1646,6 +1728,8 @@ export type MakeupStudent = typeof makeupStudents.$inferSelect;
 export type NotePhoto = typeof notePhotos.$inferSelect;
 export type ParentLink = typeof parentLinks.$inferSelect;
 export type VocabScore = typeof vocabScores.$inferSelect;
+export type ClinicDay = typeof clinicDays.$inferSelect;
+export type ClinicScore = typeof clinicScores.$inferSelect;
 export type AiAuditLog = typeof aiAuditLogs.$inferSelect;
 export type LevelTest = typeof levelTests.$inferSelect;
 export type Attendance = typeof attendance.$inferSelect;

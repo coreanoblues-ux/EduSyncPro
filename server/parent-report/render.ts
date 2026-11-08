@@ -9,7 +9,7 @@
 
 import { escapeHtml as esc } from "../lib/shareLink";
 import { daysBetween } from "@shared/day";
-import { VOCAB_PASS_PCT, VOCAB_REWRITE_PCT } from "@shared/learningReport";
+import { VOCAB_PASS_PCT, VOCAB_REWRITE_PCT, CLINIC_LEVEL_LABEL, englishGrade, isCountLevel, isMockLevel } from "@shared/learningReport";
 import type { ParentView } from "./data";
 
 export type View = "home" | "homework" | "exam" | "notes";
@@ -40,6 +40,51 @@ function weekPill(label: string): string {
   const m = /^(\d+월) (.+)$/.exec(label);
   return m ? `<b>${esc(m[1])}</b> ${esc(m[2])}` : esc(label);
 }
+// ─── 주간 클리닉 ─────────────────────────────────────────────────────────
+
+/** 클리닉 한 번의 큰 숫자: 듣기는 "15/17", 나머지는 "84점". */
+function clinicBig(c: ParentView["clinic"][number]): string {
+  return isCountLevel(c.level) ? `${c.correct ?? "-"}<small>/${c.total ?? "-"}</small>` : `${c.score ?? "-"}<small>점</small>`;
+}
+
+/**
+ * 홈 4번째 타일. 클리닉을 듣는 학생(또는 이번 주 기록이 있는 학생)이면 "주간 클리닉",
+ * 아니면 null — 부르는 쪽이 "최근 시험" 타일을 그린다(고등부·클리닉 미수강).
+ */
+function clinicTile(v: ParentView, nav: Nav, q: { w?: string | null; c?: string | null }): string | null {
+  if (!v.clinicLevel && v.clinic.length === 0) return null;
+  const c = v.clinic[v.clinic.length - 1];
+  const note = c
+    ? `<div class="n ${c.reviewDone ? "ok" : "warn"}">${isMockLevel(c.level) && c.score != null ? `${englishGrade(c.score)}등급 · ` : ""}${c.reviewDone ? "오답 정리 완료" : "오답 정리 전"}</div>`
+    : `<div class="n">${esc(CLINIC_LEVEL_LABEL[v.clinicLevel ?? ""] ?? "")} · 이번 주 기록 없음</div>`;
+  return `<a class="tile" href="${esc(nav.href("exam", q))}"><div class="tt">주간 클리닉</div><div class="big">${c ? clinicBig(c) : "-"}</div>${note}</a>`;
+}
+
+function clinicCards(v: ParentView): string {
+  if (!v.clinic.length && !v.clinicTrend.length) return "";
+  const cards = v.clinic
+    .map((c) => {
+      const value = isCountLevel(c.level) ? (c.correct != null && c.total ? Math.round((c.correct / c.total) * 100) : null) : c.score;
+      const avg =
+        c.levelAverage != null && value != null
+          ? `<div class="pr"><span>같은 단계 평균 ${c.levelAverage}${isCountLevel(c.level) ? "%" : "점"}</span><span class="me">${esc(v.student.name)} ${value}${isCountLevel(c.level) ? "%" : "점"}</span></div><div class="pt"><div class="f" style="width:${value}%"></div><div class="a" style="left:${c.levelAverage}%"></div><div class="dot" style="left:${value}%"></div></div><div class="lg"><span>0</span><span>50</span><span>100</span></div>`
+          : "";
+      return `<div class="card"><div class="sh"><span class="t">주간 클리닉 · ${esc(CLINIC_LEVEL_LABEL[c.level] ?? c.level)}</span><span class="r">${fmtDate(c.date).replace(/^\d+월 /, "")}</span></div>
+${c.paper ? `<div style="font-size:12px;color:var(--sub);font-weight:700;margin:-4px 0 8px">${esc(c.paper)}</div>` : ""}
+<div class="score"><span class="v">${isCountLevel(c.level) ? `${c.correct ?? "-"}` : `${c.score ?? "-"}`}</span><span class="u">${isCountLevel(c.level) ? `/ ${c.total ?? "-"}문항` : "점"}</span>${isMockLevel(c.level) && c.score != null ? `<span class="top">${englishGrade(c.score)}등급</span>` : ""}</div>
+<div class="ss">${c.reviewDone ? `<b class="ok">오답 정리 완료</b>` : `<b class="warn">오답 정리 전</b>`}${isMockLevel(c.level) ? " · 등급은 영어 절대평가 기준" : ""}</div>${avg}</div>`;
+    })
+    .join("");
+  const t = v.clinicTrend;
+  const trend =
+    t.length >= 2
+      ? `<div class="card"><div class="el">클리닉 추이<span>최근 ${t.length}회${t.some((x) => isCountLevel(x.level)) ? " · 듣기는 정답률" : ""}</span></div><div class="trend">${t
+          .map((x, i) => `<div class="tb${i === t.length - 1 ? " cur" : ""}"><span class="v">${x.value}</span><div class="b" style="height:${Math.max(6, Math.round((x.value / 100) * 50))}px"></div><span class="l">${fmtShort(x.date).replace(".", "/")}</span></div>`)
+          .join("")}</div></div>`
+      : "";
+  return cards + trend;
+}
+
 /** 재시험을 다시 봐서 통과한 날도 "통과" 로 센다 (원장 결정 2026-11-08). 카드에는 "재시 통과" 로 따로 보인다. */
 function vocabCounts(list: ParentView["vocab"]) {
   return {
@@ -231,7 +276,7 @@ export function renderHome(v: ParentView, nav: Nav): string {
 <svg class="ring" width="44" height="44" viewBox="0 0 44 44" style="transform:rotate(-90deg)"><circle cx="22" cy="22" r="18" fill="none" stroke="#EDF0F5" stroke-width="5"/><circle cx="22" cy="22" r="18" fill="none" stroke="#F96E00" stroke-width="5" stroke-linecap="round" stroke-dasharray="113" stroke-dashoffset="${off}"/></svg></a>
 <a class="tile" href="${esc(nav.href("homework", q))}"><div class="tt">숙제</div><div class="big">${doneN}<small>/${v.homework.length} 완료</small></div>${hwNote}</a>
 <a class="tile" href="${esc(nav.href("homework", q))}#vocab"><div class="tt">단어시험</div><div class="big">${v.vocab.length ? `${vc.pass}<small>/${v.vocab.length}회 통과</small>` : "-"}</div>${vocabNote}</a>
-<a class="tile" href="${esc(nav.href("exam", q))}"><div class="tt">최근 시험</div><div class="big">${ex ? `${ex.total}<small>점</small>` : `-`}</div>${exNote}</a>
+${clinicTile(v, nav, q) ?? `<a class="tile" href="${esc(nav.href("exam", q))}"><div class="tt">최근 시험</div><div class="big">${ex ? `${ex.total}<small>점</small>` : `-`}</div>${exNote}</a>`}
 </div>`;
   } else {
     tiles = `<div class="card"><div class="empty">아직 공개된 학습 기록이 없어요.<br>선생님이 기록을 올리면 여기에 보입니다.</div></div>`;
@@ -354,8 +399,10 @@ ${e.comment ? `<div class="quote"><div class="w">TEACHER'S NOTE</div><div class=
           .join("")}</div></div>`
       : "";
   const retests = v.schedule.filter((s) => s.reason === "retest");
+  const clinic = clinicCards(v);
   const body = `${previewBand(nav, v)}<div class="wrap">${detailHead(nav, v, "시험 결과")}
-${v.exams.length ? v.exams.map(card).join("") : `<div class="card"><div class="empty">${v.week ? "이번 주 시험 기록이 없어요" : "아직 공개된 시험 기록이 없어요"}</div></div>`}
+${clinic}
+${v.exams.length ? v.exams.map(card).join("") : clinic ? "" : `<div class="card"><div class="empty">${v.week ? "이번 주 시험 기록이 없어요" : "아직 공개된 시험 기록이 없어요"}</div></div>`}
 ${trend}
 ${retests.length ? `<div class="card"><div class="sh"><span class="t">재시 기록</span></div>${retests.map((s) => `<div class="row"><span class="dt" style="color:var(--sub)">${fmtShort(s.date)}</span><span class="nm">${esc(s.content)}</span>${schedulePill(s, v.today)}</div>`).join("")}</div>` : ""}
 </div>${tabbar(nav, "exam", v)}`;

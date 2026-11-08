@@ -1,5 +1,6 @@
 /**
- * 학부모 학습 리포트 테이블 11개를 만든다 (2026-11-08 vocab_scores 추가).
+ * 학부모 학습 리포트 테이블 14개를 만든다
+ * (2026-11-08 vocab_scores, student_clinic_levels · clinic_days · clinic_scores 추가).
  *
  * 실행: npx tsx scripts/migrate-add-learning-report.ts
  *       (= npm run db:migrate:learning-report)
@@ -200,7 +201,53 @@ const STATEMENTS: [string, string][] = [
      )`,
   ],
 
+  // 2026-11-08 추가: 주간 클리닉(단계별 주간 시험). 반이 섞이므로 학생 단위.
+  [
+    "student_clinic_levels 테이블",
+    `CREATE TABLE IF NOT EXISTS student_clinic_levels (
+       id          VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+       tenant_id   VARCHAR NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+       student_id  VARCHAR NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+       level       TEXT NOT NULL,
+       updated_by  VARCHAR REFERENCES users(id),
+       updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+     )`,
+  ],
+  [
+    "clinic_days 테이블",
+    `CREATE TABLE IF NOT EXISTS clinic_days (
+       id            VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+       tenant_id     VARCHAR NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+       date          TEXT NOT NULL,
+       papers        JSONB NOT NULL DEFAULT '{}'::jsonb,
+       published_at  TIMESTAMP,
+       published_by  VARCHAR REFERENCES users(id),
+       created_by    VARCHAR NOT NULL REFERENCES users(id),
+       created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+       updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+     )`,
+  ],
+  [
+    "clinic_scores 테이블",
+    `CREATE TABLE IF NOT EXISTS clinic_scores (
+       id             VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+       tenant_id      VARCHAR NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+       clinic_day_id  VARCHAR NOT NULL REFERENCES clinic_days(id) ON DELETE CASCADE,
+       student_id     VARCHAR NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+       level          TEXT NOT NULL,
+       score          INTEGER,
+       correct        INTEGER,
+       total          INTEGER,
+       review_done    BOOLEAN NOT NULL DEFAULT false,
+       updated_by     VARCHAR REFERENCES users(id),
+       updated_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+     )`,
+  ],
+
   // ── 유니크: 같은 것이 두 번 생기는 것을 DB 가 막는다 (화면이 두 번 눌려도) ──
+  ["학생당 클리닉 단계 하나", `CREATE UNIQUE INDEX IF NOT EXISTS student_clinic_levels_student_uniq ON student_clinic_levels (student_id)`],
+  ["학원 × 날짜 클리닉 하루", `CREATE UNIQUE INDEX IF NOT EXISTS clinic_days_tenant_date_uniq ON clinic_days (tenant_id, date)`],
+  ["클리닉 날 × 학생 점수 하나", `CREATE UNIQUE INDEX IF NOT EXISTS clinic_scores_day_student_uniq ON clinic_scores (clinic_day_id, student_id)`],
   ["반 × 학생 × 날짜 단어시험 유니크", `CREATE UNIQUE INDEX IF NOT EXISTS vocab_scores_class_student_date_uniq ON vocab_scores (class_id, student_id, test_date)`],
   ["반 × 주 유니크", `CREATE UNIQUE INDEX IF NOT EXISTS report_weeks_class_week_uniq ON report_weeks (class_id, week_start)`],
   ["숙제 × 학생 유니크", `CREATE UNIQUE INDEX IF NOT EXISTS homework_checks_item_student_uniq ON homework_checks (homework_item_id, student_id)`],
@@ -230,6 +277,8 @@ const STATEMENTS: [string, string][] = [
   ["vocab_scores 주별", `CREATE INDEX IF NOT EXISTS vocab_scores_week_idx ON vocab_scores (report_week_id)`],
   // 학생별 "지난번 총 문항" 을 기본값으로 꺼낼 때 탄다.
   ["vocab_scores 학생·날짜", `CREATE INDEX IF NOT EXISTS vocab_scores_student_date_idx ON vocab_scores (student_id, test_date DESC)`],
+  // 부모님 화면이 "이 학생의 최근 클리닉 5회" 를 꺼낼 때 탄다.
+  ["clinic_scores 학생별", `CREATE INDEX IF NOT EXISTS clinic_scores_student_idx ON clinic_scores (student_id)`],
 ];
 
 async function main() {

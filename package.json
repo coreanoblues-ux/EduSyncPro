@@ -40,6 +40,7 @@
     "test:projects": "tsx scripts/test-projects.ts",
     "test:learning-report": "tsx scripts/test-learning-report.ts",
     "test:parent-report": "tsx scripts/test-parent-report.ts",
+    "test:clinic": "tsx scripts/test-clinic.ts",
     "gen:report-data": "node scripts/extract-report-data.mjs",
     "plugin:build": "npm --prefix plugins/toss-front install --no-audit --no-fund && npm --prefix plugins/toss-front run build",
     "plugin:pack": "npm run plugin:build && node scripts/pack-toss-plugin.mjs",

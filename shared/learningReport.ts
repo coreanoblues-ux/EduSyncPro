@@ -141,6 +141,39 @@ export function vocabResult(total: number, wrong: number): VocabResult {
 
 export const VOCAB_RESULT_LABEL: Record<VocabResult, string> = { pass: "통과", rewrite: "반복쓰기", retest: "재시험" };
 
+// ─── 주간 클리닉 ─────────────────────────────────────────────────────────
+
+export const CLINIC_LEVEL_LABEL: Record<string, string> = {
+  listening: "듣기",
+  bridge: "브릿지 모의고사",
+  mock1: "고1 모의고사",
+  mock23: "고2·3 모의고사",
+  none: "안 들음",
+};
+
+/** 듣기 클리닉 기본 문항 수 (원장: "약 17문제"). 날마다 바꿀 수 있다. */
+export const LISTENING_DEFAULT_TOTAL = 17;
+
+/** 점수가 아니라 맞은 개수로 기록하는 단계인가. */
+export function isCountLevel(level: string): boolean {
+  return level === "listening";
+}
+
+/** 정식 모의고사 단계인가 — 등급을 붙인다. 브릿지는 정식 모의고사가 아니라 등급을 붙이지 않는다. */
+export function isMockLevel(level: string): boolean {
+  return level === "mock1" || level === "mock23";
+}
+
+/**
+ * 영어 절대평가 등급 (수능·학력평가 공통): 90점 이상 1등급, 이후 10점마다 한 등급, 20점 미만 9등급.
+ * 학원 모의고사 점수에 같은 구간을 붙여 부모님께 익숙한 말로 보여 준다.
+ */
+export function englishGrade(score: number): number {
+  if (score >= 90) return 1;
+  if (score < 20) return 9;
+  return 10 - Math.floor(score / 10);
+}
+
 // ─── 수업 요일 ───────────────────────────────────────────────────────────
 
 const DOW_KO = ["일", "월", "화", "수", "목", "금", "토"];

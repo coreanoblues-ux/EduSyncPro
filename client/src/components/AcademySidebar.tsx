@@ -1,4 +1,4 @@
-import { Home, Users, BookOpen, GraduationCap, CreditCard, Calendar, CalendarDays, Bell, MessageSquare, ListChecks, Smartphone, FileText, Settings, ClipboardList } from "lucide-react";
+import { Home, Users, BookOpen, GraduationCap, CreditCard, Calendar, CalendarDays, Bell, MessageSquare, ListChecks, Smartphone, FileText, Settings, ClipboardList, Headphones } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   Sidebar,
@@ -24,6 +24,7 @@ const menuItems = [
   { title: "수납", url: "/payments", icon: CreditCard },
   { title: "반별 일지", url: "/logs", icon: Calendar },
   { title: "학습 기록 입력", url: "/learning-report", icon: ClipboardList },
+  { title: "주간 클리닉", url: "/clinic", icon: Headphones },
   { title: "미납 알림", url: "/overdues", icon: Bell },
   { title: "Toss Front", url: "/toss-front", icon: Smartphone },
   { title: "설정", url: "/settings", icon: Settings },

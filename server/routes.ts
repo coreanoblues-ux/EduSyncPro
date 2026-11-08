@@ -52,6 +52,7 @@ import levelTestShareRouter from "./level-test/shareRoutes";
 import callIntakeRouter from "./call-intake/routes";
 import projectsRouter from "./projects/routes";
 import learningReportRouter from "./learning-report/routes";
+import clinicRouter from "./learning-report/clinicRoutes";
 import parentReportRouter from "./parent-report/routes";
 import { addDays, todayKst } from "@shared/day";
 import { matchClassName, matchClass, narrowByHint } from "./lib/nlpNormalize";
@@ -1861,6 +1862,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
    * 테스트: npm run test:learning-report
    */
   app.use(learningReportRouter);
+  // 주간 클리닉 시험(/api/learning-report/clinic/*) — 반이 섞여서 학생·클리닉 날 단위다.
+  app.use(clinicRouter);
   /**
    * ⚠️ 학부모 학습 리포트 — 로그인 없이 열리는 /p/:token. 레벨테스트 /r/ 에 이은 두 번째 공개 경로다.
    * 문단속(토큰·번호 뒤 4자리·잠금·쿠키)은 parent-report/routes.ts 머리말, 내보내는 값은 data.ts 에 있다.

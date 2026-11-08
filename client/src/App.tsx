@@ -18,6 +18,7 @@ import LevelTests from "@/pages/LevelTests";
 import Todos from "@/pages/Todos";
 import Scheduler from "@/pages/Scheduler";
 import LearningReport from "@/pages/LearningReport";
+import Clinic from "@/pages/Clinic";
 import Settings from "@/pages/Settings";
 import LoginForm from "@/components/LoginForm";
 import SignupForm from "@/components/SignupForm";
@@ -84,6 +85,7 @@ function Router({ user, tenant }: { user: User | null; tenant: Tenant | null }) 
       <Route path="/todos" component={() => <Todos />} />
       <Route path="/scheduler" component={() => <Scheduler />} />
       <Route path="/learning-report" component={() => <LearningReport />} />
+      <Route path="/clinic" component={() => <Clinic />} />
       <Route path="/payments" component={() => <Payments userRole={user.role} />} />
       <Route path="/logs" component={() => <LessonLogs userRole={user.role} />} />
       <Route path="/overdues" component={() => <Overdues userRole={user.role} />} />

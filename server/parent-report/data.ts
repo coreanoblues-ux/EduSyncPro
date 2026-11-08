@@ -25,10 +25,22 @@ import {
   makeupStudents,
   notePhotos,
   vocabScores,
+  studentClinicLevels,
+  clinicDays,
+  clinicScores,
   type HomeworkStatus,
 } from "@shared/schema";
 import { addDays, todayKst } from "@shared/day";
-import { weekLabel, examStats, homeworkShortfall, mondayOf, vocabResult, type VocabResult } from "@shared/learningReport";
+import {
+  weekLabel,
+  examStats,
+  homeworkShortfall,
+  mondayOf,
+  vocabResult,
+  isCountLevel,
+  MIN_TAKERS_FOR_RANK,
+  type VocabResult,
+} from "@shared/learningReport";
 
 export type ParentView = {
   academyName: string;
@@ -79,6 +91,21 @@ export type ParentView = {
   /** 지난 주들의 숙제 요약 (최근 3주). */
   history: { weekStart: string; label: string; done: number; partial: number; none: number; total: number }[];
   photos: { id: string; title: string; takenDate: string; purged: boolean }[];
+  /** 클리닉 단계. 안 듣거나(none) 아직 안 정했으면 null — 부모님 화면에 클리닉 칸이 안 나온다. */
+  clinicLevel: string | null;
+  /** 이 주의 클리닉 결과 (공개된 클리닉 날만). 같은 단계 평균은 응시 5명 이상일 때만 숫자로. */
+  clinic: {
+    date: string;
+    level: string;
+    paper: string | null;
+    score: number | null;
+    correct: number | null;
+    total: number | null;
+    reviewDone: boolean;
+    levelAverage: number | null;
+  }[];
+  /** 최근 클리닉 5회 (오래된 것 → 최근). value 는 점수, 듣기는 정답률(%). */
+  clinicTrend: { date: string; level: string; value: number }[];
   /** 이번 주 단어시험 (기록이 있는 날만). 판정은 vocabResult 로 계산한 값. */
   vocab: { date: string; total: number; wrong: number; result: VocabResult; retestPassed: boolean | null }[];
   /** 보강·재시 일정. 지난 2주 + 앞으로. 공개와 상관없이 보인다. */
@@ -94,7 +121,74 @@ export async function loadParentStudent(tenantId: string, studentId: string) {
   return s && s.isActive ? s : null;
 }
 
-export async function buildParentView(opts: {
+type BuildOpts = Parameters<typeof buildClassView>[0];
+
+/**
+ * 부모님 화면 값 전체. 반 기록(buildClassView) 위에 클리닉을 붙인다 — 클리닉은 반이 섞이고 공개도
+ * 클리닉 날마다 따로라서, 반의 공개된 주가 아직 없어도 클리닉 결과는 보일 수 있다.
+ */
+export async function buildParentView(opts: BuildOpts): Promise<ParentView | null> {
+  const v = await buildClassView(opts);
+  if (!v) return null;
+  const weekStart = v.week?.weekStart ?? mondayOf(v.today);
+  await attachClinic(v, opts.tenantId, opts.studentId, weekStart, !!opts.preview);
+  return v;
+}
+
+async function attachClinic(v: ParentView, tenantId: string, studentId: string, weekStart: string, preview: boolean) {
+  const [lv] = await db.select({ level: studentClinicLevels.level }).from(studentClinicLevels).where(eq(studentClinicLevels.studentId, studentId));
+  v.clinicLevel = lv && lv.level !== "none" ? lv.level : null;
+
+  const visible = and(eq(clinicDays.tenantId, tenantId), preview ? undefined : isNotNull(clinicDays.publishedAt));
+  const mine = await db
+    .select({
+      dayId: clinicDays.id,
+      date: clinicDays.date,
+      papers: clinicDays.papers,
+      level: clinicScores.level,
+      score: clinicScores.score,
+      correct: clinicScores.correct,
+      total: clinicScores.total,
+      reviewDone: clinicScores.reviewDone,
+    })
+    .from(clinicScores)
+    .innerJoin(clinicDays, eq(clinicDays.id, clinicScores.clinicDayId))
+    .where(and(visible, eq(clinicScores.studentId, studentId)))
+    .orderBy(desc(clinicDays.date));
+
+  const valueOf = (r: { level: string; score: number | null; correct: number | null; total: number | null }) =>
+    isCountLevel(r.level) ? (r.correct != null && r.total ? Math.round((r.correct / r.total) * 100) : null) : r.score;
+
+  v.clinicTrend = mine
+    .filter((r) => r.date <= addDays(weekStart, 6))
+    .slice(0, 5)
+    .map((r) => ({ date: r.date, level: r.level, value: valueOf(r) }))
+    .filter((r): r is { date: string; level: string; value: number } => r.value != null)
+    .reverse();
+
+  const thisWeek = mine.filter((r) => r.date >= weekStart && r.date <= addDays(weekStart, 6));
+  for (const r of thisWeek) {
+    // 같은 날 같은 단계 평균 — 숫자만 내보낸다(누가 몇 점인지는 나가지 않는다). 5명 미만이면 숨긴다.
+    const peers = await db
+      .select({ level: clinicScores.level, score: clinicScores.score, correct: clinicScores.correct, total: clinicScores.total })
+      .from(clinicScores)
+      .where(and(eq(clinicScores.clinicDayId, r.dayId), eq(clinicScores.level, r.level)));
+    const vals = peers.map(valueOf).filter((x): x is number => x != null);
+    v.clinic.push({
+      date: r.date,
+      level: r.level,
+      paper: (r.papers as Record<string, string>)?.[r.level] || null,
+      score: r.score,
+      correct: r.correct,
+      total: r.total,
+      reviewDone: r.reviewDone,
+      levelAverage: vals.length >= MIN_TAKERS_FOR_RANK ? Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10 : null,
+    });
+  }
+  v.clinic.reverse();
+}
+
+async function buildClassView(opts: {
   tenantId: string;
   studentId: string;
   /** 주소의 ?c= — 두 반을 듣는 학생만 쓴다. 이 학생의 반이 아니면 무시한다. */
@@ -136,6 +230,9 @@ export async function buildParentView(opts: {
     history: [],
     photos: [],
     vocab: [],
+    clinicLevel: null,
+    clinic: [],
+    clinicTrend: [],
     schedule,
   };
   if (!cls) return base;

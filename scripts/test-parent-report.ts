@@ -25,7 +25,7 @@ import assert from "node:assert/strict";
 import type { Server } from "node:http";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../server/db";
-import { users, classes, enrollments, students, reportWeeks, parentLinks } from "@shared/schema";
+import { users, classes, enrollments, students, reportWeeks, parentLinks, studentClinicLevels, clinicDays } from "@shared/schema";
 import { phoneLast4 } from "@shared/learningReport";
 import { generateToken } from "../server/middleware/auth";
 
@@ -93,11 +93,13 @@ async function main() {
   const cookieParser = (await import("cookie-parser")).default;
   const { default: teacherRouter } = await import("../server/learning-report/routes");
   const { default: parentRouter } = await import("../server/parent-report/routes");
+  const { default: clinicRouter } = await import("../server/learning-report/clinicRoutes");
   const app = express();
   app.use(express.json());
   app.use(express.urlencoded({ extended: false }));
   app.use(cookieParser());
   app.use(teacherRouter);
+  app.use(clinicRouter);
   app.use(parentRouter);
   const server = await new Promise<Server>((resolve) => {
     const s = app.listen(0, "127.0.0.1", () => resolve(s));
@@ -112,6 +114,10 @@ async function main() {
     });
   const weekPath = `/api/learning-report/classes/${cls.id}/weeks/${TEST_WEEK}`;
   const linkIds: string[] = [];
+  // 클리닉: 이 학생의 실제 단계를 적어 두고 끝나면 되돌린다. 클리닉 날은 2000-01-07 만 쓴다.
+  const CLINIC_DAY = "2000-01-07";
+  const levelBefore = await db.select().from(studentClinicLevels).where(eq(studentClinicLevels.studentId, me.id));
+  await db.delete(clinicDays).where(and(eq(clinicDays.tenantId, owner.tenantId!), eq(clinicDays.date, CLINIC_DAY)));
 
   try {
     // ── 선생님 쪽 준비: 진도·숙제·시험·사진 2장(반 전체, 다른 학생 전용) ──
@@ -139,6 +145,13 @@ async function main() {
       ],
     });
     await teacher("POST", `${weekPath}/publish`);
+    // 클리닉: 영어 학생이면 고1 모의고사 84점(2등급), 오답 정리 전, 공개.
+    const clinicOk = (await teacher("PUT", "/api/learning-report/clinic/levels", { items: [{ studentId: me.id, level: "mock1" }] })).status === 200;
+    if (clinicOk) {
+      await teacher("PUT", `/api/learning-report/clinic/days/${CLINIC_DAY}/scores`, { entries: [{ studentId: me.id, score: 84 }] });
+      await teacher("PATCH", `/api/learning-report/clinic/days/${CLINIC_DAY}`, { papers: { mock1: "[TEST] 2024년 9월 고1" } });
+      await teacher("POST", `/api/learning-report/clinic/days/${CLINIC_DAY}/publish`);
+    }
 
     const link = await (await teacher("POST", `/api/learning-report/students/${me.id}/link`)).json();
     linkIds.push(...(await db.select({ id: parentLinks.id }).from(parentLinks).where(eq(parentLinks.studentId, me.id))).map((r) => r.id));
@@ -202,7 +215,9 @@ async function main() {
       assert.ok(html.includes(me!.name));
       assert.ok(html.includes("[TEST] Unit 99"));
       assert.ok(html.includes("6문항 모자랍니다"), "숙제 부족 안내");
-      assert.ok(html.includes(">85<"), "총점 85");
+      // 반 시험 총점은 시험 화면에서 본다 — 클리닉을 듣는 학생은 홈 4번째 칸이 "주간 클리닉" 으로 바뀌기 때문이다.
+      const examHtml = await (await parent(`${P}/exam${W}`)).text();
+      assert.ok(examHtml.includes(">85<"), "반 시험 총점 85");
       const digits = (me!.parentPhone ?? "").replace(/\D/g, "");
       assert.ok(!html.includes(digits), "보호자 번호 전체가 보이면 안 된다");
       assert.ok(!html.includes(other.name), "다른 학생 이름이 보이면 안 된다");
@@ -223,6 +238,25 @@ async function main() {
       assert.ok(hw.includes("재시 통과"), "1/7 재시험은 '재시 통과' 로 따로 보인다");
       assert.ok(!hw.includes("<b>30개</b>"), "다른 학생(20개 틀림) 기록이 보이면 안 된다");
     });
+
+    if (clinicOk) {
+      await test("클리닉: 홈 4번째 타일이 '주간 클리닉 84점 · 2등급', 시험 화면에 시험지 이름", async () => {
+        const home = await (await parent(`${P}${W}`)).text();
+        assert.ok(home.includes("주간 클리닉") && home.includes("84<small>점") && home.includes("2등급"), "홈 클리닉 타일");
+        assert.ok(home.includes("오답 정리 전"));
+        const exam = await (await parent(`${P}/exam${W}`)).text();
+        assert.ok(exam.includes("고1 모의고사") && exam.includes("[TEST] 2024년 9월 고1"));
+      });
+
+      await test("클리닉 공개를 취소하면 클리닉 결과가 사라진다", async () => {
+        await teacher("POST", `/api/learning-report/clinic/days/${CLINIC_DAY}/unpublish`);
+        const exam = await (await parent(`${P}/exam${W}`)).text();
+        assert.ok(!exam.includes("[TEST] 2024년 9월 고1"));
+        await teacher("POST", `/api/learning-report/clinic/days/${CLINIC_DAY}/publish`);
+      });
+    } else {
+      console.log("  (건너뜀) 이 학생은 영어 반이 아니라 클리닉 대상이 아님");
+    }
 
     await test("시험: 내 한마디는 있고 남의 한마디는 없다", async () => {
       const html = await (await parent(`${P}/exam${W}`)).text();
@@ -275,6 +309,9 @@ async function main() {
       assert.equal((await parent(`/p/${fresh.token}`)).status, 200);
     });
   } finally {
+    await db.delete(clinicDays).where(and(eq(clinicDays.tenantId, owner.tenantId!), eq(clinicDays.date, CLINIC_DAY)));
+    await db.delete(studentClinicLevels).where(eq(studentClinicLevels.studentId, me.id));
+    if (levelBefore.length) await db.insert(studentClinicLevels).values(levelBefore);
     await db.delete(reportWeeks).where(and(eq(reportWeeks.classId, cls.id), eq(reportWeeks.weekStart, TEST_WEEK)));
     if (linkIds.length) await db.delete(parentLinks).where(inArray(parentLinks.id, linkIds));
     server.close();

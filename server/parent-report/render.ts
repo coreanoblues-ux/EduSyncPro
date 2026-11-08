@@ -40,9 +40,10 @@ function weekPill(label: string): string {
   const m = /^(\d+월) (.+)$/.exec(label);
   return m ? `<b>${esc(m[1])}</b> ${esc(m[2])}` : esc(label);
 }
+/** 재시험을 다시 봐서 통과한 날도 "통과" 로 센다 (원장 결정 2026-11-08). 카드에는 "재시 통과" 로 따로 보인다. */
 function vocabCounts(list: ParentView["vocab"]) {
   return {
-    pass: list.filter((x) => x.result === "pass").length,
+    pass: list.filter((x) => x.result === "pass" || (x.result === "retest" && x.retestPassed === true)).length,
     rewrite: list.filter((x) => x.result === "rewrite").length,
     retest: list.filter((x) => x.result === "retest").length,
     retestOpen: list.filter((x) => x.result === "retest" && x.retestPassed !== true).length,
